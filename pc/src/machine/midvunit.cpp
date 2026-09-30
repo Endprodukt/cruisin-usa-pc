@@ -190,6 +190,12 @@ bool MidVUnit::load_roms(const std::string &zip_path, const std::string &version
 		for (size_t k = 0; k < data.size(); k++)
 			sound_rom[size_t(i) * 0x200000 + k * 2] = data[k];
 	}
+
+	m_dcs = std::make_unique<Dcs1>(reinterpret_cast<const uint16_t *>(sound_rom.data()), sound_rom.size() / 2);
+	m_dcs->on_audio = [this](const int16_t *b, int n, double r) { if (on_audio) on_audio(b, n, r); };
+	m_dcs->on_audio_enable = [this](bool e) { if (on_audio_enable) on_audio_enable(e); };
+	on_sound_data = [this](uint8_t d) { m_dcs->data_w(d); };
+	on_dcs_reset = [this](int st) { m_dcs->reset_w(st); };
 	return true;
 }
 
@@ -213,9 +219,18 @@ void MidVUnit::reset()
 	m_htotal = 666; m_vtotal = 432; m_vis_w = 512; m_vis_h = 400;
 	m_refresh_hz = VIDEO_PIXCLK / (m_htotal * m_vtotal);
 	m_cpu->reset();
+	if (m_dcs) { m_dcs->reset_w(0); m_dcs->reset_w(1); }
 	m_wheel_board_output = 0;
 	m_wheel_board_last = 0;
 	galil_set_input(":");
+}
+
+int MidVUnit::run_cpu(int cycles)
+{
+	int used = m_cpu->run(cycles);
+	if (m_dcs)
+		m_dcs->advance(used * (Dcs1::ADSP_CLOCK / double(CPU_HZ)));
+	return used;
 }
 
 uint64_t MidVUnit::now_cycles() const
@@ -842,7 +857,7 @@ bool MidVUnit::run_frame()
 		{
 			m_cpu->set_input(0, ASSERT_LINE);
 			m_slice_len = 2;
-			m_cpu->run(2);
+			run_cpu(2);
 			m_cycles_total += 2;
 			m_cpu->set_input(0, CLEAR_LINE);
 			m_cycle_frac -= 2;
@@ -868,7 +883,7 @@ bool MidVUnit::run_frame()
 					slice = int(until);
 			}
 			m_slice_len = slice;
-			int used = m_cpu->run(slice);
+			int used = run_cpu(slice);
 			m_cycles_total += uint64_t(used);
 			line_cycles -= used;
 			if (m_adc_event != ~0ull && m_cycles_total >= m_adc_event)

@@ -12,6 +12,7 @@
 
 #include "machine/autosetup.h"
 #include "machine/midvunit.h"
+#include "platform/audio_wasapi.h"
 
 #pragma comment(lib, "opengl32.lib")
 #pragma comment(lib, "xinput.lib")
@@ -207,6 +208,14 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		m.save_nvram(opt.nvram);
 	}
 
+	AudioOut audio;
+	bool audio_ok = audio.start();
+	if (audio_ok)
+	{
+		m.on_audio = [&audio](const int16_t *b, int n, double r) { audio.push(b, n, r); };
+		m.on_audio_enable = [&audio](bool e) { if (!e) audio.clear(); };
+	}
+
 	timeBeginPeriod(1);
 	WNDCLASSA wc{};
 	wc.lpfnWndProc = wnd_proc;
@@ -319,12 +328,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		if (t - fps_t >= 1.0)
 		{
 			char title[128];
-			std::snprintf(title, sizeof(title), "Cruis'n USA (PC) - %d fps  gear %d  [%s]", fps_n, st.gear, opt.vsync ? "vsync" : "paced");
+			std::snprintf(title, sizeof(title), "Cruis'n USA (PC) - %d fps  gear %d  [%s] snd %.0fms", fps_n, st.gear, opt.vsync ? "vsync" : "paced", audio.latency_ms());
 			SetWindowTextA(hwnd, title);
 			fps_n = 0; fps_t = t;
 		}
 	}
 
+	audio.stop();
 	m.save_nvram(opt.nvram);
 	wglMakeCurrent(nullptr, nullptr);
 	wglDeleteContext(rc);

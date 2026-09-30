@@ -4,6 +4,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <cmath>
 #include <sstream>
 #include "machine/midvunit.h"
 #include "../third_party/miniz/miniz.h"
@@ -12,6 +14,7 @@ int main(int argc, char **argv)
 {
 	std::string rom = "D:/Mame/roms/crusnusa.zip", shot = "shot.png", ver = "4.5";
 	int frames = 300;
+	std::string wav;
 	struct Ev { int at, dur; uint16_t bit; };
 	std::vector<Ev> evs;
 	struct Ax { int at; char which; int val; };
@@ -37,11 +40,14 @@ int main(int argc, char **argv)
 			char c; int at, v; std::string a = argv[++i];
 			if (sscanf(a.c_str(), "%c@%d=%d", &c, &at, &v) == 3) axes.push_back({at, c, v});
 		}
+		else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
 		else if (!strcmp(argv[i], "--ver") && i + 1 < argc) ver = argv[++i];
 	}
 	MidVUnit m;
 	std::string err;
 	if (!m.load_roms(rom, ver, err)) { fprintf(stderr, "ROM error: %s\n", err.c_str()); return 1; }
+	std::vector<int16_t> pcm; double rate = 0; int blocks = 0;
+	m.on_audio = [&](const int16_t *b, int n, double r) { pcm.insert(pcm.end(), b, b + n); if (rate == 0) rate = r; blocks++; };
 	m.reset();
 	for (int f = 0; f < frames; f++)
 	{
@@ -61,6 +67,19 @@ int main(int argc, char **argv)
 		size_t l = 0; void *pn = tdefl_write_image_to_png_file_in_memory(g.data(), W, H, 1, &l);
 		FILE *fp = fopen("texdump.png", "wb"); fwrite(pn, 1, l, fp); fclose(fp);
 	}
+	if (!wav.empty() && !pcm.empty())
+	{
+		FILE *wf = fopen(wav.c_str(), "wb");
+		uint32_t sr = uint32_t(rate + 0.5), dl = uint32_t(pcm.size() * 2), br = sr * 2, rl = 36 + dl;
+		uint16_t fmt = 1, ch = 1, ba = 2, bps = 16; uint32_t fl = 16;
+		fwrite("RIFF", 1, 4, wf); fwrite(&rl, 4, 1, wf); fwrite("WAVEfmt ", 1, 8, wf); fwrite(&fl, 4, 1, wf);
+		fwrite(&fmt, 2, 1, wf); fwrite(&ch, 2, 1, wf); fwrite(&sr, 4, 1, wf); fwrite(&br, 4, 1, wf);
+		fwrite(&ba, 2, 1, wf); fwrite(&bps, 2, 1, wf); fwrite("data", 1, 4, wf); fwrite(&dl, 4, 1, wf);
+		fwrite(pcm.data(), 2, pcm.size(), wf); fclose(wf);
+		int peak = 0; for (auto v : pcm) peak = std::max(peak, std::abs(int(v)));
+		fprintf(stderr, "audio: %zu samples @ %.1f Hz, %d blocks, peak %d\n", pcm.size(), rate, blocks, peak);
+	}
+	else fprintf(stderr, "audio: none (%zu samples)\n", pcm.size());
 	int w = m.screen_w(), h = m.screen_h();
 	std::vector<uint8_t> rgb(size_t(w) * h * 3);
 	for (int y = 0; y < h; y++)

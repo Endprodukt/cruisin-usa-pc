@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "../audio/dcs.h"
 #include "../cpu/tms320c3x/tms320c3x.h"
 
 // Everything the host feeds into the machine. Bits are active-low like the real boards.
@@ -68,6 +69,8 @@ public:
 	// audio hooks (DCS)
 	std::function<void(uint8_t)> on_sound_data;
 	std::function<void(int)> on_dcs_reset;
+	std::function<void(const int16_t *, int, double)> on_audio;   // mono PCM blocks + rate
+	std::function<void(bool)> on_audio_enable;
 
 	// ---- persistent state ---------------------------------------------------------------
 	bool load_nvram(const std::string &path);
@@ -116,6 +119,8 @@ private:
 	// members ---------------------------------------------------------------------------
 	std::unique_ptr<tms320c3x_device::bus_t> m_bus;
 	std::unique_ptr<tms320c3x_device> m_cpu;
+	std::unique_ptr<Dcs1> m_dcs;
+	int run_cpu(int cycles);
 
 	std::vector<uint32_t> m_ram0, m_ram1;   // 0x000000 / 0x400000, 128K words each
 	std::vector<uint32_t> m_rom;            // maindata, mapped at 0xc00000 (4M words)

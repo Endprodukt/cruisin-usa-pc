@@ -15,11 +15,14 @@ target_include_directories(cpu_c3x PUBLIC src)
 
 add_library(miniz STATIC third_party/miniz/miniz.c)
 target_include_directories(miniz PUBLIC third_party/miniz)
-add_library(machine STATIC src/machine/midvunit.cpp)
+add_library(machine STATIC src/machine/midvunit.cpp src/audio/dcs.cpp)
 target_include_directories(machine PUBLIC src)
-target_link_libraries(machine PUBLIC cpu_c3x miniz)
+target_link_libraries(machine PUBLIC cpu_c3x cpu_adsp miniz)
 add_executable(cruisn_headless src/main_headless.cpp)
 target_link_libraries(cruisn_headless PRIVATE machine)
 
-add_executable(cruisn_usa WIN32 src/main_win.cpp)
+add_executable(cruisn_usa WIN32 src/main_win.cpp src/platform/audio_wasapi.cpp)
 target_link_libraries(cruisn_usa PRIVATE machine)
+
+add_library(cpu_adsp STATIC src/cpu/adsp2100/adsp2100.cpp)
+target_include_directories(cpu_adsp PUBLIC src)
