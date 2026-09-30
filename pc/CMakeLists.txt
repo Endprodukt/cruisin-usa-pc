@@ -25,8 +25,21 @@ add_library(volk STATIC third_party/volk/volk.c)
 target_include_directories(volk PUBLIC third_party/volk third_party/vulkan/include)
 target_compile_definitions(volk PUBLIC VK_USE_PLATFORM_WIN32_KHR VK_NO_PROTOTYPES)
 
-add_executable(cruisn_usa WIN32 src/main_win.cpp src/platform/audio_wasapi.cpp src/video/gl_backend.cpp src/video/vk_backend.cpp)
-target_link_libraries(cruisn_usa PRIVATE machine volk)
+add_library(imgui STATIC
+  third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
+  third_party/imgui/imgui_impl_win32.cpp third_party/imgui/imgui_impl_opengl3.cpp)
+target_include_directories(imgui PUBLIC third_party/imgui)
+target_compile_definitions(imgui PRIVATE IMGUI_DISABLE_WIN32_DEFAULT_CLIPBOARD_FUNCTIONS=0)
+
+add_executable(cruisn_usa WIN32
+  src/main_win.cpp
+  src/platform/audio_wasapi.cpp
+  src/video/gl_backend.cpp src/video/vk_backend.cpp
+  src/config/settings.cpp
+  src/input/devices.cpp src/input/controls.cpp
+  src/outputs/outputs.cpp
+  src/launcher/launcher.cpp)
+target_link_libraries(cruisn_usa PRIVATE machine volk imgui)
 
 add_library(cpu_adsp STATIC src/cpu/adsp2100/adsp2100.cpp)
 target_include_directories(cpu_adsp PUBLIC src)

@@ -14,7 +14,8 @@ public:
 	void stop();
 	void push(const int16_t *samples, int count, double rate);   // called from the emulation thread
 	void clear();
-	void set_volume(float v);                       // 0..1
+	void set_volume(float v);                       // 0..2 (1 = unity)
+	void set_latency_ms(int ms);                    // target amount of queued audio
 	float latency_ms() const;
 
 private:

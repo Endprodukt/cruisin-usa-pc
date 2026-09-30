@@ -39,6 +39,7 @@ struct AudioOut::Impl
 	float last = 0;
 	double ratio_adj = 1.0;
 	std::atomic<float> volume{1.0f};
+	std::atomic<float> target_s{0.06f};
 	std::atomic<float> fill_ms{0};
 
 	size_t available() const { return wr - rd; }
@@ -66,7 +67,7 @@ struct AudioOut::Impl
 	void fill(int16_t *out, UINT32 frames)
 	{
 		std::lock_guard<std::mutex> lk(mtx);
-		const double target = src_rate * 0.06;                  // aim for ~60 ms buffered
+		const double target = src_rate * double(target_s.load());   // aim for the configured amount buffered
 		double have = double(available());
 		fill_ms = float(have / src_rate * 1000.0);
 		// gentle rate control: consume a bit faster if we are far ahead, slower if starving
@@ -188,5 +189,6 @@ void AudioOut::clear()
 	d.frac = 0;
 }
 
-void AudioOut::set_volume(float v) { m_impl->volume = std::clamp(v, 0.0f, 1.0f); }
+void AudioOut::set_volume(float v) { m_impl->volume = std::clamp(v, 0.0f, 2.0f); }
+void AudioOut::set_latency_ms(int ms) { m_impl->target_s = std::clamp(ms, 20, 400) / 1000.0f; }
 float AudioOut::latency_ms() const { return m_impl->fill_ms; }

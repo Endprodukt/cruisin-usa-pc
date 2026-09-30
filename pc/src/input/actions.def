@@ -1,0 +1,33 @@
+/* actions.def -- every cabinet control the host binds, once.
+ *
+ *   ACTION(id, label, mame_default_key, default_pad_binding, group)
+ *
+ * `id` is the ini key in both [digital] (keyboard) and [gamepad] (device-bound button).
+ * Keyboard defaults are MAME's defaults for player 1 (BUTTON1..8, PEDAL, PEDAL2, PADDLE and the
+ * coin/start/service/volume keys); the pad defaults target an Xbox pad ("XInput | n", 1-based:
+ * A=1 B=2 X=3 Y=4 LB=5 RB=6 Back=7 Start=8 LStick=9 RStick=10).
+ */
+ACTION(coin1,      "Coin 1",                 "5",        "XInput | 7", Operator)
+ACTION(coin2,      "Coin 2",                 "6",        "",           Operator)
+ACTION(start,      "Start",                  "1",        "XInput | 8", Operator)
+ACTION(service,    "Service credit",         "9",        "",           Operator)
+ACTION(test,       "Test / Enter (operator)","F2",       "",           Operator)
+ACTION(vol_down,   "Volume down",            "MINUS",    "",           Operator)
+ACTION(vol_up,     "Volume up",              "EQUALS",   "",           Operator)
+
+ACTION(steer_left, "Steer left",             "LEFT",     "",           Driving)
+ACTION(steer_right,"Steer right",            "RIGHT",    "",           Driving)
+ACTION(accel,      "Accelerator",            "LCONTROL", "",           Driving)
+ACTION(brake,      "Brake",                  "LALT",     "",           Driving)
+
+ACTION(radio,      "Radio",                  "LCONTROL", "XInput | 1", Cabinet)
+ACTION(view1,      "View 1",                 "LALT",     "XInput | 3", Cabinet)
+ACTION(view2,      "View 2",                 "SPACE",    "XInput | 4", Cabinet)
+ACTION(view3,      "View 3",                 "LSHIFT",   "XInput | 9", Cabinet)
+
+ACTION(gear1,      "Gear 1",                 "Z",        "",           Shifter)
+ACTION(gear2,      "Gear 2",                 "X",        "",           Shifter)
+ACTION(gear3,      "Gear 3",                 "C",        "",           Shifter)
+ACTION(gear4,      "Gear 4",                 "V",        "",           Shifter)
+ACTION(shift_up,   "Shift up (sequential)",  "NONE",     "XInput | 6", Shifter)
+ACTION(shift_down, "Shift down (sequential)","NONE",     "XInput | 5", Shifter)
