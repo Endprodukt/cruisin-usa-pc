@@ -148,6 +148,7 @@ VideoOptions make_video_options(const VideoSettings &v)
 	o.vsync = v.vsync;
 	o.filter_textures = v.texture_filter;
 	o.smooth_output = v.smooth_output;
+	o.aa = v.aa;
 	o.integer_scale = v.integer_scale;
 	o.keep_aspect = v.aspect != AspectMode::Stretch;
 	o.shadow_strength = float(v.shadow_strength) / 100.0f;
@@ -206,6 +207,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		S.video.renderer = (v == "vk" || v == "vulkan") ? Renderer::Vulkan : (v == "cpu" ? Renderer::Cpu : Renderer::OpenGL);
 	if (std::string v = arg_value(a, "--shadows"); !v.empty())
 		S.video.shadows = v == "off" ? ShadowMode::Off : v == "original" ? ShadowMode::Original : ShadowMode::Modern;
+	if (std::string v = arg_value(a, "--draw-distance"); !v.empty()) S.video.draw_distance = std::clamp(std::atoi(v.c_str()), 10, 400);
+	if (std::string v = arg_value(a, "--aa"); !v.empty()) S.video.aa = std::clamp(std::atoi(v.c_str()), 0, 3);
 	if (std::string v = arg_value(a, "--scale"); !v.empty()) S.video.internal_scale = std::clamp(std::atoi(v.c_str()), 1, 8);
 	if (std::string v = arg_value(a, "--vsync"); !v.empty()) S.video.vsync = v != "0";
 	if (std::string v = arg_value(a, "--filter"); !v.empty()) S.video.texture_filter = v != "0";
@@ -251,6 +254,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		MessageBoxA(nullptr, ("ROM load failed:\n" + err + "\n\nSet the ROM path in the launcher (Home > ROM zip).").c_str(), "Cruis'n USA", MB_ICONERROR);
 		return 1;
 	}
+	m.rom_patches.draw_distance_pct = S.video.draw_distance;
 	m.reset();
 	if (!m.load_nvram(S.nvram))
 		m.load_default_nvram();        // embedded, pre-calibrated CMOS: no calibration screen, ever
@@ -381,6 +385,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 		// hotkeys: F5/F6 internal resolution, F7 texture filter, F8 vsync, F9 output smoothing
 		bool vchanged = false;
+		if (g_pressed[VK_F3]) { S.video.aa = (S.video.aa + 1) % 4; vchanged = true; }
 		if (g_pressed[VK_F4]) { S.video.shadows = ShadowMode((int(S.video.shadows) + 1) % 3); m.set_shadow_mode(int(S.video.shadows)); vchanged = true; }
 		if (g_pressed[VK_F5]) { S.video.internal_scale = std::max(1, S.video.internal_scale - 1); vchanged = true; }
 		if (g_pressed[VK_F6]) { S.video.internal_scale = std::min(8, S.video.internal_scale + 1); vchanged = true; }

@@ -205,6 +205,11 @@ void MidVUnit::reset()
 {
 	// boot: the first 128K words of the ROM are copied to RAM at 0
 	std::copy(m_rom.begin(), m_rom.begin() + 0x20000, m_ram0.begin());
+	{
+		std::string plog;
+		int n = apply_rom_patches(m_ram0, rom_patches, plog);
+		if (n && std::getenv("ROMPATCH_LOG")) std::fprintf(stderr, "ROM patches: %d\n%s", n, plog.c_str());
+	}
 
 	m_control_data = 0;
 	m_cmos_protected = 0;

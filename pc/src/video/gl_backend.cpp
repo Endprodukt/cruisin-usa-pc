@@ -306,7 +306,7 @@ public:
 		Params p{};
 		float nx0 = x0 / dw * 2 - 1, nx1 = (x0 + tw) / dw * 2 - 1;
 		float ny_top = 1 - y0 / dh * 2, ny_bot = 1 - (y0 + th) / dh * 2;
-		set_params({nx0, ny_top, nx1, ny_bot}, {0, 0, float(vis_w) / 512.0f, float(vis_h) / 512.0f});
+		set_params({nx0, ny_top, nx1, ny_bot}, {0, 0, float(vis_w) / 512.0f, float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0});
 		(void)p;
 
 		glUseProgram(m_prog_present);
@@ -461,7 +461,7 @@ private:
 
 	void apply_page_filter()
 	{
-		GLint f = m_opt.smooth_output ? GL_LINEAR : GL_NEAREST;
+		GLint f = (m_opt.smooth_output || m_opt.aa > 0) ? GL_LINEAR : GL_NEAREST;
 		for (int i = 0; i < 3; i++)
 		{
 			glBindTexture(GL_TEXTURE_2D, i == 2 ? m_disp_tex : m_page_tex[i]);

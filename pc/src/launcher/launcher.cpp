@@ -229,6 +229,13 @@ void page_video(Launcher &L)
 	if (combo(L, "Aspect ratio", a, aspects)) v.aspect = AspectMode(a);
 	help("Shape of the picture in the window. 16:9 and 21:9 currently stretch the 4:3 image; real widescreen (wider field of view) "
 	     "follows with the rendering update, see below.");
+	static const char *const aas[] = {"Off", "FXAA light", "FXAA normal", "FXAA strong"};
+	int aa = v.aa;
+	ImGui::BeginDisabled(!gpu);
+	if (combo(L, "Anti-aliasing", aa, aas)) v.aa = aa;
+	ImGui::EndDisabled();
+	help("Post-process smoothing of jagged edges. The internal resolution above is true supersampling and works together with it. "
+	     "F3 cycles the mode in game.");
 	edited(L, ImGui::Checkbox("Smooth scaling to the window", &v.smooth_output));
 	edited(L, ImGui::Checkbox("Integer scaling", &v.integer_scale));
 	edited(L, ImGui::Checkbox("VSync", &v.vsync));
@@ -248,15 +255,23 @@ void page_video(Launcher &L)
 	ImGui::EndDisabled();
 	if (!gpu) ImGui::TextDisabled("Modern shadows need the OpenGL or Vulkan renderer.");
 
+	ImGui::SeparatorText("Draw distance");
+	{
+		static const int steps[] = {25, 50, 75, 100, 150, 200, 300, 400};
+		static const char *const names[] = {"25% (fastest, objects vanish early)", "50%", "75%", "100% (original)", "150%", "200%", "300%", "400% (maximum)"};
+		int cur = 3;
+		for (int i = 0; i < 8; i++) if (steps[i] == v.draw_distance) cur = i;
+		if (combo(L, "Draw distance", cur, names)) v.draw_distance = steps[cur];
+		help("Below 100% far objects are dropped earlier (faster). Above 100% detailed models are kept at greater distances and traffic stays "
+		     "active further out (slower on weak hardware). Takes effect at the next start of the game.");
+	}
+
 	ImGui::SeparatorText("Rendering update (prepared, not active yet)");
 	ImGui::BeginDisabled(true);
 	edited(L, ImGui::Checkbox("Widescreen hack (wider field of view)", &v.widescreen_hack));
 	static const char *const huds[] = {"Centre (4:3)", "Edges", "25% out", "50% out", "75% out"};
 	int h = int(v.hud);
 	combo(L, "HUD placement", h, huds);
-	int dd = v.draw_distance;
-	ImGui::SetNextItemWidth(300);
-	ImGui::SliderInt("Draw distance", &dd, 25, 400, "%d%%");
 	ImGui::EndDisabled();
 	ImGui::TextDisabled("These need changes to the game's projection and culling code.");
 }

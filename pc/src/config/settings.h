@@ -27,6 +27,7 @@ struct VideoSettings
 	bool integer_scale = false;
 	bool vsync = true;
 	bool texture_filter = false;              // bilinear texture filtering on the GPU
+	int aa = 0;                               // 0 off, 1..3 FXAA light/normal/strong
 	bool smooth_output = true;                // linear scaling of the final image
 
 	// reserved for the widescreen / rendering stage (stored now, applied when implemented)

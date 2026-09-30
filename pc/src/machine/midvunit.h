@@ -2,6 +2,7 @@
 // Hardware behaviour follows MAME's midvunit driver (BSD-3-Clause,
 // copyright-holders: Aaron Giles); this is a standalone re-implementation.
 #pragma once
+#include "rom_patches.h"
 
 #include <cstdint>
 #include <functional>
@@ -50,6 +51,7 @@ public:
 
 	bool load_roms(const std::string &zip_path, const std::string &version, std::string &err);
 	void reset();
+	RomPatchOptions rom_patches;           // applied to the RAM copy at reset
 
 	// emulate one full video frame; returns true if the visible image changed
 	bool run_frame();

@@ -181,8 +181,37 @@ void main()
 static const char *const kPresentFrag = R"GLSL(
 layout(location = 0) in vec2 v_uv;
 layout(BIND(0)) uniform sampler2D u_page;
+layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; vec4 pc; } u_par;
 layout(location = 0) out vec4 o_color;
-void main() { o_color = vec4(texture(u_page, v_uv).rgb, 1.0); }
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+// FXAA (Lottes' console variant) on the scaled output; pc.x selects the strength: 1 light, 2 normal, 3 strong
+void main()
+{
+	vec3 rgbM = texture(u_page, v_uv).rgb;
+	if (u_par.pc.x < 0.5) { o_color = vec4(rgbM, 1.0); return; }
+	vec2 px = vec2(abs(dFdx(v_uv.x)) + abs(dFdy(v_uv.x)), abs(dFdx(v_uv.y)) + abs(dFdy(v_uv.y)));
+	float lvl = u_par.pc.x;
+	float thr = lvl < 1.5 ? 0.125 : (lvl < 2.5 ? 0.0625 : 0.03125);
+	float span = lvl < 1.5 ? 4.0 : (lvl < 2.5 ? 8.0 : 12.0);
+	vec3 rgbNW = texture(u_page, v_uv + vec2(-1.0, -1.0) * px).rgb;
+	vec3 rgbNE = texture(u_page, v_uv + vec2(1.0, -1.0) * px).rgb;
+	vec3 rgbSW = texture(u_page, v_uv + vec2(-1.0, 1.0) * px).rgb;
+	vec3 rgbSE = texture(u_page, v_uv + vec2(1.0, 1.0) * px).rgb;
+	float lM = luma(rgbM), lNW = luma(rgbNW), lNE = luma(rgbNE), lSW = luma(rgbSW), lSE = luma(rgbSE);
+	float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
+	float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+	if (lMax - lMin < max(0.0312, lMax * thr)) { o_color = vec4(rgbM, 1.0); return; }
+	vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
+	float dirReduce = max((lNW + lNE + lSW + lSE) * 0.25 * 0.125, 1.0 / 128.0);
+	float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+	dir = clamp(dir * rcpDirMin, vec2(-span), vec2(span)) * px;
+	vec3 rgbA = 0.5 * (texture(u_page, v_uv + dir * (1.0 / 3.0 - 0.5)).rgb + texture(u_page, v_uv + dir * (2.0 / 3.0 - 0.5)).rgb);
+	vec3 rgbB = rgbA * 0.5 + 0.25 * (texture(u_page, v_uv + dir * -0.5).rgb + texture(u_page, v_uv + dir * 0.5).rgb);
+	float lB = luma(rgbB);
+	o_color = vec4((lB < lMin || lB > lMax) ? rgbA : rgbB, 1.0);
+}
 )GLSL";
 
 static const char *const kOverlayFrag = R"GLSL(

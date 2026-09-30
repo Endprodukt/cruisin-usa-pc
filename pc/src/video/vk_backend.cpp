@@ -166,7 +166,7 @@ public:
 		std::string err;
 		bool rescale = std::clamp(o.scale, 1, 8) != m_opt.scale;
 		bool revsync = o.vsync != m_opt.vsync;
-		bool resamp = o.smooth_output != m_opt.smooth_output;
+		bool resamp = (o.smooth_output || o.aa > 0) != (m_opt.smooth_output || m_opt.aa > 0);
 		m_opt = o;
 		m_opt.scale = std::clamp(m_opt.scale, 1, 8);
 		if (rescale) { vkDeviceWaitIdle(m_dev); destroy_pages(); create_pages(err); }
@@ -332,7 +332,7 @@ public:
 		}
 		float x0 = (dw - tw) * 0.5f, y0 = (dh - th) * 0.5f;
 		Params p{{x0 / dw * 2 - 1, y0 / dh * 2 - 1, (x0 + tw) / dw * 2 - 1, (y0 + th) / dh * 2 - 1},
-		         {0, 0, float(vis_w) / 512.0f, float(vis_h) / 512.0f}, {0, 0, 0, 0}};
+		         {0, 0, float(vis_w) / 512.0f, float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0}};
 		uint32_t dyn = write_params(p);
 
 		VkClearValue clear{};
@@ -694,7 +694,7 @@ private:
 
 	void write_present_sets()
 	{
-		VkSampler s = m_opt.smooth_output ? m_samp_linear : m_samp_nearest;
+		VkSampler s = (m_opt.smooth_output || m_opt.aa > 0) ? m_samp_linear : m_samp_nearest;
 		if (m_mask.view) write_set(m_set_shadow, m_mask.view, m_samp_linear, m_tex_pal.view, m_samp_nearest);
 		if (m_disp.view) write_set(m_set_present[0], m_disp.view, s, m_tex_pal.view, m_samp_nearest);
 	}
