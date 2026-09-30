@@ -90,6 +90,7 @@ const char *const kWindow[] = {"window", "borderless", "fullscreen"};
 const char *const kAspect[] = {"4:3", "16:9", "21:9", "stretch"};
 const char *const kHud[] = {"centre", "edges", "25", "50", "75"};
 const char *const kShadow[] = {"original", "modern", "off"};
+const char *const kFfbMode[] = {"vanilla", "modern"};
 const char *const kOutput[] = {"off", "windows", "network"};
 const char *const kShifter[] = {"sticky", "toggling", "sequential", "h-pattern"};
 
@@ -134,6 +135,7 @@ int wide_margin_for(const VideoSettings &v)
 	if (a <= 0.0) return 0;
 	return int(std::ceil((384.0 * a - 512.0) / 2.0));
 }
+const char *to_string(FfbMode m) { return kFfbMode[int(m)]; }
 const char *to_string(OutputMode o) { return kOutput[int(o)]; }
 const char *to_string(ShifterMode m) { return kShifter[int(m)]; }
 
@@ -236,6 +238,18 @@ bool Settings::load(const std::string &path)
 	r.boolean("ffb", "invert", ffb.invert);
 	r.boolean("ffb", "rumble", ffb.rumble);
 	r.integer("ffb", "rumble_strength", ffb.rumble_strength, 0, 200);
+	r.choice("ffb", "mode", ffb.mode, kFfbMode);
+	r.integer("ffb_modern", "master", ffb.fx_master, 0, 200);
+	r.integer("ffb_modern", "surface", ffb.fx_surface, 0, 200);
+	r.integer("ffb_modern", "kerb", ffb.fx_kerb, 0, 200);
+	r.integer("ffb_modern", "bump", ffb.fx_bump, 0, 200);
+	r.integer("ffb_modern", "collision", ffb.fx_collision, 0, 200);
+	r.integer("ffb_modern", "spin", ffb.fx_spin, 0, 200);
+	r.integer("ffb_modern", "landing", ffb.fx_landing, 0, 200);
+	r.integer("ffb_modern", "engine", ffb.fx_engine, 0, 200);
+	r.integer("ffb_modern", "skid", ffb.fx_skid, 0, 200);
+	r.integer("ffb_modern", "air", ffb.fx_air, 0, 200);
+	r.integer("ffb_modern", "understeer", ffb.fx_understeer, 0, 200);
 
 	r.choice("outputs", "mode", outputs.mode, kOutput);
 	r.integer("outputs", "port", outputs.port, 1, 65535);
@@ -297,7 +311,13 @@ bool Settings::save(const std::string &path) const
 
 	o << "\n[ffb]\nenabled = " << b(ffb.enabled) << "\ndevice = " << ffb.device << "\nstrength = " << ffb.strength
 	  << "\ndevice_gain = " << ffb.device_gain << "\ninvert = " << b(ffb.invert) << "\nrumble = " << b(ffb.rumble)
-	  << "\nrumble_strength = " << ffb.rumble_strength << "\n\n";
+	  << "\nrumble_strength = " << ffb.rumble_strength
+	  << "\n; mode: vanilla (the game's own force only) | modern (adds effects from the game's car state, see [ffb_modern])"
+	  << "\nmode = " << to_string(ffb.mode) << "\n\n"
+	  << "[ffb_modern]\n; strength of each effect in percent of its default, 0 = off\nmaster = " << ffb.fx_master << "\nsurface = " << ffb.fx_surface
+	  << "\nkerb = " << ffb.fx_kerb << "\nbump = " << ffb.fx_bump << "\ncollision = " << ffb.fx_collision << "\nspin = " << ffb.fx_spin
+	  << "\nlanding = " << ffb.fx_landing << "\nengine = " << ffb.fx_engine << "\nskid = " << ffb.fx_skid << "\nair = " << ffb.fx_air
+	  << "\nundersteer = " << ffb.fx_understeer << "\n\n";
 
 	o << "[outputs]\n; mode: off | windows (MAMEOutput window, MameHooker) | network (TCP, Hook Of The Reaper)\nmode = "
 	  << to_string(outputs.mode) << "\nport = " << outputs.port << "\ngame_name = " << outputs.game_name << "\n\n";

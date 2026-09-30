@@ -16,6 +16,7 @@
 #include "input/devices.h"
 #include "launcher/launcher.h"
 #include "machine/midvunit.h"
+#include "machine/telemetry.h"
 #include "outputs/outputs.h"
 #include "platform/audio_wasapi.h"
 #include "video/video_backend.h"
@@ -418,7 +419,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			}
 			std::fill(std::begin(g_pressed), std::end(g_pressed), false);
 			m.run_frame();
-			controls.ffb_update(m.wheel_motor);
+			Telemetry tele;
+			const bool tele_ok = m.read_telemetry(tele);
+			controls.ffb_update(m.wheel_motor, tele_ok ? &tele : nullptr);
 			outputs.update(m.lamps, m.wheel_motor);
 			next_frame += 1.0 / m.refresh_hz();
 			ran = true;

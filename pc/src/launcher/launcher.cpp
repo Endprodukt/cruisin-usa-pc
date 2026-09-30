@@ -586,6 +586,11 @@ void controls_ffb(Launcher &L)
 	ImGui::TextWrapped("The game computes the force (a position servo with damping, up to +/-126) and the host carries it to the wheel as a "
 	                   "DirectInput constant force along the steering axis. The axis is taken from the steering binding, or the wheel's x axis.");
 	edited(L, ImGui::Checkbox("Force feedback", &f.enabled));
+	static const char *const modes[] = {"Vanilla (the game's own force only)", "Modern (adds effects from the game's car state)"};
+	int fm = int(f.mode);
+	if (combo(L, "Mode", fm, modes)) f.mode = FfbMode(fm);
+	help("Vanilla is the arcade's position servo. Modern keeps that force and adds surface, kerb, bump, collision, spin-out, jump and "
+	     "tyre effects read from the game's physics while you drive. Takes effect at the next start of the game.");
 	std::string cur = f.device.empty() ? "Auto (steering device, else first wheel with a motor)" : f.device;
 	if (ImGui::BeginCombo("Device", cur.c_str()))
 	{
@@ -613,6 +618,34 @@ void controls_ffb(Launcher &L)
 	}
 	help("Briefly pushes the wheel and watches which way the steering axis moves, then sets the direction. Keep your hands off the wheel.");
 	help("Turn on if the wheel pulls away from the road instead of towards it.");
+	if (f.mode == FfbMode::Modern)
+	{
+		ImGui::SeparatorText("Modern effects");
+		if (ImGui::CollapsingHeader("Effect strengths", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			auto fx = [&](const char *label, int &v, const char *tip) {
+				ImGui::SetNextItemWidth(300);
+				edited(L, ImGui::SliderInt(label, &v, 0, 200, "%d%%"));
+				help(tip);
+			};
+			fx("All effects", f.fx_master, "Overall strength of everything below (not the game's own force - that is 'Strength' above).");
+			fx("Road surface", f.fx_surface, "Rumble strips, gravel and grass; stronger and faster with speed.");
+			fx("Kerb tug", f.fx_kerb, "A sideways tug when a wheel drops off the edge of the road.");
+			fx("Bumps", f.fx_bump, "Bumps and road seams.");
+			fx("Collisions", f.fx_collision, "A jolt when the car loses speed suddenly (walls, other cars).");
+			fx("Spin-out", f.fx_spin, "The wheel is thrown when the car spins out.");
+			fx("Landing", f.fx_landing, "A thump when the car touches down after a jump.");
+			fx("Engine", f.fx_engine, "Fine vibration that follows the engine revs.");
+			fx("Tyre rattle", f.fx_skid, "Vibration while the tyres slide.");
+			fx("Air time lightness", f.fx_air, "The wheel goes light while the car is airborne.");
+			fx("Understeer lightness", f.fx_understeer, "The wheel lightens when the tyres lose grip.");
+			if (ImGui::Button("Reset effect strengths"))
+			{
+				f.fx_master = 100; f.fx_surface = 100; f.fx_kerb = 70; f.fx_bump = 100; f.fx_collision = 100; f.fx_spin = 100;
+				f.fx_landing = 100; f.fx_engine = 40; f.fx_skid = 100; f.fx_air = 100; f.fx_understeer = 100; L.dirty = true;
+			}
+		}
+	}
 	ImGui::SeparatorText("Gamepad rumble");
 	edited(L, ImGui::Checkbox("Rumble on XInput pads", &f.rumble));
 	ImGui::SetNextItemWidth(300);

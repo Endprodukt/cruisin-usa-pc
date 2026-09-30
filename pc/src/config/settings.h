@@ -11,6 +11,7 @@ enum class WindowMode { Window, Borderless, Fullscreen };
 enum class AspectMode { Native43, Wide169, Wide219, Stretch };
 enum class HudPlacement { Centre, Edges, Quarter25, Half50, Quarter75 };
 enum class ShadowMode { Original, Modern, Off };
+enum class FfbMode { Vanilla, Modern };
 enum class OutputMode { Off, Windows, Network };
 // MAME's "Shifter Type": buttons keep the last gear (sticky) or toggle it, two buttons step up/down
 // (sequential), or the gear is only engaged while its button is held (H-pattern, neutral otherwise)
@@ -86,6 +87,10 @@ struct FfbSettings
 	bool invert = false;
 	bool rumble = true;        // XInput pads
 	int rumble_strength = 100;
+	FfbMode mode = FfbMode::Modern;   // vanilla: only the force the game computes; modern: plus effects from the game's car state
+	// modern effect strengths, percent of their default (0 = off)
+	int fx_master = 100, fx_surface = 100, fx_kerb = 70, fx_bump = 100, fx_collision = 100, fx_spin = 100;
+	int fx_landing = 100, fx_engine = 40, fx_skid = 100, fx_air = 100, fx_understeer = 100;
 };
 
 struct OutputSettings
@@ -124,6 +129,7 @@ const char *to_string(WindowMode m);
 const char *to_string(AspectMode a);
 const char *to_string(HudPlacement h);
 const char *to_string(ShadowMode s);
+const char *to_string(FfbMode m);
 // extra 3D view per side (arcade pixels) for the chosen aspect ratio; 0 for 4:3 / stretch or with the hack off
 int wide_margin_for(const VideoSettings &v);
 const char *to_string(OutputMode o);

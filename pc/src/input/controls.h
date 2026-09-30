@@ -51,11 +51,12 @@ public:
 	// ---- force feedback / rumble ------------------------------------------------------------------
 	// start (or restart) the motor on the right device; returns a status text for the UI
 	std::string ffb_start(HWND game_window);
-	void ffb_update(uint8_t motor_byte);                      // call every frame with the wheel latch
+	void ffb_update(uint8_t motor_byte, const struct Telemetry *telemetry = nullptr);   // call every emulated frame with the wheel latch
 	void ffb_stop();
 	bool ffb_detect_direction(HWND owner, bool &invert_out, std::string &msg);   // wheel must be free to move
 	const std::string &ffb_status() const { return m_ffb_status; }
 	int ffb_target_device() const;
+	~Controls();
 
 private:
 	bool button_bound(const std::string &binding) const;
@@ -79,6 +80,11 @@ private:
 	// capture
 	std::vector<DeviceState> m_rest;
 	std::vector<uint8_t> m_rest_valid;
+
+	void fx_thread_start();
+	void fx_thread_stop();
+	struct FxState;
+	FxState *m_fx = nullptr;
 
 	std::string m_ffb_status = "off";
 	HWND m_game_window = nullptr;

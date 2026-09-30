@@ -15,10 +15,10 @@ target_include_directories(cpu_c3x PUBLIC src)
 
 add_library(miniz STATIC third_party/miniz/miniz.c)
 target_include_directories(miniz PUBLIC third_party/miniz)
-add_library(machine STATIC src/machine/midvunit.cpp src/machine/cmos.cpp src/machine/rom_patches.cpp src/audio/dcs.cpp)
+add_library(machine STATIC src/machine/midvunit.cpp src/machine/cmos.cpp src/machine/rom_patches.cpp src/machine/telemetry.cpp src/audio/dcs.cpp)
 target_include_directories(machine PUBLIC src)
 target_link_libraries(machine PUBLIC cpu_c3x cpu_adsp miniz)
-add_executable(cruisn_headless src/main_headless.cpp)
+add_executable(cruisn_headless src/main_headless.cpp src/input/ffb_modern.cpp)
 target_link_libraries(cruisn_headless PRIVATE machine)
 
 add_library(volk STATIC third_party/volk/volk.c)
@@ -36,7 +36,7 @@ add_executable(cruisn_usa WIN32
   src/platform/audio_wasapi.cpp
   src/video/gl_backend.cpp src/video/vk_backend.cpp
   src/config/settings.cpp
-  src/input/devices.cpp src/input/controls.cpp
+  src/input/devices.cpp src/input/controls.cpp src/input/ffb_modern.cpp
   src/outputs/outputs.cpp
   src/launcher/launcher.cpp)
 target_link_libraries(cruisn_usa PRIVATE machine volk imgui)

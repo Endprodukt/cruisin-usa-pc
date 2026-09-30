@@ -5,6 +5,10 @@
 #include <cmath>
 #include <cstdio>
 #include <sstream>
+#include <atomic>
+#include <mutex>
+#include <thread>
+#include "ffb_modern.h"
 
 namespace {
 
@@ -476,18 +480,90 @@ std::string Controls::ffb_start(HWND game_window)
 	std::string err;
 	if (!m_hub.ffb_begin(dev, axis, m_s.ffb.device_gain, game_window, err)) return m_ffb_status = "failed: " + err;
 	m_ffb_dev = dev;
-	return m_ffb_status = "active on " + m_hub.info(dev).name;
+	if (m_s.ffb.mode == FfbMode::Modern) fx_thread_start();
+	return m_ffb_status = "active on " + m_hub.info(dev).name + (m_s.ffb.mode == FfbMode::Modern ? " (modern effects)" : "");
 }
 
-void Controls::ffb_update(uint8_t motor)
+// ---- modern effects: synthesised at ~250 Hz on their own thread, fed once per emulated frame --------------------
+struct Controls::FxState
+{
+	std::mutex mtx;
+	FfbModern synth;
+	std::thread th;
+	std::atomic<bool> run{false};
+	float invert = 1.0f;
+	float vibration = 0;
+};
+
+void Controls::fx_thread_start()
+{
+	fx_thread_stop();
+	if (!m_fx) m_fx = new FxState();
+	m_fx->run = true;
+	m_fx->invert = m_s.ffb.invert ? -1.0f : 1.0f;
+	m_fx->th = std::thread([this] {
+		LARGE_INTEGER f, t0, t1;
+		QueryPerformanceFrequency(&f);
+		QueryPerformanceCounter(&t0);
+		while (m_fx->run)
+		{
+			QueryPerformanceCounter(&t1);
+			double dt = std::min(0.05, double(t1.QuadPart - t0.QuadPart) / double(f.QuadPart));
+			t0 = t1;
+			float out;
+			{
+				std::lock_guard<std::mutex> lk(m_fx->mtx);
+				out = m_fx->synth.step(dt);
+				m_fx->vibration = m_fx->synth.vibration();
+			}
+			if (m_s.ffb.enabled && m_hub.ffb_active()) m_hub.ffb_set(out * m_fx->invert);
+			Sleep(4);
+		}
+	});
+}
+
+void Controls::fx_thread_stop()
+{
+	if (!m_fx) return;
+	m_fx->run = false;
+	if (m_fx->th.joinable()) m_fx->th.join();
+}
+
+Controls::~Controls()
+{
+	fx_thread_stop();
+	delete m_fx;
+}
+
+void Controls::ffb_update(uint8_t motor, const Telemetry *telemetry)
 {
 	// WHLCTLZ byte: signed force, the game limits it to +/-126
 	float f = float(int8_t(motor)) / 126.0f;
-	f = std::clamp(f * float(m_s.ffb.strength) / 100.0f * (m_s.ffb.invert ? -1.0f : 1.0f), -1.0f, 1.0f);
-	if (m_s.ffb.enabled && m_hub.ffb_active()) m_hub.ffb_set(f);
+	f = std::clamp(f * float(m_s.ffb.strength) / 100.0f, -1.0f, 1.0f);
+	const bool modern = m_s.ffb.mode == FfbMode::Modern && m_fx && m_fx->run;
+	float extra = 0;
+	if (modern)
+	{
+		const FfbSettings &c = m_s.ffb;
+		FfbModernConfig cfg;
+		auto p = [](int v) { return float(v) / 100.0f; };
+		cfg.master = p(c.fx_master); cfg.surface = p(c.fx_surface); cfg.kerb = p(c.fx_kerb); cfg.bump = p(c.fx_bump);
+		cfg.collision = p(c.fx_collision); cfg.spin = p(c.fx_spin); cfg.landing = p(c.fx_landing); cfg.engine = p(c.fx_engine);
+		cfg.skid = p(c.fx_skid); cfg.air = p(c.fx_air); cfg.understeer = p(c.fx_understeer);
+		std::lock_guard<std::mutex> lk(m_fx->mtx);
+		m_fx->invert = c.invert ? -1.0f : 1.0f;
+		m_fx->synth.configure(cfg);
+		m_fx->synth.frame(telemetry ? *telemetry : Telemetry{}, f);
+		extra = m_fx->vibration;
+	}
+	else
+	{
+		f = std::clamp(f * (m_s.ffb.invert ? -1.0f : 1.0f), -1.0f, 1.0f);
+		if (m_s.ffb.enabled && m_hub.ffb_active()) m_hub.ffb_set(f);
+	}
 	if (m_s.ffb.enabled && m_s.ffb.rumble)
 	{
-		float mag = std::fabs(f) * float(m_s.ffb.rumble_strength) / 100.0f;
+		float mag = (std::fabs(f) * (modern ? 0.6f : 1.0f) + extra) * float(m_s.ffb.rumble_strength) / 100.0f;
 		m_hub.rumble_all(std::min(1.0f, mag * 0.7f), std::min(1.0f, mag));
 	}
 	else
@@ -496,6 +572,7 @@ void Controls::ffb_update(uint8_t motor)
 
 void Controls::ffb_stop()
 {
+	fx_thread_stop();
 	m_hub.ffb_end();
 	m_hub.rumble_all(0, 0);
 	m_ffb_dev = -1;
@@ -505,6 +582,7 @@ void Controls::ffb_stop()
 // whether the game's force needs inverting: the game's positive force must push towards 'steer right'.
 bool Controls::ffb_detect_direction(HWND owner, bool &invert_out, std::string &msg)
 {
+	fx_thread_stop();
 	m_hub.ffb_end();
 	int dev = ffb_target_device();
 	if (dev < 0) { msg = "Bind the wheel's steering axis first."; return false; }

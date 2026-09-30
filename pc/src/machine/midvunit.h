@@ -52,6 +52,7 @@ public:
 	bool load_roms(const std::string &zip_path, const std::string &version, std::string &err);
 	void reset();
 	void debug_ram_usage() const;
+	bool read_telemetry(struct Telemetry &t) const;   // player car state for motion / force feedback
 	RomPatchOptions rom_patches;           // applied to the RAM copy at reset
 
 	// emulate one full video frame; returns true if the visible image changed
