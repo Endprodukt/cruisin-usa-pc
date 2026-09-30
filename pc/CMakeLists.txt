@@ -20,3 +20,6 @@ target_include_directories(machine PUBLIC src)
 target_link_libraries(machine PUBLIC cpu_c3x miniz)
 add_executable(cruisn_headless src/main_headless.cpp)
 target_link_libraries(cruisn_headless PRIVATE machine)
+
+add_executable(cruisn_usa WIN32 src/main_win.cpp)
+target_link_libraries(cruisn_usa PRIVATE machine)
