@@ -164,7 +164,7 @@ public:
 	void set_options(const VideoOptions &o) override
 	{
 		std::string err;
-		bool rescale = std::clamp(o.scale, 1, 8) != m_opt.scale;
+		bool rescale = std::clamp(o.scale, 1, 8) != m_opt.scale || o.wide_margin != m_opt.wide_margin;
 		bool revsync = o.vsync != m_opt.vsync;
 		bool resamp = (o.smooth_output || o.aa > 0) != (m_opt.smooth_output || m_opt.aa > 0);
 		m_opt = o;
@@ -191,7 +191,10 @@ public:
 	{
 		copy_rows_to_image(m_tex_ovl, layer + size_t(first) * 512, 512 * 2, 512, first, last - first + 1);
 		begin_cb();
-		draw_rect_pass(page, m_pipe_ovl, m_set_ovl, Params{{-1, -1, 1, 1}, {0, 0, 1, 1}, {0, 0, 0, 0}});
+		{
+			float W = page_w_px(), m = float(m_opt.wide_margin);
+			draw_rect_pass(page, m_pipe_ovl, m_set_ovl, Params{{-1 + 2 * m / W, -1, -1 + 2 * (m + 512) / W, 1}, {0, 0, 1, 1}, {0, 0, 0, 0}});
+		}
 	}
 
 	void draw(int page, const GpuQuad *q, int count) override
@@ -206,7 +209,7 @@ public:
 			int n = int(std::min<size_t>(size_t(count - done), room));
 			std::memcpy(m_instbuf.map + m_instbuf_off, q + done, size_t(n) * stride);
 
-			Params p{{m_opt.filter_textures ? 1.0f : 0.0f, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
+			Params p{{m_opt.filter_textures ? 1.0f : 0.0f, page_w_px(), 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
 			uint32_t dyn = write_params(p);
 			begin_page_pass(page);
 			vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_quad);
@@ -224,7 +227,7 @@ public:
 	{
 		if (count <= 0) return;
 		begin_cb();
-		const int sz = 512 * m_opt.scale;
+		const int sz = page_h(), pw = page_w();
 		const float sc = float(m_opt.scale);
 		const float radius = std::max(0.5f, m_opt.shadow_soft * sc);
 		float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
@@ -234,7 +237,7 @@ public:
 				minx = std::min(minx, q[i].p[k * 2]); maxx = std::max(maxx, q[i].p[k * 2]);
 				miny = std::min(miny, q[i].p[k * 2 + 1]); maxy = std::max(maxy, q[i].p[k * 2 + 1]);
 			}
-		int x0 = std::clamp(int(std::floor(minx * sc - radius - 2)), 0, sz), x1 = std::clamp(int(std::ceil(maxx * sc + radius + 2)), 0, sz);
+		int x0 = std::clamp(int(std::floor(minx * sc - radius - 2)), 0, pw), x1 = std::clamp(int(std::ceil(maxx * sc + radius + 2)), 0, pw);
 		int y0 = std::clamp(int(std::floor(miny * sc - radius - 2)), 0, sz), y1 = std::clamp(int(std::ceil(maxy * sc + radius + 2)), 0, sz);
 		if (x1 <= x0 || y1 <= y0) return;
 
@@ -247,17 +250,17 @@ public:
 			int n = int(std::min<size_t>(size_t(count - done), room));
 			std::memcpy(m_instbuf.map + m_instbuf_off, q + done, size_t(n) * stride);
 
-			Params pm{{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
+			Params pm{{0, page_w_px(), 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
 			uint32_t dyn = write_params(pm);
 			{
 				VkClearValue clear{};
 				VkRenderPassBeginInfo rb{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
 				rb.renderPass = m_rp_mask; rb.framebuffer = m_mask_fb;
-				rb.renderArea = {{0, 0}, {uint32_t(sz), uint32_t(sz)}};
+				rb.renderArea = {{0, 0}, {uint32_t(pw), uint32_t(sz)}};
 				rb.clearValueCount = 1; rb.pClearValues = &clear;
 				vkCmdBeginRenderPass(m_cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
-				VkViewport vp{0, 0, float(sz), float(sz), 0, 1};
-				VkRect2D scr{{0, 0}, {uint32_t(sz), uint32_t(sz)}};
+				VkViewport vp{0, 0, float(pw), float(sz), 0, 1};
+				VkRect2D scr{{0, 0}, {uint32_t(pw), uint32_t(sz)}};
 				vkCmdSetViewport(m_cb, 0, 1, &vp);
 				vkCmdSetScissor(m_cb, 0, 1, &scr);
 				vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_smask);
@@ -271,7 +274,7 @@ public:
 			done += n;
 
 			// 2. the blurred mask darkens the page
-			Params pc{{-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, radius, 1.0f / float(sz), 1.0f / float(sz)}};
+			Params pc{{-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, radius, 1.0f / float(pw), 1.0f / float(sz)}};
 			uint32_t dyn2 = write_params(pc);
 			begin_page_pass(page);
 			VkRect2D scr{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
@@ -286,7 +289,7 @@ public:
 	void latch(int page) override
 	{
 		begin_cb();
-		int sz = 512 * m_opt.scale;
+		int sz = page_h(), pw = page_w();
 		Img &src = m_page[page & 1];
 		barrier(src.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -295,7 +298,7 @@ public:
 		        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
 		VkImageCopy c{};
 		c.srcSubresource = c.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-		c.extent = {uint32_t(sz), uint32_t(sz), 1};
+		c.extent = {uint32_t(pw), uint32_t(sz), 1};
 		vkCmdCopyImage(m_cb, src.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_disp.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
 		barrier(m_disp.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
@@ -332,7 +335,7 @@ public:
 		}
 		float x0 = (dw - tw) * 0.5f, y0 = (dh - th) * 0.5f;
 		Params p{{x0 / dw * 2 - 1, y0 / dh * 2 - 1, (x0 + tw) / dw * 2 - 1, (y0 + th) / dh * 2 - 1},
-		         {0, 0, float(vis_w) / 512.0f, float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0}};
+		         {0, 0, float(vis_w + 2 * m_opt.wide_margin) / page_w_px(), float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0}};
 		uint32_t dyn = write_params(p);
 
 		VkClearValue clear{};
@@ -374,7 +377,7 @@ public:
 	bool read_display(std::vector<uint32_t> &out, int &w, int &h) override
 	{
 		Img &rp = m_disp;
-		w = h = 512 * m_opt.scale;
+		w = page_w(); h = page_h();
 		size_t bytes = size_t(w) * h * 4;
 		Buf rb;
 		std::string err;
@@ -396,6 +399,9 @@ public:
 	}
 
 private:
+	int page_w() const { return (512 + 2 * m_opt.wide_margin) * m_opt.scale; }
+	int page_h() const { return 512 * m_opt.scale; }
+	float page_w_px() const { return float(512 + 2 * m_opt.wide_margin); }
 	static constexpr size_t INST_BYTES = 16u << 20, STAGE_BYTES = 32u << 20, UBO_BYTES = 1u << 20;
 
 	// ---- memory helpers ---------------------------------------------------------------------------
@@ -527,14 +533,14 @@ private:
 
 	void begin_page_pass(int page)
 	{
-		int sz = 512 * m_opt.scale;
+		int sz = page_h(), pw = page_w();
 		VkRenderPassBeginInfo rb{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
 		rb.renderPass = m_rp_page;
 		rb.framebuffer = m_page_fb[page & 1];
-		rb.renderArea = {{0, 0}, {uint32_t(sz), uint32_t(sz)}};
+		rb.renderArea = {{0, 0}, {uint32_t(pw), uint32_t(sz)}};
 		vkCmdBeginRenderPass(m_cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
-		VkViewport vp{0, 0, float(sz), float(sz), 0, 1};
-		VkRect2D sc{{0, 0}, {uint32_t(sz), uint32_t(sz)}};
+		VkViewport vp{0, 0, float(pw), float(sz), 0, 1};
+		VkRect2D sc{{0, 0}, {uint32_t(pw), uint32_t(sz)}};
 		vkCmdSetViewport(m_cb, 0, 1, &vp);
 		vkCmdSetScissor(m_cb, 0, 1, &sc);
 	}
@@ -773,26 +779,26 @@ private:
 
 	bool create_pages(std::string &err)
 	{
-		int sz = 512 * m_opt.scale;
+		int sz = page_h(), pw = page_w();
 		for (int i = 0; i < 2; i++)
 		{
-			if (!make_image(m_page[i], sz, sz, VK_FORMAT_R8G8B8A8_UNORM,
+			if (!make_image(m_page[i], pw, sz, VK_FORMAT_R8G8B8A8_UNORM,
 			                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
 			                    VK_IMAGE_USAGE_TRANSFER_DST_BIT, err))
 				return false;
 			VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
 			fi.renderPass = m_rp_page; fi.attachmentCount = 1; fi.pAttachments = &m_page[i].view;
-			fi.width = fi.height = uint32_t(sz); fi.layers = 1;
+			fi.width = uint32_t(pw); fi.height = uint32_t(sz); fi.layers = 1;
 			VKCHECK(vkCreateFramebuffer(m_dev, &fi, nullptr, &m_page_fb[i]), "framebuffer");
 		}
-		if (!make_image(m_disp, sz, sz, VK_FORMAT_R8G8B8A8_UNORM,
+		if (!make_image(m_disp, pw, sz, VK_FORMAT_R8G8B8A8_UNORM,
 		                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, err))
 			return false;
-		if (!make_image(m_mask, sz, sz, VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, err)) return false;
+		if (!make_image(m_mask, pw, sz, VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, err)) return false;
 		{
 			VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
 			fi.renderPass = m_rp_mask; fi.attachmentCount = 1; fi.pAttachments = &m_mask.view;
-			fi.width = fi.height = uint32_t(sz); fi.layers = 1;
+			fi.width = uint32_t(pw); fi.height = uint32_t(sz); fi.layers = 1;
 			VKCHECK(vkCreateFramebuffer(m_dev, &fi, nullptr, &m_mask_fb), "framebuffer (mask)");
 		}
 		begin_cb();

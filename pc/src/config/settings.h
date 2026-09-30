@@ -31,7 +31,7 @@ struct VideoSettings
 	bool smooth_output = true;                // linear scaling of the final image
 
 	// reserved for the widescreen / rendering stage (stored now, applied when implemented)
-	bool widescreen_hack = false;
+	bool widescreen_hack = true;              // with a 16:9 / 21:9 aspect: show more of the world at the sides instead of stretching
 	HudPlacement hud = HudPlacement::Edges;
 	int draw_distance = 100;                  // percent of the original
 	ShadowMode shadows = ShadowMode::Modern;
@@ -124,6 +124,8 @@ const char *to_string(WindowMode m);
 const char *to_string(AspectMode a);
 const char *to_string(HudPlacement h);
 const char *to_string(ShadowMode s);
+// extra 3D view per side (arcade pixels) for the chosen aspect ratio; 0 for 4:3 / stretch or with the hack off
+int wide_margin_for(const VideoSettings &v);
 const char *to_string(OutputMode o);
 const char *to_string(ShifterMode m);
 

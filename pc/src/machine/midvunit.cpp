@@ -1159,6 +1159,21 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 			if (rmask & (1 << eff)) g.p[vn * 2] += 0.001f;
 			if (bmask & (1 << eff)) g.p[vn * 2 + 1] += 0.001f;
 		}
+	if (m_wide)
+	{
+		// the page is wider than the arcade's 512 px: game x 0 sits m_wide pixels in. A flat full-screen fill (the per-frame clear)
+		// is stretched over the whole page instead so that the margins are cleared too.
+		float minx = std::min(std::min(vx[0], vx[1]), std::min(vx[2], vx[3])), maxx = std::max(std::max(vx[0], vx[1]), std::max(vx[2], vx[3]));
+		float miny = std::min(std::min(vy[0], vy[1]), std::min(vy[2], vy[3])), maxy = std::max(std::max(vy[0], vy[1]), std::max(vy[2], vy[3]));
+		bool flat = (d[0] & 0x300) != 0x100 || (d[0] & 0xc00) == 0x400;
+		bool full = flat && minx <= 0 && maxx >= 511 && miny <= 0 && maxy >= 399;
+		for (int i = 0; i < 4; i++)
+		{
+			float &x = g.p[i * 2];
+			if (full) x = vx[i] <= 0 ? 0.5f : x + float(2 * m_wide);
+			else x += float(m_wide);
+		}
+	}
 	g.edge = 0;
 	g.flags = d[0];
 	g.pixdata = d[1];
@@ -1174,4 +1189,15 @@ void MidVUnit::present_gpu()
 	if (!m_gpu)
 		return;
 	m_gpu->present(m_vis_w, m_vis_h);
+}
+
+void MidVUnit::debug_ram_usage() const
+{
+	for (int b = 0; b < 2; b++)
+	{
+		const std::vector<uint32_t> &r = b ? m_ram1 : m_ram0;
+		size_t hi = 0, nz = 0;
+		for (size_t i = 0; i < r.size(); i++) if (r[i]) { hi = i; nz++; }
+		std::fprintf(stderr, "RAM%d: highest nonzero word 0x%zX, %zu nonzero of %zu\n", b, hi, nz, r.size());
+	}
 }

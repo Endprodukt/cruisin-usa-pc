@@ -79,12 +79,57 @@ void draw_distance(std::vector<uint32_t> &ram, int pct, int &applied, std::strin
 	}
 }
 
+// 16-bit short float immediate of the C3x (4 bit exponent, sign, 11 bit mantissa), positive values only
+uint32_t c3x_short(double v)
+{
+	if (v <= 0.0) return 0x8000;
+	int e = int(std::floor(std::log2(v)));
+	e = std::clamp(e, -7, 7);
+	long m = std::lround((v / std::ldexp(1.0, e) - 1.0) * 2048.0);
+	if (m >= 2048) { m = 0; e++; }
+	if (m < 0) m = 0;
+	return (uint32_t(e & 0xf) << 12) | uint32_t(m);
+}
+
+// widescreen: let the 3D engine keep objects and polygons that lie beyond the arcade's 512 px wide picture
+void widescreen(std::vector<uint32_t> &ram, int margin, int &applied, std::string &log)
+{
+	if (margin <= 0) return;
+	const size_t scan = 0x20000;
+
+	// 1. object trivial rejection (DIRQ): "CMPF/ADDF SCRNHX" tests against the screen edges with the projected radius in R4.
+	//    The Y test's delay slot holds a NOP; enlarging R4 there by `margin` pixels widens the X tests (and, harmlessly, the lower Y test).
+	//      ADDF ($0054),R2 / BLTD x / NOP / SUBF R4,R3 / CMPF ($0054),R3
+	for (size_t i = 0; i + 5 <= std::min(scan, ram.size()); i++)
+		if (ram[i] == 0x01A20054 && (ram[i + 1] & 0xffff0000) == 0x6A270000 && ram[i + 2] == 0x0C800000 && ram[i + 3] == 0x17830004 && ram[i + 4] == 0x04230054)
+		{
+			ram[i + 2] = 0x01E40000u | c3x_short(double(margin));   // ADDF margin,R4
+			applied++;
+			log += "  object rejection widened by " + std::to_string(margin) + " px\n";
+			break;
+		}
+
+	// 2. polygon clip (CLIP): "all X > 511" tests
+	const uint32_t seq[5] = {0x086101FF, 0x274201C0, 0x27430140, 0x02820003, 0x086301FF};   // LDI 511,R1 / SUBI3 / SUBI3 / AND / LDI 511,R3
+	int n = 0;
+	for (size_t i = 0; i + 5 <= std::min(scan, ram.size()); i++)
+	{
+		bool ok = true;
+		for (int k = 0; k < 5 && ok; k++) ok = ram[i + k] == seq[k];
+		if (!ok) continue;
+		ram[i] = 0x08610000u | uint32_t(511 + margin);
+		ram[i + 4] = 0x08630000u | uint32_t(511 + margin);
+		n++;
+	}
+	if (n) { applied += n; log += "  polygon clip right edge moved (" + std::to_string(n) + " sites)\n"; }
+}
+
 } // namespace
 
 int apply_rom_patches(std::vector<uint32_t> &ram, const RomPatchOptions &opt, std::string &log)
 {
 	int applied = 0;
 	draw_distance(ram, opt.draw_distance_pct, applied, log);
-	(void)opt.wide_margin;
+	widescreen(ram, opt.wide_margin, applied, log);
 	return applied;
 }

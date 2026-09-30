@@ -51,6 +51,7 @@ public:
 
 	bool load_roms(const std::string &zip_path, const std::string &version, std::string &err);
 	void reset();
+	void debug_ram_usage() const;
 	RomPatchOptions rom_patches;           // applied to the RAM copy at reset
 
 	// emulate one full video frame; returns true if the visible image changed
@@ -69,6 +70,7 @@ public:
 	// With a backend attached, quads are rendered on the GPU (soft rasterizer disabled).
 	void attach_video_backend(IVideoBackend *gpu);
 	void set_shadow_mode(int m) { m_shadow_mode = m; }
+	void set_wide_margin(int m) { m_wide = m; }
 	void present_gpu();                       // flush pending draws and present the display page
 	int  display_page() const { return m_present_page; }
 
@@ -141,6 +143,7 @@ private:
 	IVideoBackend *m_gpu = nullptr;
 	std::vector<GpuQuad> m_gq;
 	std::vector<GpuQuad> m_gs;             // shadow quads (modern shadow mode), same page as m_gq_page
+	int m_wide = 0;                        // widescreen: extra page pixels on each side (quads are shifted by this)
 	int m_shadow_mode = 0;                 // 0 original, 1 modern, 2 off
 	int m_gq_page = 0;
 	int m_present_page = 0;

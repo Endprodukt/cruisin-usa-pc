@@ -91,6 +91,7 @@ int main(int argc, char **argv)
 		if (getenv("VSTAT") && f % 500 == 0) { fprintf(stderr, "f%d vram r/w %llu/%llu pal %llu tex %llu quads %llu\n", f, (unsigned long long)m.stat_vram_reads, (unsigned long long)m.stat_vram_writes, (unsigned long long)m.stat_pal_writes, (unsigned long long)m.stat_tex_writes, (unsigned long long)m.quads_last_frame); }
 		if (f % 60 == 0) fprintf(stderr, "frame %d pc=%06X quads=%llu vis=%dx%d\n", f, m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
+	if (getenv("RAMUSE")) m.debug_ram_usage();
 	if (const char *tr = getenv("TEXRAW")) { FILE *tf = fopen(tr, "wb"); fwrite(m.texture_ram(), 1, 0x400000, tf); fclose(tf); }
 	if (const char *td = getenv("TEXDUMP"))
 	{   // TEXDUMP=firstpage  -> 8x8 grid of 256x256 pages as grayscale

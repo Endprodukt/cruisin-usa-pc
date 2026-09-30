@@ -28,6 +28,7 @@ layout(location = 2) flat out vec4 f_p23;
 layout(location = 3) flat out vec4 f_t01;
 layout(location = 4) flat out vec4 f_t23;
 layout(location = 5) flat out uvec4 f_misc;
+layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; vec4 pc; } u_par;   // pa.y = page width in arcade pixels
 
 void main()
 {
@@ -38,11 +39,12 @@ void main()
 		lo = min(lo, P[i]);
 		hi = max(hi, P[i]);
 	}
-	lo = clamp(floor(lo), vec2(0.0), vec2(512.0));
-	hi = clamp(ceil(hi), vec2(0.0), vec2(512.0));
+	vec2 pg = vec2(u_par.pa.y, 512.0);
+	lo = clamp(floor(lo), vec2(0.0), pg);
+	hi = clamp(ceil(hi), vec2(0.0), pg);
 	vec2 corner = vec2(float(VID & 1), float(VID >> 1));
 	vec2 pos = mix(lo, hi, corner);
-	gl_Position = vec4(pos / 512.0 * 2.0 - 1.0, 0.0, 1.0);
+	gl_Position = vec4(pos / pg * 2.0 - 1.0, 0.0, 1.0);
 	v_pos = pos;
 	f_p01 = a_p01; f_p23 = a_p23; f_t01 = a_t01; f_t23 = a_t23; f_misc = a_misc;
 }
@@ -112,7 +114,7 @@ void main()
 	// a pixel is covered when its centre lies between the two boundary edges of the scanline and
 	// the texture coordinate is interpolated along the edges and then across the scanline.
 	// the page border strip (half an arcade pixel, only visible when upscaled) follows the first/last pixel row/column
-	vec2 vp = clamp(v_pos, vec2(0.5), vec2(511.5));
+	vec2 vp = clamp(v_pos, vec2(0.5), vec2(u_par.pa.y - 0.5, 511.5));
 	float xl, xr; vec2 tl, tr;
 	if (!scan(P, T, vp.y, false, xl, xr, tl, tr)) discard;
 	if (vp.x < xl || vp.x >= xr) discard;

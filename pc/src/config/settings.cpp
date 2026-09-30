@@ -1,3 +1,4 @@
+#include <cmath>
 #include "settings.h"
 
 #include <algorithm>
@@ -124,6 +125,15 @@ const char *to_string(WindowMode m) { return kWindow[int(m)]; }
 const char *to_string(AspectMode a) { return kAspect[int(a)]; }
 const char *to_string(HudPlacement h) { return kHud[int(h)]; }
 const char *to_string(ShadowMode s) { return kShadow[int(s)]; }
+
+int wide_margin_for(const VideoSettings &v)
+{
+	if (!v.widescreen_hack) return 0;
+	// the 512 x 400 picture is 4:3 on the arcade monitor (pixels 1.04 wider than tall): full width for aspect A is 384 * A
+	double a = v.aspect == AspectMode::Wide169 ? 16.0 / 9.0 : v.aspect == AspectMode::Wide219 ? 21.0 / 9.0 : 0.0;
+	if (a <= 0.0) return 0;
+	return int(std::ceil((384.0 * a - 512.0) / 2.0));
+}
 const char *to_string(OutputMode o) { return kOutput[int(o)]; }
 const char *to_string(ShifterMode m) { return kShifter[int(m)]; }
 

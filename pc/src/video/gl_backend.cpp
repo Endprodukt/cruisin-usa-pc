@@ -157,7 +157,7 @@ public:
 
 	void set_options(const VideoOptions &o) override
 	{
-		bool rescale = o.scale != m_opt.scale;
+		bool rescale = o.scale != m_opt.scale || o.wide_margin != m_opt.wide_margin;
 		m_opt = o;
 		m_opt.scale = std::clamp(m_opt.scale, 1, 8);
 		if (m_swap_interval) m_swap_interval(m_opt.vsync ? 1 : 0);
@@ -194,7 +194,10 @@ public:
 		glActiveTexture(GL_TEXTURE0 + 1);
 		glBindTexture(GL_TEXTURE_2D, m_tex_pal);
 		glActiveTexture(GL_TEXTURE0);
-		set_params({-1, -1, 1, 1}, {0, 0, 1, 1});
+		{
+			float W = page_w_px(), m = float(m_opt.wide_margin);
+			set_params({-1 + 2 * m / W, -1, -1 + 2 * (m + 512) / W, 1}, {0, 0, 1, 1});
+		}
 		glBindVertexArray(m_vao_empty);
 		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
 	}
@@ -208,7 +211,7 @@ public:
 		glBindTexture(GL_TEXTURE_2D, m_tex_ram);
 		glActiveTexture(GL_TEXTURE0 + 1);
 		glBindTexture(GL_TEXTURE_2D, m_tex_pal);
-		set_params({m_opt.filter_textures ? 1.0f : 0.0f, 0, 0, 0}, {0, 0, 0, 0});
+		set_params({m_opt.filter_textures ? 1.0f : 0.0f, page_w_px(), 0, 0}, {0, 0, 0, 0});
 		glBindVertexArray(m_vao_quad);
 		glBindBuffer(GL_ARRAY_BUFFER, m_vbo_inst);
 		for (int done = 0; done < count;)
@@ -223,7 +226,7 @@ public:
 	void draw_shadows(int page, const GpuQuad *q, int count) override
 	{
 		if (count <= 0) return;
-		const int sz = 512 * m_opt.scale;
+		const int sz = page_h(), pw = page_w();
 		const float sc = float(m_opt.scale);
 		const float radius = std::max(0.5f, m_opt.shadow_soft * sc);
 		// bounding box of the batch in page pixels, grown by the blur radius
@@ -234,13 +237,13 @@ public:
 				minx = std::min(minx, q[i].p[k * 2]); maxx = std::max(maxx, q[i].p[k * 2]);
 				miny = std::min(miny, q[i].p[k * 2 + 1]); maxy = std::max(maxy, q[i].p[k * 2 + 1]);
 			}
-		int x0 = std::clamp(int(std::floor(minx * sc - radius - 2)), 0, sz), x1 = std::clamp(int(std::ceil(maxx * sc + radius + 2)), 0, sz);
+		int x0 = std::clamp(int(std::floor(minx * sc - radius - 2)), 0, pw), x1 = std::clamp(int(std::ceil(maxx * sc + radius + 2)), 0, pw);
 		int y0 = std::clamp(int(std::floor(miny * sc - radius - 2)), 0, sz), y1 = std::clamp(int(std::ceil(maxy * sc + radius + 2)), 0, sz);
 		if (x1 <= x0 || y1 <= y0) return;
 
 		// 1. hard coverage of the shadow quads into the mask
 		glBindFramebuffer(GL_FRAMEBUFFER, m_mask_fbo);
-		glViewport(0, 0, sz, sz);
+		glViewport(0, 0, pw, sz);
 		glEnable(GL_SCISSOR_TEST);
 		glScissor(x0, y0, x1 - x0, y1 - y0);
 		glClearColor(0, 0, 0, 0);
@@ -248,7 +251,7 @@ public:
 		glUseProgram(m_prog_smask);
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, m_tex_ram);
-		set_params({0, 0, 0, 0}, {0, 0, 0, 0});
+		set_params({0, page_w_px(), 0, 0}, {0, 0, 0, 0});
 		glBindVertexArray(m_vao_quad);
 		glBindBuffer(GL_ARRAY_BUFFER, m_vbo_inst);
 		for (int done = 0; done < count;)
@@ -267,7 +270,7 @@ public:
 		glUseProgram(m_prog_scomp);
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, m_mask_tex);
-		set_params({-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, radius, 1.0f / float(sz), 1.0f / float(sz)});
+		set_params({-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, radius, 1.0f / float(pw), 1.0f / float(sz)});
 		glBindVertexArray(m_vao_empty);
 		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
 		glDisable(GL_BLEND);
@@ -276,8 +279,7 @@ public:
 
 	void latch(int page) override
 	{
-		int sz = 512 * m_opt.scale;
-		glCopyImageSubData(m_page_tex[page & 1], GL_TEXTURE_2D, 0, 0, 0, 0, m_disp_tex, GL_TEXTURE_2D, 0, 0, 0, 0, sz, sz, 1);
+		glCopyImageSubData(m_page_tex[page & 1], GL_TEXTURE_2D, 0, 0, 0, 0, m_disp_tex, GL_TEXTURE_2D, 0, 0, 0, 0, page_w(), page_h(), 1);
 	}
 
 	void present(int vis_w, int vis_h) override
@@ -306,7 +308,7 @@ public:
 		Params p{};
 		float nx0 = x0 / dw * 2 - 1, nx1 = (x0 + tw) / dw * 2 - 1;
 		float ny_top = 1 - y0 / dh * 2, ny_bot = 1 - (y0 + th) / dh * 2;
-		set_params({nx0, ny_top, nx1, ny_bot}, {0, 0, float(vis_w) / 512.0f, float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0});
+		set_params({nx0, ny_top, nx1, ny_bot}, {0, 0, float(vis_w + 2 * m_opt.wide_margin) / page_w_px(), float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0});
 		(void)p;
 
 		glUseProgram(m_prog_present);
@@ -319,7 +321,7 @@ public:
 
 	bool read_display(std::vector<uint32_t> &out, int &w, int &h) override
 	{
-		w = h = 512 * m_opt.scale;
+		w = page_w(); h = page_h();
 		out.resize(size_t(w) * h);
 		glBindTexture(GL_TEXTURE_2D, m_disp_tex);
 		glPixelStorei(GL_PACK_ALIGNMENT, 4);
@@ -432,24 +434,24 @@ private:
 			if (i == 0 && m_disp_tex) { glDeleteTextures(1, &m_disp_tex); m_disp_tex = 0; }
 			if (m_fbo[i]) { /* FBOs are re-attached below; reuse the object */ }
 		}
-		int sz = 512 * m_opt.scale;
+		int sz = page_h(), pw = page_w();
 		for (int i = 0; i < 2; i++)
 		{
-			new_tex(m_page_tex[i], GL_RGBA8, sz, sz);
+			new_tex(m_page_tex[i], GL_RGBA8, pw, sz);
 			if (!m_fbo[i]) glGenFramebuffers(1, &m_fbo[i]);
 			glBindFramebuffer(GL_FRAMEBUFFER, m_fbo[i]);
 			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_page_tex[i], 0);
-			glViewport(0, 0, sz, sz);
+			glViewport(0, 0, pw, sz);
 			glClearColor(0, 0, 0, 1);
 			glClear(GL_COLOR_BUFFER_BIT);
 		}
-		new_tex(m_disp_tex, GL_RGBA8, sz, sz);
+		new_tex(m_disp_tex, GL_RGBA8, pw, sz);
 		if (m_mask_tex) { glDeleteTextures(1, &m_mask_tex); m_mask_tex = 0; }
-		new_tex(m_mask_tex, GL_R8, sz, sz);
+		new_tex(m_mask_tex, GL_R8, pw, sz);
 		if (!m_mask_fbo) glGenFramebuffers(1, &m_mask_fbo);
 		glBindFramebuffer(GL_FRAMEBUFFER, m_mask_fbo);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_mask_tex, 0);
-		glViewport(0, 0, sz, sz);
+		glViewport(0, 0, pw, sz);
 		glClearColor(0, 0, 0, 0);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glBindTexture(GL_TEXTURE_2D, m_mask_tex);
@@ -473,9 +475,12 @@ private:
 	void bind_page(int page)
 	{
 		glBindFramebuffer(GL_FRAMEBUFFER, m_fbo[page & 1]);
-		int sz = 512 * m_opt.scale;
-		glViewport(0, 0, sz, sz);
+		glViewport(0, 0, page_w(), page_h());
 	}
+
+	int page_w() const { return (512 + 2 * m_opt.wide_margin) * m_opt.scale; }
+	int page_h() const { return 512 * m_opt.scale; }
+	float page_w_px() const { return float(512 + 2 * m_opt.wide_margin); }
 
 	struct V4 { float x, y, z, w; };
 	void set_params(V4 a, V4 b, V4 c = {0, 0, 0, 0})

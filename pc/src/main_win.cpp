@@ -149,6 +149,7 @@ VideoOptions make_video_options(const VideoSettings &v)
 	o.filter_textures = v.texture_filter;
 	o.smooth_output = v.smooth_output;
 	o.aa = v.aa;
+	o.wide_margin = wide_margin_for(v);
 	o.integer_scale = v.integer_scale;
 	o.keep_aspect = v.aspect != AspectMode::Stretch;
 	o.shadow_strength = float(v.shadow_strength) / 100.0f;
@@ -209,6 +210,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		S.video.shadows = v == "off" ? ShadowMode::Off : v == "original" ? ShadowMode::Original : ShadowMode::Modern;
 	if (std::string v = arg_value(a, "--draw-distance"); !v.empty()) S.video.draw_distance = std::clamp(std::atoi(v.c_str()), 10, 400);
 	if (std::string v = arg_value(a, "--aa"); !v.empty()) S.video.aa = std::clamp(std::atoi(v.c_str()), 0, 3);
+	if (std::string v = arg_value(a, "--aspect"); !v.empty()) S.video.aspect = v == "16:9" ? AspectMode::Wide169 : v == "21:9" ? AspectMode::Wide219 : AspectMode::Native43;
 	if (std::string v = arg_value(a, "--scale"); !v.empty()) S.video.internal_scale = std::clamp(std::atoi(v.c_str()), 1, 8);
 	if (std::string v = arg_value(a, "--vsync"); !v.empty()) S.video.vsync = v != "0";
 	if (std::string v = arg_value(a, "--filter"); !v.empty()) S.video.texture_filter = v != "0";
@@ -255,6 +257,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		return 1;
 	}
 	m.rom_patches.draw_distance_pct = S.video.draw_distance;
+	m.rom_patches.wide_margin = S.video.renderer == Renderer::Cpu ? 0 : wide_margin_for(S.video);
+	m.set_wide_margin(m.rom_patches.wide_margin);
 	m.reset();
 	if (!m.load_nvram(S.nvram))
 		m.load_default_nvram();        // embedded, pre-calibrated CMOS: no calibration screen, ever
@@ -429,7 +433,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		{
 			std::vector<uint32_t> px; int pw = 0, ph = 0;
 			bool ok = video ? video->read_display(px, pw, ph) : false;
-			int sc = video ? S.video.internal_scale : 1, w = m.screen_w() * sc, h = m.screen_h() * sc;
+			int sc = video ? S.video.internal_scale : 1, w = (m.screen_w() + 2 * (video ? vopt.wide_margin : 0)) * sc, h = m.screen_h() * sc;
 			if (!video) { pw = MidVUnit::FRAME_STRIDE; px.assign(m.frame_rgba(), m.frame_rgba() + size_t(MidVUnit::FRAME_STRIDE) * 512); ok = true; }
 			if (ok)
 			{

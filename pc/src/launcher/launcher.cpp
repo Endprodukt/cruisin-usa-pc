@@ -266,14 +266,19 @@ void page_video(Launcher &L)
 		     "active further out (slower on weak hardware). Takes effect at the next start of the game.");
 	}
 
-	ImGui::SeparatorText("Rendering update (prepared, not active yet)");
+	ImGui::SeparatorText("Widescreen");
+	ImGui::BeginDisabled(!gpu);
+	edited(L, ImGui::Checkbox("Real widescreen (show more of the world at the sides)", &v.widescreen_hack));
+	ImGui::EndDisabled();
+	help("With the aspect ratio set to 16:9 or 21:9 the 3D view is widened instead of stretched: the game's culling is extended and the "
+	     "image gets extra room left and right (about +86 px at 16:9, 192 px at 21:9 on the arcade's 512). The HUD stays in the 4:3 centre. "
+	     "Takes effect at the next start of the game. Needs the OpenGL or Vulkan renderer.");
 	ImGui::BeginDisabled(true);
-	edited(L, ImGui::Checkbox("Widescreen hack (wider field of view)", &v.widescreen_hack));
 	static const char *const huds[] = {"Centre (4:3)", "Edges", "25% out", "50% out", "75% out"};
 	int h = int(v.hud);
 	combo(L, "HUD placement", h, huds);
 	ImGui::EndDisabled();
-	ImGui::TextDisabled("These need changes to the game's projection and culling code.");
+	ImGui::TextDisabled("HUD placement follows in a later update.");
 }
 
 void page_audio(Launcher &L)

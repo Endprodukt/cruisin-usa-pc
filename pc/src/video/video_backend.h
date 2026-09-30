@@ -32,6 +32,7 @@ struct VideoOptions
 	int  scale = 2;              // internal resolution multiplier, 1..8
 	bool vsync = true;
 	bool filter_textures = false;   // bilinear texture filtering (off = authentic point sampling)
+	int wide_margin = 0;            // extra arcade pixels on each side of the 512 px wide page (widescreen)
 	int aa = 0;                     // post anti-aliasing on the scaled output: 0 off, 1..3 FXAA light/normal/strong
 	bool smooth_output = true;      // linear filtering when scaling the final image to the window
 	bool integer_scale = false;
