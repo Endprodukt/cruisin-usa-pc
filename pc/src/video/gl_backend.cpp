@@ -73,7 +73,8 @@ using GLchar_ = char;
 	X(void, glFramebufferTexture2D, (GLenum, GLenum, GLenum, GLuint, GLint))                            \
 	X(GLenum, glCheckFramebufferStatus, (GLenum))                                                       \
 	X(void, glActiveTexture, (GLenum))                                                                  \
-	X(void, glTexStorage2D, (GLenum, GLsizei, GLenum, GLsizei, GLsizei))
+	X(void, glTexStorage2D, (GLenum, GLsizei, GLenum, GLsizei, GLsizei))                                \
+	X(void, glCopyImageSubData, (GLuint, GLenum, GLint, GLint, GLint, GLint, GLuint, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei))
 
 #define X(ret, name, args) using PFN_##name = ret(APIENTRY *) args;
 GL_FUNCS(X)
@@ -215,7 +216,13 @@ public:
 		}
 	}
 
-	void present(int page, int vis_w, int vis_h) override
+	void latch(int page) override
+	{
+		int sz = 512 * m_opt.scale;
+		glCopyImageSubData(m_page_tex[page & 1], GL_TEXTURE_2D, 0, 0, 0, 0, m_disp_tex, GL_TEXTURE_2D, 0, 0, 0, 0, sz, sz, 1);
+	}
+
+	void present(int vis_w, int vis_h) override
 	{
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		glViewport(0, 0, m_win_w, m_win_h);
@@ -246,17 +253,17 @@ public:
 
 		glUseProgram(m_prog_present);
 		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, m_page_tex[page & 1]);
+		glBindTexture(GL_TEXTURE_2D, m_disp_tex);
 		glBindVertexArray(m_vao_empty);
 		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
 		SwapBuffers(m_dc);
 	}
 
-	bool read_page(int page, std::vector<uint32_t> &out, int &w, int &h) override
+	bool read_display(std::vector<uint32_t> &out, int &w, int &h) override
 	{
 		w = h = 512 * m_opt.scale;
 		out.resize(size_t(w) * h);
-		glBindTexture(GL_TEXTURE_2D, m_page_tex[page & 1]);
+		glBindTexture(GL_TEXTURE_2D, m_disp_tex);
 		glPixelStorei(GL_PACK_ALIGNMENT, 4);
 		glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, out.data());
 		return true;
@@ -362,6 +369,7 @@ private:
 		for (int i = 0; i < 2; i++)
 		{
 			if (m_page_tex[i]) { glDeleteTextures(1, &m_page_tex[i]); m_page_tex[i] = 0; }
+			if (i == 0 && m_disp_tex) { glDeleteTextures(1, &m_disp_tex); m_disp_tex = 0; }
 			if (m_fbo[i]) { /* FBOs are re-attached below; reuse the object */ }
 		}
 		int sz = 512 * m_opt.scale;
@@ -375,6 +383,7 @@ private:
 			glClearColor(0, 0, 0, 1);
 			glClear(GL_COLOR_BUFFER_BIT);
 		}
+		new_tex(m_disp_tex, GL_RGBA8, sz, sz);
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		apply_page_filter();
 	}
@@ -382,9 +391,9 @@ private:
 	void apply_page_filter()
 	{
 		GLint f = m_opt.smooth_output ? GL_LINEAR : GL_NEAREST;
-		for (int i = 0; i < 2; i++)
+		for (int i = 0; i < 3; i++)
 		{
-			glBindTexture(GL_TEXTURE_2D, m_page_tex[i]);
+			glBindTexture(GL_TEXTURE_2D, i == 2 ? m_disp_tex : m_page_tex[i]);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
 		}
@@ -416,7 +425,7 @@ private:
 	GLuint m_prog_quad = 0, m_prog_present = 0, m_prog_ovl = 0;
 	GLuint m_vao_empty = 0, m_vao_quad = 0, m_vbo_inst = 0, m_ubo = 0;
 	GLuint m_tex_ram = 0, m_tex_pal = 0, m_tex_ovl = 0;
-	GLuint m_page_tex[2] = {0, 0}, m_fbo[2] = {0, 0};
+	GLuint m_page_tex[2] = {0, 0}, m_fbo[2] = {0, 0}, m_disp_tex = 0;
 };
 
 } // namespace

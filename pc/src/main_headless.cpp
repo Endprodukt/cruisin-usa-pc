@@ -16,6 +16,7 @@ int main(int argc, char **argv)
 	std::string rom = "D:/Mame/roms/crusnusa.zip", shot = "shot.png", ver = "4.5";
 	int frames = 300;
 	std::string wav, makenv;
+	bool autoplay = false; int seq = 0;
 	struct Ev { int at, dur; uint16_t bit; };
 	std::vector<Ev> evs;
 	struct Ax { int at; char which; int val; };
@@ -42,6 +43,8 @@ int main(int argc, char **argv)
 			if (sscanf(a.c_str(), "%c@%d=%d", &c, &at, &v) == 3) axes.push_back({at, c, v});
 		}
 		else if (!strcmp(argv[i], "--make-nv") && i + 1 < argc) makenv = argv[++i];
+		else if (!strcmp(argv[i], "--autoplay")) autoplay = true;
+		else if (!strcmp(argv[i], "--seq") && i + 1 < argc) seq = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
 		else if (!strcmp(argv[i], "--ver") && i + 1 < argc) ver = argv[++i];
 	}
@@ -58,7 +61,30 @@ int main(int argc, char **argv)
 		for (auto &a : axes) if (a.at == f) { if (a.which == 'w') m.inputs.wheel = a.val; else if (a.which == 'a') m.inputs.accel = a.val; else m.inputs.brake = a.val; }
 		m.inputs.in0 = 0xffff;
 		for (auto &e : evs) if (f >= e.at && f < e.at + e.dur) m.inputs.in0 &= ~e.bit;
+		if (autoplay)
+		{
+			int af = f - 1355;
+			auto hit = [&](int at) { return af >= at && af < at + 6; };
+			if (hit(60) || hit(80) || hit(100)) m.inputs.in0 &= ~in0bit::COIN1;
+			if (hit(140) || hit(320) || hit(500) || hit(680) || hit(860) || hit(1040)) m.inputs.in0 &= ~in0bit::START;
+			if (af > 1300) m.inputs.accel = 255;
+		}
 		m.run_frame();
+		if (seq > 0 && f >= frames - seq)
+		{
+			int w = m.screen_w(), h = m.screen_h();
+			std::vector<uint8_t> rgb(size_t(w) * h * 3);
+			for (int y = 0; y < h; y++)
+				for (int x = 0; x < w; x++)
+				{
+					uint32_t c = m.frame_rgba()[y * MidVUnit::FRAME_STRIDE + x];
+					uint8_t *d = &rgb[(size_t(y) * w + x) * 3];
+					d[0] = c >> 16; d[1] = c >> 8; d[2] = c;
+				}
+			size_t len = 0; void *png = tdefl_write_image_to_png_file_in_memory(rgb.data(), w, h, 3, &len);
+			char name[256]; std::snprintf(name, sizeof(name), "%s_%03d.png", shot.substr(0, shot.rfind('.')).c_str(), f - (frames - seq));
+			FILE *fp = fopen(name, "wb"); fwrite(png, 1, len, fp); fclose(fp);
+		}
 		{ static bool once = false; if (!once && m.quads_last_frame > 50) { once = true; fprintf(stderr, "first 3D frame: %d\n", f); } }
 		if (getenv("VSTAT") && f % 500 == 0) { fprintf(stderr, "f%d vram r/w %llu/%llu pal %llu tex %llu quads %llu\n", f, (unsigned long long)m.stat_vram_reads, (unsigned long long)m.stat_vram_writes, (unsigned long long)m.stat_pal_writes, (unsigned long long)m.stat_tex_writes, (unsigned long long)m.quads_last_frame); }
 		if (f % 60 == 0) fprintf(stderr, "frame %d pc=%06X quads=%llu vis=%dx%d\n", f, m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());

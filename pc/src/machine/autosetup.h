@@ -1,34 +1,38 @@
-// First-run helper: drives the game's calibration + diagnostics screens with scripted
-// input so that a fresh (all-ones) NVRAM ends up calibrated and in attract mode.
+// Drives the game's "CALIBRATE CONTROLS" screens (see DIAG.ASM SET_CONTROLS) with scripted input so
+// that a fresh NVRAM ends up calibrated. Used by tools to generate src/machine/default_nvram.h.
+//
+// Prompts, in order: (1) hands/feet off + wheel centre (also records pedal minimum), (2) wheel left,
+// (3) wheel right, (4) gas to max, (5) brake to max. Each is confirmed with the test/enter switch.
 #pragma once
 #include "midvunit.h"
 
 inline void run_auto_setup(MidVUnit &m)
 {
-	struct Press { int at; uint16_t bit; };
-	std::vector<Press> presses;
-	auto press = [&](int at, uint16_t bit) { presses.push_back({at, bit}); };
-	press(2000, in0bit::TEST);   // left lock
-	press(2110, in0bit::TEST);   // right lock
-	press(2210, in0bit::TEST);   // centre
-	press(2300, in0bit::TEST);   // accelerator
-	press(2400, in0bit::TEST);   // brake
-	press(2500, in0bit::TEST);   // done -> diagnostics menu
-	for (int i = 0; i < 6; i++)
-		press(3500 + i * 15, in0bit::VOLDN);   // scroll to "exit to game over"
-	press(3650, in0bit::TEST);
+	struct Step { int at; uint8_t wheel, accel, brake; };
+	const Step steps[5] = {
+		{2000, 0x80, 0x00, 0x00},   // centre, pedals released
+		{2110, 0x10, 0x00, 0x00},   // full left
+		{2220, 0xf0, 0x00, 0x00},   // full right
+		{2330, 0x80, 0xff, 0x00},   // gas max
+		{2440, 0x80, 0x00, 0xff},   // brake max
+	};
 
 	MachineInputs saved = m.inputs;
 	for (int f = 0; f < 4700; f++)
 	{
 		m.inputs = MachineInputs{};
-		if (f >= 1990 && f < 2100) m.inputs.wheel = 16;
-		else if (f >= 2100 && f < 2200) m.inputs.wheel = 240;
-		if (f >= 2290 && f < 2390) m.inputs.accel = 255;
-		if (f >= 2390 && f < 2490) m.inputs.brake = 255;
-		for (auto &p : presses)
-			if (f >= p.at && f < p.at + (p.bit == in0bit::VOLDN ? 4 : 8))
-				m.inputs.in0 &= ~p.bit;
+		uint16_t press = 0;
+		for (const Step &s : steps)
+			if (f >= s.at - 20 && f < s.at + 30)
+			{
+				m.inputs.wheel = s.wheel; m.inputs.accel = s.accel; m.inputs.brake = s.brake;
+				if (f >= s.at && f < s.at + 8) press = in0bit::TEST;
+			}
+		// afterwards: leave the diagnostics menu ("exit to game over" is 6 entries down)
+		for (int i = 0; i < 6; i++)
+			if (f >= 3500 + i * 15 && f < 3504 + i * 15) press = in0bit::VOLDN;
+		if (f >= 3650 && f < 3656) press = in0bit::TEST;
+		m.inputs.in0 = uint16_t(0xffff & ~press);
 		m.run_frame();
 	}
 	m.inputs = saved;

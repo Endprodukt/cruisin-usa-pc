@@ -913,7 +913,13 @@ bool MidVUnit::run_frame()
 	{
 		// visible area ends here: draw the remainder of the visible page (vblank start)
 		if (m_vpos == m_vis_h && m_gpu)
+		{
+			// vblank: freeze what the monitor shows (the game already starts drawing the next frame)
 			m_present_page = m_page_control & 1;
+			gpu_flush_quads();
+			gpu_sync_state();
+			m_gpu->latch(m_present_page);
+		}
 		if (m_vpos == m_vis_h && !m_gpu)
 		{
 			if (m_partial_next_row < m_vis_h)
@@ -991,9 +997,21 @@ bool MidVUnit::load_nvram(const std::string &path)
 	FILE *f = std::fopen(path.c_str(), "rb");
 	if (!f)
 		return false;
-	size_t n = std::fread(m_nvram.data(), 4, m_nvram.size(), f);
+	std::vector<uint32_t> tmp(m_nvram.size());
+	size_t n = std::fread(tmp.data(), 4, tmp.size(), f);
 	std::fclose(f);
-	return n == m_nvram.size();
+	if (n != tmp.size())
+		return false;
+
+	// The control calibration (CMOS words 8..31) is fixed by design: wheel 0x10..0xf0 with centre 0x80 and
+	// pedals 0..0xff, exactly what the input layer produces. A file carrying other calibration values
+	// (e.g. from an older build or a service-menu recalibration) is rejected so the wheel stays centred.
+	for (const NvPair &p : kDefaultNvram)
+		if (p.index >= 8 && p.index < 32 && tmp[p.index] != p.value)
+			return false;
+
+	m_nvram = tmp;
+	return true;
 }
 
 bool MidVUnit::save_nvram(const std::string &path) const
@@ -1118,7 +1136,5 @@ void MidVUnit::present_gpu()
 {
 	if (!m_gpu)
 		return;
-	gpu_flush_quads();
-	gpu_sync_state();
-	m_gpu->present(m_present_page, m_vis_w, m_vis_h);
+	m_gpu->present(m_vis_w, m_vis_h);
 }

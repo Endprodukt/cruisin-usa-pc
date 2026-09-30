@@ -217,8 +217,30 @@ public:
 		}
 	}
 
-	void present(int page, int vis_w, int vis_h) override
+	void latch(int page) override
 	{
+		begin_cb();
+		int sz = 512 * m_opt.scale;
+		Img &src = m_page[page & 1];
+		barrier(src.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+		barrier(m_disp.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+		VkImageCopy c{};
+		c.srcSubresource = c.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		c.extent = {uint32_t(sz), uint32_t(sz), 1};
+		vkCmdCopyImage(m_cb, src.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_disp.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+		barrier(m_disp.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+		barrier(src.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		        VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+	}
+
+	void present(int vis_w, int vis_h) override
+	{
+		const int page = 0;
 		if (m_sc_dirty) { std::string e; vkDeviceWaitIdle(m_dev); create_swapchain(e); }
 		if (!m_sc) { submit_wait(); return; }
 		begin_cb();
@@ -283,24 +305,23 @@ public:
 		m_instbuf_off = m_stage_off = m_ubo_off = 0;
 	}
 
-	bool read_page(int page, std::vector<uint32_t> &out, int &w, int &h) override
+	bool read_display(std::vector<uint32_t> &out, int &w, int &h) override
 	{
+		Img &rp = m_disp;
 		w = h = 512 * m_opt.scale;
 		size_t bytes = size_t(w) * h * 4;
 		Buf rb;
 		std::string err;
 		if (!make_buffer(rb, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, err)) return false;
 		begin_cb();
-		barrier(m_page[page & 1].img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-		        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+		barrier(rp.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT);
 		VkBufferImageCopy c{};
 		c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
 		c.imageExtent = {uint32_t(w), uint32_t(h), 1};
-		vkCmdCopyImageToBuffer(m_cb, m_page[page & 1].img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb.buf, 1, &c);
-		barrier(m_page[page & 1].img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		        VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+		vkCmdCopyImageToBuffer(m_cb, rp.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb.buf, 1, &c);
+		barrier(rp.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT);
 		submit_wait();
 		out.resize(size_t(w) * h);
 		std::memcpy(out.data(), rb.map, bytes);
@@ -591,8 +612,7 @@ private:
 	void write_present_sets()
 	{
 		VkSampler s = m_opt.smooth_output ? m_samp_linear : m_samp_nearest;
-		for (int i = 0; i < 2; i++)
-			if (m_page[i].view) write_set(m_set_present[i], m_page[i].view, s, m_tex_pal.view, m_samp_nearest);
+		if (m_disp.view) write_set(m_set_present[0], m_disp.view, s, m_tex_pal.view, m_samp_nearest);
 	}
 
 	VkShaderModule make_module(const uint32_t *code, size_t bytes)
@@ -669,7 +689,19 @@ private:
 			fi.width = fi.height = uint32_t(sz); fi.layers = 1;
 			VKCHECK(vkCreateFramebuffer(m_dev, &fi, nullptr, &m_page_fb[i]), "framebuffer");
 		}
+		if (!make_image(m_disp, sz, sz, VK_FORMAT_R8G8B8A8_UNORM,
+		                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, err))
+			return false;
 		begin_cb();
+		{
+			barrier(m_disp.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+			VkClearColorValue cc{{0, 0, 0, 1}};
+			VkImageSubresourceRange rg{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+			vkCmdClearColorImage(m_cb, m_disp.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cc, 1, &rg);
+			barrier(m_disp.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+		}
 		for (int i = 0; i < 2; i++)
 		{
 			barrier(m_page[i].img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -692,6 +724,7 @@ private:
 			if (m_page_fb[i]) { vkDestroyFramebuffer(m_dev, m_page_fb[i], nullptr); m_page_fb[i] = VK_NULL_HANDLE; }
 			destroy_img(m_page[i]);
 		}
+		destroy_img(m_disp);
 	}
 
 	bool create_swapchain(std::string &err)
@@ -778,7 +811,7 @@ private:
 	Buf m_instbuf, m_stage, m_ubo;
 	size_t m_instbuf_off = 0, m_stage_off = 0, m_ubo_off = 0;
 	Img m_tex_ram, m_tex_pal, m_tex_ovl;
-	Img m_page[2];
+	Img m_page[2], m_disp;
 	VkFramebuffer m_page_fb[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 	VkSampler m_samp_nearest = VK_NULL_HANDLE, m_samp_linear = VK_NULL_HANDLE;
 

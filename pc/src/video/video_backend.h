@@ -56,10 +56,13 @@ public:
 	virtual void upload_overlay(int page, const uint16_t *layer512, int first_row, int last_row) = 0;
 
 	virtual void draw(int page, const GpuQuad *quads, int count) = 0;
-	virtual void present(int page, int vis_w, int vis_h) = 0;
+	// freeze the given page as the displayed image (what the monitor shows at vblank); draws recorded
+	// afterwards (the game already renders the next frame) must not show up
+	virtual void latch(int page) = 0;
+	virtual void present(int vis_w, int vis_h) = 0;      // draw the latched image to the window
 
-	// grab the most recently presented page at internal resolution (RGBA8, top-down); returns size
-	virtual bool read_page(int page, std::vector<uint32_t> &out, int &w, int &h) = 0;
+	// grab the latched (displayed) image at internal resolution (RGBA8, top-down)
+	virtual bool read_display(std::vector<uint32_t> &out, int &w, int &h) = 0;
 };
 
 std::unique_ptr<IVideoBackend> create_gl_backend();

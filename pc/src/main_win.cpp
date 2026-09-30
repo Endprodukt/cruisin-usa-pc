@@ -29,6 +29,8 @@ struct Options
 	bool fastboot = true;
 	bool fullscreen = false;
 	std::string shot;           // --shot file.png : save the internal-resolution image and exit
+	int shot_seq = 1;           // --shot-seq N : save N consecutive frames (name_000.png ...)
+	bool autoplay = false;      // --autoplay : scripted coin/start presses, then full throttle (testing)
 	int shot_frames = 600;      // frames after boot before the screenshot
 	VideoOptions video;
 };
@@ -195,6 +197,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		if (!(v = arg_value(a, "--filter")).empty()) opt.video.filter_textures = v != "0";
 		if (!(v = arg_value(a, "--smooth")).empty()) opt.video.smooth_output = v != "0";
 		if (!(v = arg_value(a, "--shot")).empty()) opt.shot = v;
+		if (!(v = arg_value(a, "--shot-seq")).empty()) opt.shot_seq = std::max(1, std::atoi(v.c_str()));
+		if (a.find("--autoplay") != std::string::npos) opt.autoplay = true;
 		if (!(v = arg_value(a, "--shot-frames")).empty()) opt.shot_frames = std::atoi(v.c_str());
 		if (a.find("--fullscreen") != std::string::npos) opt.fullscreen = true;
 		if (a.find("--no-fastboot") != std::string::npos) opt.fastboot = false;
@@ -318,6 +322,14 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		for (int guard = 0; t >= next_frame && guard < 3; guard++)
 		{
 			update_inputs(m, st, std::min(t - last_time, 0.1));
+			if (opt.autoplay)
+			{
+				static int af = 0; af++;
+				auto hit = [&](int at) { return af >= at && af < at + 6; };
+				if (hit(60) || hit(80) || hit(100)) m.inputs.in0 &= ~in0bit::COIN1;
+				if (hit(140) || hit(320) || hit(500) || hit(680) || hit(860) || hit(1040)) m.inputs.in0 &= ~in0bit::START;
+				if (af > 1300) m.inputs.accel = 255;
+			}
 			std::fill(std::begin(g_pressed), std::end(g_pressed), false);
 			last_time = t;
 			m.run_frame();
@@ -336,7 +348,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		if (ran && !opt.shot.empty() && ++shot_count >= opt.shot_frames)
 		{
 			std::vector<uint32_t> px; int pw = 0, ph = 0;
-			if (video->read_page(m.display_page(), px, pw, ph))
+			if (video->read_display(px, pw, ph))
 			{
 				int S = opt.video.scale, w = m.screen_w() * S, h = m.screen_h() * S;
 				std::vector<uint8_t> rgb(size_t(w) * h * 3);
@@ -349,18 +361,24 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 					}
 				size_t len = 0;
 				void *png = tdefl_write_image_to_png_file_in_memory(rgb.data(), w, h, 3, &len);
-				if (FILE *fp = std::fopen(opt.shot.c_str(), "wb")) { std::fwrite(png, 1, len, fp); std::fclose(fp); }
+				std::string path = opt.shot;
+				if (opt.shot_seq > 1)
+				{
+					char suf[24]; std::snprintf(suf, sizeof(suf), "_%03d.png", shot_count - opt.shot_frames);
+					path = opt.shot.substr(0, opt.shot.rfind('.')) + suf;
+				}
+				if (FILE *fp = std::fopen(path.c_str(), "wb")) { std::fwrite(png, 1, len, fp); std::fclose(fp); }
 				mz_free(png);
 			}
-			g_quit = true;
+			if (shot_count - opt.shot_frames + 1 >= opt.shot_seq) g_quit = true;
 		}
 
 		if (ran) fps_n++;
 		if (t - fps_t >= 1.0)
 		{
 			char title[192];
-			std::snprintf(title, sizeof(title), "Cruis'n USA (PC) - %d fps  %s %dx  gear %d  %s%s  snd %.0fms", fps_n, video->name(),
-			              opt.video.scale, st.gear, opt.video.vsync ? "vsync " : "", opt.video.filter_textures ? "filtered" : "",
+			std::snprintf(title, sizeof(title), "Cruis'n USA (PC) - %d fps  %s %dx  gear %d  wheel %02X  %s%s  snd %.0fms", fps_n, video->name(),
+			              opt.video.scale, st.gear, m.inputs.wheel, opt.video.vsync ? "vsync " : "", opt.video.filter_textures ? "filtered" : "",
 			              audio.latency_ms());
 			SetWindowTextA(hwnd, title);
 			fps_n = 0; fps_t = t;
