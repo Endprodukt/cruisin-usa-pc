@@ -58,7 +58,7 @@ layout(location = 5) flat in uvec4 f_misc;
 
 layout(BIND(0)) uniform usampler2D u_tex;    // 256 x 16384, R8UI texture RAM
 layout(BIND(1)) uniform sampler2D u_pal;     // 256 x 128, RGBA8 palette (32768 entries)
-layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; } u_par;
+layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; vec4 pc; } u_par;
 
 layout(location = 0) out vec4 o_color;
 
@@ -165,7 +165,7 @@ void main()
 // ---- fullscreen-rect pass (present + CPU overlay) ------------------------------------------------
 // Params.pa = NDC rect (x0, y0, x1, y1) for corner (0,0) -> (1,1); Params.pb = uv rect (u0, v0, u1, v1)
 static const char *const kRectVert = R"GLSL(
-layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; } u_par;
+layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; vec4 pc; } u_par;
 layout(location = 0) out vec2 v_uv;
 void main()
 {
@@ -195,6 +195,83 @@ void main()
 	if ((v & 0x8000u) == 0u) discard;
 	v &= 0x7fffu;
 	o_color = vec4(texelFetch(u_pal, ivec2(int(v & 255u), int(v >> 8)), 0).rgb, 1.0);
+}
+)GLSL";
+
+// ---- shadow mask: hard coverage of the game's shadow quads (union of the triangles), no dither -----------
+static const char *const kShadowMaskFrag = R"GLSL(
+layout(location = 0) in vec2 v_pos;
+layout(location = 1) flat in vec4 f_p01;
+layout(location = 2) flat in vec4 f_p23;
+layout(location = 3) flat in vec4 f_t01;
+layout(location = 4) flat in vec4 f_t23;
+layout(location = 5) flat in uvec4 f_misc;
+layout(location = 0) out vec4 o_color;
+
+// evaluate the two boundary edges of the quad at height y; returns false if fewer than 2 cross.
+// clampsel: choose edges using y clamped into the vertical extent, but evaluate at the real y
+// (extrapolation, like the hardware's scanline walker).
+bool scan(vec2 P[4], vec2 T[4], float y, bool clampsel, out float xl, out float xr, out vec2 tl, out vec2 tr)
+{
+	float ymin = min(min(P[0].y, P[1].y), min(P[2].y, P[3].y));
+	float ymax = max(max(P[0].y, P[1].y), max(P[2].y, P[3].y));
+	float ys = clampsel ? clamp(y, ymin, ymax - 1e-4) : y;
+	xl = 1e9; xr = -1e9; tl = vec2(0.0); tr = vec2(0.0);
+	int cnt = 0;
+	for (int i = 0; i < 4; i++)
+	{
+		int j = (i + 1) & 3;
+		float ya = P[i].y, yb = P[j].y;
+		if ((ya <= ys && ys < yb) || (yb <= ys && ys < ya))
+		{
+			float t = (y - ya) / (yb - ya);
+			float x = mix(P[i].x, P[j].x, t);
+			vec2 tc = mix(T[i], T[j], t);
+			if (x < xl) { xl = x; tl = tc; }
+			if (x > xr) { xr = x; tr = tc; }
+			cnt++;
+		}
+	}
+	return cnt >= 2;
+}
+
+
+void main()
+{
+	vec2 P[4] = vec2[4](f_p01.xy, f_p01.zw, f_p23.xy, f_p23.zw);
+	vec2 T[4] = vec2[4](f_t01.xy, f_t01.zw, f_t23.xy, f_t23.zw);
+	float xl, xr; vec2 tl, tr;
+	if (!scan(P, T, v_pos.y, false, xl, xr, tl, tr)) discard;
+	if (v_pos.x < xl || v_pos.x >= xr) discard;
+	o_color = vec4(1.0);
+}
+)GLSL";
+
+// ---- shadow composite: blurred mask darkens the page -----------------------------------------------------
+// Params.pc = (strength, radius in target pixels, 1/width, 1/height); pa/pb place the rect (whole page, uv 0..1)
+static const char *const kShadowCompFrag = R"GLSL(
+layout(location = 0) in vec2 v_uv;
+layout(BIND(0)) uniform sampler2D u_mask;
+layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; vec4 pc; } u_par;
+layout(location = 0) out vec4 o_color;
+void main()
+{
+	float radius = max(u_par.pc.y, 0.5);
+	float sigma = radius * 0.5;
+	vec2 texel = u_par.pc.zw;
+	float step_px = max(1.0, radius / 3.0);
+	float acc = 0.0, wsum = 0.0;
+	for (int j = -3; j <= 3; j++)
+		for (int i = -3; i <= 3; i++)
+		{
+			vec2 d = vec2(float(i), float(j)) * step_px;
+			float w = exp(-dot(d, d) / (2.0 * sigma * sigma));
+			acc += w * texture(u_mask, v_uv + d * texel).r;
+			wsum += w;
+		}
+	float a = acc / wsum * u_par.pc.x;
+	if (a <= 0.002) discard;
+	o_color = vec4(0.0, 0.0, 0.0, a);
 }
 )GLSL";
 

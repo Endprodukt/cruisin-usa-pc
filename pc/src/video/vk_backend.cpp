@@ -12,7 +12,7 @@
 
 namespace {
 
-struct Params { float a[4]; float b[4]; };
+struct Params { float a[4]; float b[4]; float c[4]; };
 
 #define VKCHECK(expr, msg)                                                          \
 	do {                                                                            \
@@ -137,6 +137,9 @@ public:
 		vkDestroyPipeline(m_dev, m_pipe_quad, nullptr);
 		vkDestroyPipeline(m_dev, m_pipe_present, nullptr);
 		vkDestroyPipeline(m_dev, m_pipe_ovl, nullptr);
+		vkDestroyPipeline(m_dev, m_pipe_smask, nullptr);
+		vkDestroyPipeline(m_dev, m_pipe_scomp, nullptr);
+		vkDestroyRenderPass(m_dev, m_rp_mask, nullptr);
 		vkDestroyPipelineLayout(m_dev, m_pl, nullptr);
 		vkDestroyDescriptorPool(m_dev, m_dpool, nullptr);
 		vkDestroyDescriptorSetLayout(m_dev, m_dsl, nullptr);
@@ -188,7 +191,7 @@ public:
 	{
 		copy_rows_to_image(m_tex_ovl, layer + size_t(first) * 512, 512 * 2, 512, first, last - first + 1);
 		begin_cb();
-		draw_rect_pass(page, m_pipe_ovl, m_set_ovl, Params{{-1, -1, 1, 1}, {0, 0, 1, 1}});
+		draw_rect_pass(page, m_pipe_ovl, m_set_ovl, Params{{-1, -1, 1, 1}, {0, 0, 1, 1}, {0, 0, 0, 0}});
 	}
 
 	void draw(int page, const GpuQuad *q, int count) override
@@ -203,7 +206,7 @@ public:
 			int n = int(std::min<size_t>(size_t(count - done), room));
 			std::memcpy(m_instbuf.map + m_instbuf_off, q + done, size_t(n) * stride);
 
-			Params p{{m_opt.filter_textures ? 1.0f : 0.0f, 0, 0, 0}, {0, 0, 0, 0}};
+			Params p{{m_opt.filter_textures ? 1.0f : 0.0f, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
 			uint32_t dyn = write_params(p);
 			begin_page_pass(page);
 			vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_quad);
@@ -214,6 +217,69 @@ public:
 			vkCmdEndRenderPass(m_cb);
 			m_instbuf_off += size_t(n) * stride;
 			done += n;
+		}
+	}
+
+	void draw_shadows(int page, const GpuQuad *q, int count) override
+	{
+		if (count <= 0) return;
+		begin_cb();
+		const int sz = 512 * m_opt.scale;
+		const float sc = float(m_opt.scale);
+		const float radius = std::max(0.5f, m_opt.shadow_soft * sc);
+		float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
+		for (int i = 0; i < count; i++)
+			for (int k = 0; k < 4; k++)
+			{
+				minx = std::min(minx, q[i].p[k * 2]); maxx = std::max(maxx, q[i].p[k * 2]);
+				miny = std::min(miny, q[i].p[k * 2 + 1]); maxy = std::max(maxy, q[i].p[k * 2 + 1]);
+			}
+		int x0 = std::clamp(int(std::floor(minx * sc - radius - 2)), 0, sz), x1 = std::clamp(int(std::ceil(maxx * sc + radius + 2)), 0, sz);
+		int y0 = std::clamp(int(std::floor(miny * sc - radius - 2)), 0, sz), y1 = std::clamp(int(std::ceil(maxy * sc + radius + 2)), 0, sz);
+		if (x1 <= x0 || y1 <= y0) return;
+
+		const size_t stride = sizeof(GpuQuad);
+		for (int done = 0; done < count;)
+		{
+			// 1. hard coverage into the mask (cleared per batch; the blur pass follows right away)
+			size_t room = (m_instbuf.size - m_instbuf_off) / stride;
+			if (room < 256) { submit_wait(); begin_cb(); continue; }
+			int n = int(std::min<size_t>(size_t(count - done), room));
+			std::memcpy(m_instbuf.map + m_instbuf_off, q + done, size_t(n) * stride);
+
+			Params pm{{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
+			uint32_t dyn = write_params(pm);
+			{
+				VkClearValue clear{};
+				VkRenderPassBeginInfo rb{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+				rb.renderPass = m_rp_mask; rb.framebuffer = m_mask_fb;
+				rb.renderArea = {{0, 0}, {uint32_t(sz), uint32_t(sz)}};
+				rb.clearValueCount = 1; rb.pClearValues = &clear;
+				vkCmdBeginRenderPass(m_cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+				VkViewport vp{0, 0, float(sz), float(sz), 0, 1};
+				VkRect2D scr{{0, 0}, {uint32_t(sz), uint32_t(sz)}};
+				vkCmdSetViewport(m_cb, 0, 1, &vp);
+				vkCmdSetScissor(m_cb, 0, 1, &scr);
+				vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_smask);
+				vkCmdBindDescriptorSets(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pl, 0, 1, &m_set_quad, 1, &dyn);
+				VkDeviceSize off = m_instbuf_off;
+				vkCmdBindVertexBuffers(m_cb, 0, 1, &m_instbuf.buf, &off);
+				vkCmdDraw(m_cb, 4, uint32_t(n), 0, 0);
+				vkCmdEndRenderPass(m_cb);
+			}
+			m_instbuf_off += size_t(n) * stride;
+			done += n;
+
+			// 2. the blurred mask darkens the page
+			Params pc{{-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, radius, 1.0f / float(sz), 1.0f / float(sz)}};
+			uint32_t dyn2 = write_params(pc);
+			begin_page_pass(page);
+			VkRect2D scr{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+			vkCmdSetScissor(m_cb, 0, 1, &scr);
+			vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_scomp);
+			vkCmdBindDescriptorSets(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pl, 0, 1, &m_set_shadow, 1, &dyn2);
+			vkCmdDraw(m_cb, 4, 1, 0, 0);
+			vkCmdEndRenderPass(m_cb);
 		}
 	}
 
@@ -266,7 +332,7 @@ public:
 		}
 		float x0 = (dw - tw) * 0.5f, y0 = (dh - th) * 0.5f;
 		Params p{{x0 / dw * 2 - 1, y0 / dh * 2 - 1, (x0 + tw) / dw * 2 - 1, (y0 + th) / dh * 2 - 1},
-		         {0, 0, float(vis_w) / 512.0f, float(vis_h) / 512.0f}};
+		         {0, 0, float(vis_w) / 512.0f, float(vis_h) / 512.0f}, {0, 0, 0, 0}};
 		uint32_t dyn = write_params(p);
 
 		VkClearValue clear{};
@@ -544,6 +610,23 @@ private:
 		rp.dependencyCount = 2; rp.pDependencies = deps;
 		VKCHECK(vkCreateRenderPass(m_dev, &rp, nullptr, &m_rp_page), "render pass (page)");
 
+		// shadow mask pass: cleared every use, sampled afterwards
+		{
+			VkAttachmentDescription ma = a;
+			ma.format = VK_FORMAT_R8_UNORM; ma.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+			ma.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; ma.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			VkSubpassDependency md[2]{};
+			md[0].srcSubpass = VK_SUBPASS_EXTERNAL; md[0].dstSubpass = 0;
+			md[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT; md[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			md[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			md[1].srcSubpass = 0; md[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+			md[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; md[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			md[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; md[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			VkRenderPassCreateInfo mr = rp;
+			mr.pAttachments = &ma; mr.pDependencies = md;
+			VKCHECK(vkCreateRenderPass(m_dev, &mr, nullptr, &m_rp_mask), "render pass (mask)");
+		}
+
 		// swapchain pass: clear, present
 		uint32_t fn = 0;
 		vkGetPhysicalDeviceSurfaceFormatsKHR(m_pd, m_surf, &fn, nullptr);
@@ -580,16 +663,16 @@ private:
 		pli.setLayoutCount = 1; pli.pSetLayouts = &m_dsl;
 		VKCHECK(vkCreatePipelineLayout(m_dev, &pli, nullptr, &m_pl), "pipeline layout");
 
-		VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 4}};
+		VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 5}};
 		VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-		pi.maxSets = 4; pi.poolSizeCount = 2; pi.pPoolSizes = ps;
+		pi.maxSets = 5; pi.poolSizeCount = 2; pi.pPoolSizes = ps;
 		VKCHECK(vkCreateDescriptorPool(m_dev, &pi, nullptr, &m_dpool), "descriptor pool");
-		VkDescriptorSetLayout layouts[4] = {m_dsl, m_dsl, m_dsl, m_dsl};
-		VkDescriptorSet sets[4];
+		VkDescriptorSetLayout layouts[5] = {m_dsl, m_dsl, m_dsl, m_dsl, m_dsl};
+		VkDescriptorSet sets[5];
 		VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-		ai.descriptorPool = m_dpool; ai.descriptorSetCount = 4; ai.pSetLayouts = layouts;
+		ai.descriptorPool = m_dpool; ai.descriptorSetCount = 5; ai.pSetLayouts = layouts;
 		VKCHECK(vkAllocateDescriptorSets(m_dev, &ai, sets), "vkAllocateDescriptorSets");
-		m_set_quad = sets[0]; m_set_ovl = sets[1]; m_set_present[0] = sets[2]; m_set_present[1] = sets[3];
+		m_set_quad = sets[0]; m_set_ovl = sets[1]; m_set_present[0] = sets[2]; m_set_present[1] = sets[3]; m_set_shadow = sets[4];
 
 		write_set(m_set_quad, m_tex_ram.view, m_samp_nearest, m_tex_pal.view, m_samp_nearest);
 		write_set(m_set_ovl, m_tex_ovl.view, m_samp_nearest, m_tex_pal.view, m_samp_nearest);
@@ -612,6 +695,7 @@ private:
 	void write_present_sets()
 	{
 		VkSampler s = m_opt.smooth_output ? m_samp_linear : m_samp_nearest;
+		if (m_mask.view) write_set(m_set_shadow, m_mask.view, m_samp_linear, m_tex_pal.view, m_samp_nearest);
 		if (m_disp.view) write_set(m_set_present[0], m_disp.view, s, m_tex_pal.view, m_samp_nearest);
 	}
 
@@ -624,7 +708,7 @@ private:
 		return m;
 	}
 
-	bool make_pipeline(VkPipeline &out, VkRenderPass rp, VkShaderModule vs, VkShaderModule fs, bool instanced, std::string &err)
+	bool make_pipeline(VkPipeline &out, VkRenderPass rp, VkShaderModule vs, VkShaderModule fs, bool instanced, std::string &err, bool blend = false)
 	{
 		VkPipelineShaderStageCreateInfo st[2]{};
 		st[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main", nullptr};
@@ -647,6 +731,14 @@ private:
 		ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 		VkPipelineColorBlendAttachmentState cba{};
 		cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+		if (blend)
+		{
+			cba.blendEnable = VK_TRUE;
+			cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA; cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+			cba.colorBlendOp = VK_BLEND_OP_ADD;
+			cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+			cba.alphaBlendOp = VK_BLEND_OP_ADD;
+		}
 		VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
 		cb.attachmentCount = 1; cb.pAttachments = &cba;
 		VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
@@ -668,10 +760,14 @@ private:
 		VkShaderModule rv = make_module(spv_rect_vert, sizeof(spv_rect_vert));
 		VkShaderModule pf = make_module(spv_present_frag, sizeof(spv_present_frag));
 		VkShaderModule of = make_module(spv_overlay_frag, sizeof(spv_overlay_frag));
+		VkShaderModule sm = make_module(spv_shadow_mask_frag, sizeof(spv_shadow_mask_frag));
+		VkShaderModule sc = make_module(spv_shadow_comp_frag, sizeof(spv_shadow_comp_frag));
 		bool ok = make_pipeline(m_pipe_quad, m_rp_page, qv, qf, true, err) &&
+		          make_pipeline(m_pipe_smask, m_rp_mask, qv, sm, true, err) &&
+		          make_pipeline(m_pipe_scomp, m_rp_page, rv, sc, false, err, true) &&
 		          make_pipeline(m_pipe_ovl, m_rp_page, rv, of, false, err) &&
 		          make_pipeline(m_pipe_present, m_rp_swap, rv, pf, false, err);
-		for (VkShaderModule m : {qv, qf, rv, pf, of}) vkDestroyShaderModule(m_dev, m, nullptr);
+		for (VkShaderModule m : {qv, qf, rv, pf, of, sm, sc}) vkDestroyShaderModule(m_dev, m, nullptr);
 		return ok;
 	}
 
@@ -692,6 +788,13 @@ private:
 		if (!make_image(m_disp, sz, sz, VK_FORMAT_R8G8B8A8_UNORM,
 		                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, err))
 			return false;
+		if (!make_image(m_mask, sz, sz, VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, err)) return false;
+		{
+			VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+			fi.renderPass = m_rp_mask; fi.attachmentCount = 1; fi.pAttachments = &m_mask.view;
+			fi.width = fi.height = uint32_t(sz); fi.layers = 1;
+			VKCHECK(vkCreateFramebuffer(m_dev, &fi, nullptr, &m_mask_fb), "framebuffer (mask)");
+		}
 		begin_cb();
 		{
 			barrier(m_disp.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -724,6 +827,8 @@ private:
 			if (m_page_fb[i]) { vkDestroyFramebuffer(m_dev, m_page_fb[i], nullptr); m_page_fb[i] = VK_NULL_HANDLE; }
 			destroy_img(m_page[i]);
 		}
+		if (m_mask_fb) { vkDestroyFramebuffer(m_dev, m_mask_fb, nullptr); m_mask_fb = VK_NULL_HANDLE; }
+		destroy_img(m_mask);
 		destroy_img(m_disp);
 	}
 
@@ -820,6 +925,11 @@ private:
 	VkPipelineLayout m_pl = VK_NULL_HANDLE;
 	VkDescriptorPool m_dpool = VK_NULL_HANDLE;
 	VkDescriptorSet m_set_quad = VK_NULL_HANDLE, m_set_ovl = VK_NULL_HANDLE, m_set_present[2] = {};
+	VkPipeline m_pipe_smask = VK_NULL_HANDLE, m_pipe_scomp = VK_NULL_HANDLE;
+	VkRenderPass m_rp_mask = VK_NULL_HANDLE;
+	VkFramebuffer m_mask_fb = VK_NULL_HANDLE;
+	Img m_mask;
+	VkDescriptorSet m_set_shadow = VK_NULL_HANDLE;
 	VkPipeline m_pipe_quad = VK_NULL_HANDLE, m_pipe_present = VK_NULL_HANDLE, m_pipe_ovl = VK_NULL_HANDLE;
 
 	VkSwapchainKHR m_sc = VK_NULL_HANDLE;

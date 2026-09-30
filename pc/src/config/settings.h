@@ -10,8 +10,11 @@ enum class Renderer { Cpu, OpenGL, Vulkan };
 enum class WindowMode { Window, Borderless, Fullscreen };
 enum class AspectMode { Native43, Wide169, Wide219, Stretch };
 enum class HudPlacement { Centre, Edges, Quarter25, Half50, Quarter75 };
-enum class ShadowMode { Original, Modern };
+enum class ShadowMode { Original, Modern, Off };
 enum class OutputMode { Off, Windows, Network };
+// MAME's "Shifter Type": buttons keep the last gear (sticky) or toggle it, two buttons step up/down
+// (sequential), or the gear is only engaged while its button is held (H-pattern, neutral otherwise)
+enum class ShifterMode { Sticky, Toggling, Sequential, HPattern };
 
 struct VideoSettings
 {
@@ -30,7 +33,9 @@ struct VideoSettings
 	bool widescreen_hack = false;
 	HudPlacement hud = HudPlacement::Edges;
 	int draw_distance = 100;                  // percent of the original
-	ShadowMode shadows = ShadowMode::Original;
+	ShadowMode shadows = ShadowMode::Modern;
+	int shadow_strength = 55;                 // percent darkness of modern shadows
+	int shadow_softness = 30;                 // penumbra radius in tenths of an arcade pixel
 };
 
 struct AudioSettings
@@ -65,6 +70,7 @@ struct ControlSettings
 	int steer_deadzone = 3;    // percent
 	int steer_range = 100;     // percent of the axis travel that maps to full lock
 	int pedal_deadzone = 2;
+	ShifterMode shifter = ShifterMode::Sticky;
 	bool background_input = false;
 	bool allow_duplicate_devices = false;
 	std::string ignore_devices = "vJoy";
@@ -118,6 +124,10 @@ const char *to_string(AspectMode a);
 const char *to_string(HudPlacement h);
 const char *to_string(ShadowMode s);
 const char *to_string(OutputMode o);
+const char *to_string(ShifterMode m);
+
+// relative paths are taken relative to the executable (so the launcher and the game always agree)
+std::string exe_relative(const std::string &path);
 
 // list of actions (from actions.def)
 struct ActionInfo { const char *id, *label, *def_key, *def_pad, *group; };

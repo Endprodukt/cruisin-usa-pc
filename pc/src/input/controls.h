@@ -25,6 +25,7 @@ public:
 	void update(MachineInputs &out, bool window_focused);
 
 	// ---- live monitor for the launcher ---------------------------------------------------------
+	int gear() const { return m_gear; }                       // 0 = neutral
 	float steer_value() const { return m_steer_out; }        // -1..1 as sent to the game
 	float accel_value() const { return m_accel_out; }
 	float brake_value() const { return m_brake_out; }
@@ -69,7 +70,7 @@ private:
 	struct Acc { float acc = 0; bool lastdigital = false; };
 	Acc m_steer_acc, m_accel_acc, m_brake_acc;
 	int m_gear = 0;
-	bool m_prev_up = false, m_prev_down = false;
+	bool m_prev_up = false, m_prev_down = false, m_prev_neutral = false;
 	bool m_prev_gear[4] = {};
 
 	float m_steer_out = 0, m_accel_out = 0, m_brake_out = 0;

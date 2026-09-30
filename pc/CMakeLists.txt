@@ -15,7 +15,7 @@ target_include_directories(cpu_c3x PUBLIC src)
 
 add_library(miniz STATIC third_party/miniz/miniz.c)
 target_include_directories(miniz PUBLIC third_party/miniz)
-add_library(machine STATIC src/machine/midvunit.cpp src/audio/dcs.cpp)
+add_library(machine STATIC src/machine/midvunit.cpp src/machine/cmos.cpp src/audio/dcs.cpp)
 target_include_directories(machine PUBLIC src)
 target_link_libraries(machine PUBLIC cpu_c3x cpu_adsp miniz)
 add_executable(cruisn_headless src/main_headless.cpp)

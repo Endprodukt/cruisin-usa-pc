@@ -319,7 +319,7 @@ void MidVUnit::bus_write(offs_t addr, uint32_t data)
 		m_videoram[addr - 0x900000] = uint16_t(data);
 		if (m_gpu)
 		{
-			if (!m_gq.empty()) gpu_flush_quads();
+			if (!m_gq.empty() || !m_gs.empty()) gpu_flush_quads();
 			uint32_t off = addr - 0x900000;
 			int pg = (off >> 18) & 1, row = (off >> 9) & 511;
 			m_cpu_layer[off] = uint16_t((data & 0x7fff) | 0x8000);
@@ -334,7 +334,7 @@ void MidVUnit::bus_write(offs_t addr, uint32_t data)
 		size_t o = size_t(addr - 0xa00000) * 2;
 		if (m_gpu)
 		{
-			if (!m_gq.empty()) gpu_flush_quads();
+			if (!m_gq.empty() || !m_gs.empty()) gpu_flush_quads();
 			int row = int(o >> 8);
 			m_tex_lo = std::min(m_tex_lo, row);
 			m_tex_hi = std::max(m_tex_hi, row);
@@ -354,7 +354,7 @@ void MidVUnit::bus_write(offs_t addr, uint32_t data)
 		stat_pal_writes++;
 		if (m_gpu)
 		{
-			if (!m_gq.empty()) gpu_flush_quads();
+			if (!m_gq.empty() || !m_gs.empty()) gpu_flush_quads();
 			m_pal_lo = std::min(m_pal_lo, int(addr - 0x9e0000));
 			m_pal_hi = std::max(m_pal_hi, int(addr - 0x9e0000));
 		}
@@ -584,6 +584,7 @@ void MidVUnit::dma_trigger()
 	VQuad q;
 	std::memcpy(q.dma, m_dma_data, sizeof(q.dma));
 	q.page = (m_page_control & 4) ? 1 : 0;
+	if (const char *sk = std::getenv("SKIPQ")) { unsigned v = unsigned(std::strtoul(sk, nullptr, 16)); if (q.dma[0] == v) { m_dma_data_index = 0; return; } }
 	if (m_gpu)
 	{
 		gpu_add_quad(q);
@@ -1076,9 +1077,21 @@ void MidVUnit::gpu_sync_state()
 	}
 }
 
+void MidVUnit::gpu_flush_shadows()
+{
+	if (!m_gpu || m_gs.empty())
+		return;
+	gpu_sync_state();
+	m_gpu->draw_shadows(m_gq_page, m_gs.data(), int(m_gs.size()));
+	m_gs.clear();
+}
+
 void MidVUnit::gpu_flush_quads()
 {
-	if (!m_gpu || m_gq.empty())
+	if (!m_gpu)
+		return;
+	gpu_flush_shadows();
+	if (m_gq.empty())
 		return;
 	gpu_sync_state();
 	m_gpu->draw(m_gq_page, m_gq.data(), int(m_gq.size()));
@@ -1087,8 +1100,17 @@ void MidVUnit::gpu_flush_quads()
 
 void MidVUnit::gpu_add_quad(const VQuad &q)
 {
-	if (!m_gq.empty() && q.page != m_gq_page)
+	// the game's shadows are flat dithered quads; in modern mode they become a soft blended pass
+	const bool is_shadow = (q.dma[0] & 0x2000) && (q.dma[0] & 0x300) != 0x100;
+	if (is_shadow && m_shadow_mode == 2)
+		return;
+	const bool modern = is_shadow && m_shadow_mode == 1;
+	if ((!m_gq.empty() || !m_gs.empty()) && q.page != m_gq_page)
 		gpu_flush_quads();
+	if (modern && !m_gq.empty())
+		gpu_flush_quads();
+	else if (!modern && !m_gs.empty())
+		gpu_flush_shadows();
 	m_gq_page = q.page;
 
 	const uint16_t *d = q.dma;
@@ -1127,8 +1149,9 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 	g.flags = d[0];
 	g.pixdata = d[1];
 	g.texbase = d[14];
-	m_gq.push_back(g);
-	if (m_gq.size() >= 4096)
+	std::vector<GpuQuad> &dst = modern ? m_gs : m_gq;
+	dst.push_back(g);
+	if (dst.size() >= 4096)
 		gpu_flush_quads();
 }
 

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include "machine/autosetup.h"
+#include "machine/cmos.h"
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -55,6 +56,7 @@ int main(int argc, char **argv)
 	m.on_audio = [&](const int16_t *b, int n, double r) { pcm.insert(pcm.end(), b, b + n); if (rate == 0) rate = r; blocks++; };
 	m.reset();
 	if (getenv("DEFAULT_NV")) m.load_default_nvram();
+	if (const char *adj = getenv("ADJ")) { int idx, val, n = 0; const char *q = adj; while (sscanf(q, "%d=%d%n", &idx, &val, &n) == 2) { cmos::set(m.nvram(), idx, uint32_t(val)); q += n; if (*q == ',') q++; } }
 	if (!makenv.empty()) { run_auto_setup(m); m.save_nvram(makenv); fprintf(stderr, "saved %s\n", makenv.c_str()); return 0; }
 	for (int f = 0; f < frames; f++)
 	{
@@ -89,6 +91,7 @@ int main(int argc, char **argv)
 		if (getenv("VSTAT") && f % 500 == 0) { fprintf(stderr, "f%d vram r/w %llu/%llu pal %llu tex %llu quads %llu\n", f, (unsigned long long)m.stat_vram_reads, (unsigned long long)m.stat_vram_writes, (unsigned long long)m.stat_pal_writes, (unsigned long long)m.stat_tex_writes, (unsigned long long)m.quads_last_frame); }
 		if (f % 60 == 0) fprintf(stderr, "frame %d pc=%06X quads=%llu vis=%dx%d\n", f, m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
+	if (const char *tr = getenv("TEXRAW")) { FILE *tf = fopen(tr, "wb"); fwrite(m.texture_ram(), 1, 0x400000, tf); fclose(tf); }
 	if (const char *td = getenv("TEXDUMP"))
 	{   // TEXDUMP=firstpage  -> 8x8 grid of 256x256 pages as grayscale
 		int first = atoi(td); int W = 2048, H = 2048; std::vector<uint8_t> g(size_t(W) * H);

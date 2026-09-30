@@ -195,15 +195,38 @@ void Controls::update(MachineInputs &out, bool focused)
 	hold1(active("view2"), in1bit::VIEW2);
 	hold1(active("view3"), in1bit::VIEW3);
 
-	// gears: sticky H-pattern buttons (MAME's default shifter mode) plus sequential up/down
-	bool g[4] = {active("gear1"), active("gear2"), active("gear3"), active("gear4")};
-	for (int i = 0; i < 4; i++)
-		if (g[i] && !m_prev_gear[i]) m_gear = i + 1;
-	for (int i = 0; i < 4; i++) m_prev_gear[i] = g[i];
-	bool up = active("shift_up"), down = active("shift_down");
-	if (up && !m_prev_up) m_gear = std::min(4, m_gear + 1);
-	if (down && !m_prev_down) m_gear = std::max(0, m_gear - 1);
-	m_prev_up = up; m_prev_down = down;
+	// gears: MAME's four shifter types
+	//   sticky      a gear button keeps that gear until another (or Neutral) is pressed
+	//   toggling    pressing the engaged gear's button again goes back to neutral
+	//   sequential  two buttons step up / down through the gears (down from 1st is neutral)
+	//   h-pattern   a gear is engaged only while its button is held; neutral otherwise
+	{
+		static ShifterMode prev_mode = ShifterMode::Sticky;
+		if (prev_mode != c.shifter) { m_gear = 0; prev_mode = c.shifter; }
+		bool g[4] = {active("gear1"), active("gear2"), active("gear3"), active("gear4")};
+		bool neutral = active("neutral");
+		bool up = active("shift_up"), down = active("shift_down");
+		switch (c.shifter)
+		{
+		case ShifterMode::Sticky:
+			for (int i = 0; i < 4; i++) if (g[i] && !m_prev_gear[i]) m_gear = i + 1;
+			if (neutral && !m_prev_neutral) m_gear = 0;
+			break;
+		case ShifterMode::Toggling:
+			for (int i = 0; i < 4; i++) if (g[i] && !m_prev_gear[i]) m_gear = (m_gear == i + 1) ? 0 : i + 1;
+			break;
+		case ShifterMode::Sequential:
+			if (up && !m_prev_up) m_gear = std::min(4, m_gear + 1);
+			if (down && !m_prev_down) m_gear = std::max(0, m_gear - 1);
+			break;
+		case ShifterMode::HPattern:
+			m_gear = 0;
+			for (int i = 0; i < 4; i++) if (g[i]) m_gear = i + 1;      // highest held; none held = neutral
+			break;
+		}
+		for (int i = 0; i < 4; i++) m_prev_gear[i] = g[i];
+		m_prev_up = up; m_prev_down = down; m_prev_neutral = neutral;
+	}
 
 	// ---- analog controls ----------------------------------------------------------------------------
 	auto axis_value = [&](const AxisBinding &b, bool &ok) -> float {

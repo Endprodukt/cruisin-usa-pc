@@ -150,6 +150,8 @@ VideoOptions make_video_options(const VideoSettings &v)
 	o.smooth_output = v.smooth_output;
 	o.integer_scale = v.integer_scale;
 	o.keep_aspect = v.aspect != AspectMode::Stretch;
+	o.shadow_strength = float(v.shadow_strength) / 100.0f;
+	o.shadow_soft = float(v.shadow_softness) / 10.0f;
 	o.aspect = v.aspect == AspectMode::Wide169 ? 16.0f / 9.0f : v.aspect == AspectMode::Wide219 ? 21.0f / 9.0f : 4.0f / 3.0f;
 	return o;
 }
@@ -189,6 +191,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	Settings S;
 	S.load(ini);
 	if (S.nvram.empty()) S.nvram = "cruisn_usa.nv";
+	S.nvram = exe_relative(S.nvram);
 
 	// command line overrides (testing and scripting)
 	std::string shot = arg_value(a, "--shot");
@@ -201,6 +204,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	if (std::string v = arg_value(a, "--nvram"); !v.empty()) S.nvram = v;
 	if (std::string v = arg_value(a, "--backend"); !v.empty())
 		S.video.renderer = (v == "vk" || v == "vulkan") ? Renderer::Vulkan : (v == "cpu" ? Renderer::Cpu : Renderer::OpenGL);
+	if (std::string v = arg_value(a, "--shadows"); !v.empty())
+		S.video.shadows = v == "off" ? ShadowMode::Off : v == "original" ? ShadowMode::Original : ShadowMode::Modern;
 	if (std::string v = arg_value(a, "--scale"); !v.empty()) S.video.internal_scale = std::clamp(std::atoi(v.c_str()), 1, 8);
 	if (std::string v = arg_value(a, "--vsync"); !v.empty()) S.video.vsync = v != "0";
 	if (std::string v = arg_value(a, "--filter"); !v.empty()) S.video.texture_filter = v != "0";
@@ -296,6 +301,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		RECT cr; GetClientRect(hwnd, &cr);
 		video->resize(cr.right, cr.bottom);
 		m.attach_video_backend(video.get());
+		m.set_shadow_mode(int(S.video.shadows));
 	}
 	else
 	{
@@ -375,6 +381,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 		// hotkeys: F5/F6 internal resolution, F7 texture filter, F8 vsync, F9 output smoothing
 		bool vchanged = false;
+		if (g_pressed[VK_F4]) { S.video.shadows = ShadowMode((int(S.video.shadows) + 1) % 3); m.set_shadow_mode(int(S.video.shadows)); vchanged = true; }
 		if (g_pressed[VK_F5]) { S.video.internal_scale = std::max(1, S.video.internal_scale - 1); vchanged = true; }
 		if (g_pressed[VK_F6]) { S.video.internal_scale = std::min(8, S.video.internal_scale + 1); vchanged = true; }
 		if (g_pressed[VK_F7]) { S.video.texture_filter = !S.video.texture_filter; vchanged = true; }

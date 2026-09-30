@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "../machine/cmos.h"
+#include "../machine/default_nvram.h"
 #include "../outputs/outputs.h"
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -21,8 +23,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace {
 
-enum Page { P_HOME, P_VIDEO, P_AUDIO, P_CONTROLS, P_DIP, P_OUTPUTS, P_NETWORK, P_ABOUT, P_COUNT };
-const char *const kPageNames[P_COUNT] = {"Home", "Video", "Audio", "Controls", "DIP Switches", "Outputs", "Network", "About"};
+enum Page { P_HOME, P_VIDEO, P_AUDIO, P_CONTROLS, P_GAME, P_DIP, P_OUTPUTS, P_NETWORK, P_ABOUT, P_COUNT };
+const char *const kPageNames[P_COUNT] = {"Home", "Video", "Audio", "Controls", "Game settings", "DIP Switches", "Outputs", "Network", "About"};
 
 struct Launcher
 {
@@ -35,6 +37,10 @@ struct Launcher
 	bool dirty = false;
 	bool quit = false, play = false;
 	std::string status;
+
+	// game settings (the save file's adjustments)
+	std::vector<uint32_t> nv;
+	bool nv_loaded = false, nv_dirty = false, nv_from_default = false;
 
 	// controls page
 	int ctl_tab = 0;
@@ -54,6 +60,8 @@ struct Launcher
 		std::snprintf(ignore_buf, sizeof(ignore_buf), "%s", s.controls.ignore_devices.c_str());
 	}
 };
+
+void nv_save(struct Launcher &L);
 
 // ---- helpers -------------------------------------------------------------------------------------------
 
@@ -146,6 +154,7 @@ void page_home(Launcher &L)
 	if (ImGui::Button("Save settings", ImVec2(160, 40)))
 	{
 		L.dirty = false;
+		nv_save(L);
 		L.status = L.s.save(L.ini_path) ? "Saved." : "Saving failed.";
 	}
 	ImGui::SameLine();
@@ -224,6 +233,21 @@ void page_video(Launcher &L)
 	edited(L, ImGui::Checkbox("Integer scaling", &v.integer_scale));
 	edited(L, ImGui::Checkbox("VSync", &v.vsync));
 
+	ImGui::SeparatorText("Shadows");
+	ImGui::BeginDisabled(!gpu);
+	static const char *const shadows[] = {"Original (dithered raster quads)", "Modern (soft shadows)", "Off"};
+	int sh = int(v.shadows);
+	if (combo(L, "Shadow style", sh, shadows)) v.shadows = ShadowMode(sh);
+	help("The arcade draws car shadows as dithered pixel patterns. Modern replaces them with a smooth blended shadow at the internal resolution. F4 cycles the style in game.");
+	ImGui::BeginDisabled(v.shadows != ShadowMode::Modern);
+	ImGui::SetNextItemWidth(300);
+	edited(L, ImGui::SliderInt("Shadow darkness", &v.shadow_strength, 0, 100, "%d%%"));
+	ImGui::SetNextItemWidth(300);
+	edited(L, ImGui::SliderInt("Shadow softness", &v.shadow_softness, 0, 100, "%d"));
+	ImGui::EndDisabled();
+	ImGui::EndDisabled();
+	if (!gpu) ImGui::TextDisabled("Modern shadows need the OpenGL or Vulkan renderer.");
+
 	ImGui::SeparatorText("Rendering update (prepared, not active yet)");
 	ImGui::BeginDisabled(true);
 	edited(L, ImGui::Checkbox("Widescreen hack (wider field of view)", &v.widescreen_hack));
@@ -233,11 +257,8 @@ void page_video(Launcher &L)
 	int dd = v.draw_distance;
 	ImGui::SetNextItemWidth(300);
 	ImGui::SliderInt("Draw distance", &dd, 25, 400, "%d%%");
-	static const char *const shadows[] = {"Original (raster shadow quads)", "Modern shadows"};
-	int sh = int(v.shadows);
-	combo(L, "Shadows", sh, shadows);
 	ImGui::EndDisabled();
-	ImGui::TextDisabled("These need changes to the game's projection and culling code and a shadow pass in the GPU renderer.");
+	ImGui::TextDisabled("These need changes to the game's projection and culling code.");
 }
 
 void page_audio(Launcher &L)
@@ -402,6 +423,22 @@ void controls_bindings(Launcher &L)
 	ControlSettings &c = L.s.controls;
 	ImGui::TextWrapped("Bind a keyboard key and/or a controller button per action. Controller buttons are tied to the device that "
 	                   "pressed them (name + button), so a button on the wheel and the same number on a shifter never mix.");
+	static const char *const shifters[] = {"Buttons (sticky)", "Buttons (toggling)", "Sequential", "H-Pattern"};
+	int sm = int(c.shifter);
+	ImGui::SetNextItemWidth(260);
+	if (combo(L, "Shifter type", sm, shifters)) c.shifter = ShifterMode(sm);
+	help("Sticky: a gear button keeps that gear until another (or Neutral) is pressed.\n"
+	     "Toggling: pressing the engaged gear again returns to neutral.\n"
+	     "Sequential: shift up / down buttons or paddles.\n"
+	     "H-Pattern: for a real shifter - a gear is engaged only while its button is held, neutral otherwise.");
+	ImGui::SameLine();
+	ImGui::TextDisabled("  current gear: %s", L.ctl.gear() == 0 ? "N" : std::to_string(L.ctl.gear()).c_str());
+	auto visible = [&](const std::string &id) {
+		if (id == "neutral") return c.shifter == ShifterMode::Sticky;
+		if (id == "shift_up" || id == "shift_down") return c.shifter == ShifterMode::Sequential;
+		if (id.rfind("gear", 0) == 0) return c.shifter != ShifterMode::Sequential;
+		return true;
+	};
 	const char *group = "";
 	if (ImGui::BeginTable("bind", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp))
 	{
@@ -412,6 +449,7 @@ void controls_bindings(Launcher &L)
 		ImGui::TableHeadersRow();
 		for (const ActionInfo &a : action_table())
 		{
+			if (!visible(a.id)) continue;
 			if (std::string(a.group) != group)
 			{
 				group = a.group;
@@ -581,6 +619,94 @@ void page_controls(Launcher &L)
 		ImGui::EndTabBar();
 	}
 	capture_popup(L);
+}
+
+// ---- game settings (service-menu adjustments, edited in the save file) ---------------------------------------------
+
+void nv_load(Launcher &L)
+{
+	std::string path = exe_relative(L.s.nvram);
+	L.nv_from_default = false;
+	if (!cmos::load_file(path, L.nv) || !cmos::checksum_ok(L.nv))
+	{
+		L.nv.assign(cmos::WORDS, 0xffffffffu);
+		for (const NvPair &p : kDefaultNvram) if (p.index < L.nv.size()) L.nv[p.index] = p.value;
+		L.nv_from_default = true;
+	}
+	L.nv_loaded = true;
+	L.nv_dirty = false;
+}
+
+void nv_save(Launcher &L)
+{
+	if (!L.nv_loaded || !L.nv_dirty) return;
+	cmos::fix_checksum(L.nv);
+	L.status = cmos::save_file(exe_relative(L.s.nvram), L.nv) ? "Game settings written to the save file." : "Could not write the save file.";
+	L.nv_dirty = false;
+	L.nv_from_default = false;
+}
+
+void page_game(Launcher &L)
+{
+	if (!L.nv_loaded) nv_load(L);
+	ImGui::TextWrapped("The operator adjustments the game's service menu offers, edited directly in the save file so you never need the "
+	                   "service menu. They take effect at the next start. The control calibration is fixed and not listed.");
+	if (L.nv_from_default) ImGui::TextDisabled("No save file yet (or it was rejected): showing the factory values; the file is created when you apply.");
+	ImGui::Spacing();
+	for (const cmos::AdjInfo &a : cmos::adjustments())
+	{
+		ImGui::PushID(a.index);
+		int v = int(cmos::get(L.nv, a.index));
+		v = std::clamp(v, a.min, a.max);
+		int nvv = v;
+		ImGui::SetNextItemWidth(260);
+		switch (a.kind)
+		{
+		case cmos::AdjInfo::OnOff:
+		{
+			bool on = v != 0;
+			if (ImGui::Checkbox(a.label, &on)) nvv = on ? 1 : 0;
+			break;
+		}
+		case cmos::AdjInfo::Speed:
+		{
+			static const char *const units[] = {"MPH", "KPH"};
+			int u = v;
+			if (ImGui::BeginCombo(a.label, units[std::clamp(u, 0, 1)]))
+			{
+				for (int i = 0; i < 2; i++) if (ImGui::Selectable(units[i], i == u)) nvv = i;
+				ImGui::EndCombo();
+			}
+			break;
+		}
+		case cmos::AdjInfo::StartTime:
+		{
+			char fmt[24];
+			std::snprintf(fmt, sizeof(fmt), "%d s", 60 + 5 * v);
+			if (ImGui::SliderInt(a.label, &nvv, a.min, a.max, fmt)) {}
+			break;
+		}
+		default:
+			if (a.step > 1)
+			{
+				int steps = nvv / a.step;
+				if (ImGui::SliderInt(a.label, &steps, a.min / a.step, a.max / a.step, "%d x 1000")) nvv = steps * a.step;
+			}
+			else ImGui::SliderInt(a.label, &nvv, a.min, a.max);
+			break;
+		}
+		if (a.help && *a.help) help(a.help);
+		if (nvv != v) { cmos::set(L.nv, a.index, uint32_t(nvv)); L.nv_dirty = true; L.dirty = true; }
+		ImGui::PopID();
+	}
+	ImGui::Spacing();
+	if (ImGui::Button("Restore factory values"))
+		for (const cmos::AdjInfo &a : cmos::adjustments()) { cmos::set(L.nv, a.index, uint32_t(a.def)); L.nv_dirty = true; L.dirty = true; }
+	ImGui::SameLine();
+	if (ImGui::Button("Apply to save file")) { nv_save(L); }
+	ImGui::SameLine();
+	ImGui::TextDisabled("(also written when you press Play or Save settings)");
+	if (!L.status.empty()) ImGui::TextDisabled("%s", L.status.c_str());
 }
 
 // ---- DIP switches ---------------------------------------------------------------------------------------------
@@ -817,6 +943,7 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 		case P_VIDEO: page_video(L); break;
 		case P_AUDIO: page_audio(L); break;
 		case P_CONTROLS: page_controls(L); break;
+		case P_GAME: page_game(L); break;
 		case P_DIP: page_dip(L); break;
 		case P_OUTPUTS: page_outputs(L); break;
 		case P_NETWORK: page_network(L); break;
@@ -837,6 +964,7 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 		Sleep(8);
 	}
 
+	nv_save(L);
 	if (L.dirty || L.play) L.s.save(L.ini_path);
 	ImGui_ImplOpenGL3_Shutdown();
 	ImGui_ImplWin32_Shutdown();

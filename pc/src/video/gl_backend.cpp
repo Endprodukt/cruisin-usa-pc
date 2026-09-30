@@ -11,6 +11,9 @@
 #include "shader_src.h"
 
 #pragma comment(lib, "opengl32.lib")
+#ifndef GL_SCISSOR_TEST
+#define GL_SCISSOR_TEST 0x0C11
+#endif
 
 namespace {
 
@@ -37,6 +40,7 @@ using GLchar_ = char;
 #define GL_CLAMP_TO_EDGE 0x812F
 #define GL_TRIANGLE_STRIP 0x0005
 #define GL_MAX_TEXTURE_SIZE_ 0x0D33
+#define GL_R8 0x8229
 
 #define WGL_CONTEXT_MAJOR_VERSION_ARB 0x2091
 #define WGL_CONTEXT_MINOR_VERSION_ARB 0x2092
@@ -96,7 +100,7 @@ bool load_gl_functions()
 	return true;
 }
 
-struct Params { float a[4]; float b[4]; };
+struct Params { float a[4]; float b[4]; float c[4]; };
 
 class GlBackend final : public IVideoBackend
 {
@@ -216,6 +220,58 @@ public:
 		}
 	}
 
+	void draw_shadows(int page, const GpuQuad *q, int count) override
+	{
+		if (count <= 0) return;
+		const int sz = 512 * m_opt.scale;
+		const float sc = float(m_opt.scale);
+		const float radius = std::max(0.5f, m_opt.shadow_soft * sc);
+		// bounding box of the batch in page pixels, grown by the blur radius
+		float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
+		for (int i = 0; i < count; i++)
+			for (int k = 0; k < 4; k++)
+			{
+				minx = std::min(minx, q[i].p[k * 2]); maxx = std::max(maxx, q[i].p[k * 2]);
+				miny = std::min(miny, q[i].p[k * 2 + 1]); maxy = std::max(maxy, q[i].p[k * 2 + 1]);
+			}
+		int x0 = std::clamp(int(std::floor(minx * sc - radius - 2)), 0, sz), x1 = std::clamp(int(std::ceil(maxx * sc + radius + 2)), 0, sz);
+		int y0 = std::clamp(int(std::floor(miny * sc - radius - 2)), 0, sz), y1 = std::clamp(int(std::ceil(maxy * sc + radius + 2)), 0, sz);
+		if (x1 <= x0 || y1 <= y0) return;
+
+		// 1. hard coverage of the shadow quads into the mask
+		glBindFramebuffer(GL_FRAMEBUFFER, m_mask_fbo);
+		glViewport(0, 0, sz, sz);
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(x0, y0, x1 - x0, y1 - y0);
+		glClearColor(0, 0, 0, 0);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glUseProgram(m_prog_smask);
+		set_params({0, 0, 0, 0}, {0, 0, 0, 0});
+		glBindVertexArray(m_vao_quad);
+		glBindBuffer(GL_ARRAY_BUFFER, m_vbo_inst);
+		for (int done = 0; done < count;)
+		{
+			int n = std::min(count - done, MAX_BATCH);
+			glBufferData(GL_ARRAY_BUFFER, ptrdiff_t(n) * sizeof(GpuQuad), q + done, GL_DYNAMIC_DRAW);
+			glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, n);
+			done += n;
+		}
+
+		// 2. the blurred mask darkens the page
+		bind_page(page);
+		glScissor(x0, y0, x1 - x0, y1 - y0);
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		glUseProgram(m_prog_scomp);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, m_mask_tex);
+		set_params({-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, radius, 1.0f / float(sz), 1.0f / float(sz)});
+		glBindVertexArray(m_vao_empty);
+		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+		glDisable(GL_BLEND);
+		glDisable(GL_SCISSOR_TEST);
+	}
+
 	void latch(int page) override
 	{
 		int sz = 512 * m_opt.scale;
@@ -319,7 +375,9 @@ private:
 		m_prog_quad = link(shader_src::kQuadVert, shader_src::kQuadFrag, err);
 		m_prog_present = link(shader_src::kRectVert, shader_src::kPresentFrag, err);
 		m_prog_ovl = link(shader_src::kRectVert, shader_src::kOverlayFrag, err);
-		return m_prog_quad && m_prog_present && m_prog_ovl;
+		m_prog_smask = link(shader_src::kQuadVert, shader_src::kShadowMaskFrag, err);
+		m_prog_scomp = link(shader_src::kRectVert, shader_src::kShadowCompFrag, err);
+		return m_prog_quad && m_prog_present && m_prog_ovl && m_prog_smask && m_prog_scomp;
 	}
 
 	void new_tex(GLuint &t, GLenum fmt, int w, int h)
@@ -384,6 +442,17 @@ private:
 			glClear(GL_COLOR_BUFFER_BIT);
 		}
 		new_tex(m_disp_tex, GL_RGBA8, sz, sz);
+		if (m_mask_tex) { glDeleteTextures(1, &m_mask_tex); m_mask_tex = 0; }
+		new_tex(m_mask_tex, GL_R8, sz, sz);
+		if (!m_mask_fbo) glGenFramebuffers(1, &m_mask_fbo);
+		glBindFramebuffer(GL_FRAMEBUFFER, m_mask_fbo);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_mask_tex, 0);
+		glViewport(0, 0, sz, sz);
+		glClearColor(0, 0, 0, 0);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glBindTexture(GL_TEXTURE_2D, m_mask_tex);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		apply_page_filter();
 	}
@@ -407,9 +476,9 @@ private:
 	}
 
 	struct V4 { float x, y, z, w; };
-	void set_params(V4 a, V4 b)
+	void set_params(V4 a, V4 b, V4 c = {0, 0, 0, 0})
 	{
-		Params p{{a.x, a.y, a.z, a.w}, {b.x, b.y, b.z, b.w}};
+		Params p{{a.x, a.y, a.z, a.w}, {b.x, b.y, b.z, b.w}, {c.x, c.y, c.z, c.w}};
 		glBindBuffer(GL_UNIFORM_BUFFER, m_ubo);
 		glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(p), &p);
 		glBindBufferBase(GL_UNIFORM_BUFFER, 3, m_ubo);
@@ -422,7 +491,8 @@ private:
 	VideoOptions m_opt;
 	int m_win_w = 1, m_win_h = 1;
 
-	GLuint m_prog_quad = 0, m_prog_present = 0, m_prog_ovl = 0;
+	GLuint m_prog_quad = 0, m_prog_present = 0, m_prog_ovl = 0, m_prog_smask = 0, m_prog_scomp = 0;
+	GLuint m_mask_tex = 0, m_mask_fbo = 0;
 	GLuint m_vao_empty = 0, m_vao_quad = 0, m_vbo_inst = 0, m_ubo = 0;
 	GLuint m_tex_ram = 0, m_tex_pal = 0, m_tex_ovl = 0;
 	GLuint m_page_tex[2] = {0, 0}, m_fbo[2] = {0, 0}, m_disp_tex = 0;

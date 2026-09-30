@@ -66,6 +66,7 @@ public:
 	// ---- GPU video path -------------------------------------------------------------------------
 	// With a backend attached, quads are rendered on the GPU (soft rasterizer disabled).
 	void attach_video_backend(IVideoBackend *gpu);
+	void set_shadow_mode(int m) { m_shadow_mode = m; }
 	void present_gpu();                       // flush pending draws and present the display page
 	int  display_page() const { return m_present_page; }
 
@@ -80,6 +81,7 @@ public:
 	std::function<void(bool)> on_audio_enable;
 
 	// ---- persistent state ---------------------------------------------------------------
+	std::vector<uint32_t> &nvram() { return m_nvram; }
 	void load_default_nvram();                 // embedded, pre-calibrated CMOS image
 	bool load_nvram(const std::string &path);
 	bool save_nvram(const std::string &path) const;
@@ -136,6 +138,8 @@ private:
 	// GPU feed
 	IVideoBackend *m_gpu = nullptr;
 	std::vector<GpuQuad> m_gq;
+	std::vector<GpuQuad> m_gs;             // shadow quads (modern shadow mode), same page as m_gq_page
+	int m_shadow_mode = 0;                 // 0 original, 1 modern, 2 off
 	int m_gq_page = 0;
 	int m_present_page = 0;
 	int m_pal_lo = 0x7fffffff, m_pal_hi = -1;
@@ -143,6 +147,7 @@ private:
 	int m_ovl_lo[2] = {0x7fffffff, 0x7fffffff}, m_ovl_hi[2] = {-1, -1};
 	std::vector<uint16_t> m_cpu_layer;     // CPU-written video RAM pixels, bit 15 = valid
 	void gpu_flush_quads();
+	void gpu_flush_shadows();
 	void gpu_sync_state();
 	void gpu_add_quad(const VQuad &q);
 	void dcs_write(uint8_t d);

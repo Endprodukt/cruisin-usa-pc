@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <windows.h>
 
 namespace {
 
@@ -87,8 +88,9 @@ const char *const kRenderer[] = {"cpu", "opengl", "vulkan"};
 const char *const kWindow[] = {"window", "borderless", "fullscreen"};
 const char *const kAspect[] = {"4:3", "16:9", "21:9", "stretch"};
 const char *const kHud[] = {"centre", "edges", "25", "50", "75"};
-const char *const kShadow[] = {"original", "modern"};
+const char *const kShadow[] = {"original", "modern", "off"};
 const char *const kOutput[] = {"off", "windows", "network"};
+const char *const kShifter[] = {"sticky", "toggling", "sequential", "h-pattern"};
 
 AxisBinding parse_axis(const std::string &text)
 {
@@ -123,6 +125,16 @@ const char *to_string(AspectMode a) { return kAspect[int(a)]; }
 const char *to_string(HudPlacement h) { return kHud[int(h)]; }
 const char *to_string(ShadowMode s) { return kShadow[int(s)]; }
 const char *to_string(OutputMode o) { return kOutput[int(o)]; }
+const char *to_string(ShifterMode m) { return kShifter[int(m)]; }
+
+std::string exe_relative(const std::string &path)
+{
+	if (path.empty() || (path.size() > 1 && path[1] == ':') || path[0] == '/' || path[0] == '\\') return path;
+	char exe[MAX_PATH];
+	GetModuleFileNameA(nullptr, exe, MAX_PATH);
+	std::string d = exe;
+	return d.substr(0, d.find_last_of("\\/") + 1) + path;
+}
 
 const std::vector<ActionInfo> &action_table()
 {
@@ -176,6 +188,8 @@ bool Settings::load(const std::string &path)
 	r.choice("video", "hud", video.hud, kHud);
 	r.integer("video", "draw_distance", video.draw_distance, 25, 400);
 	r.choice("video", "shadows", video.shadows, kShadow);
+	r.integer("video", "shadow_strength", video.shadow_strength, 0, 100);
+	r.integer("video", "shadow_softness", video.shadow_softness, 0, 100);
 
 	r.boolean("audio", "enabled", audio.enabled);
 	r.integer("audio", "volume", audio.volume, 0, 200);
@@ -199,6 +213,7 @@ bool Settings::load(const std::string &path)
 		r.integer("keyboard_analog", (std::string(e.p) + "_key_delta").c_str(), e.k->key_delta, 1, 400);
 		r.integer("keyboard_analog", (std::string(e.p) + "_center_delta").c_str(), e.k->center_delta, 0, 400);
 	}
+	r.choice("controls", "shifter", controls.shifter, kShifter);
 	r.boolean("controls", "background_input", controls.background_input);
 	r.boolean("controls", "allow_duplicate_devices", controls.allow_duplicate_devices);
 	r.str("controls", "ignore_devices", controls.ignore_devices);
@@ -238,11 +253,12 @@ bool Settings::save(const std::string &path) const
 	  << "\ntexture_filter = " << b(video.texture_filter) << "\nsmooth_output = " << b(video.smooth_output)
 	  << "\n; reserved for the widescreen / rendering stage\nwidescreen_hack = " << b(video.widescreen_hack)
 	  << "\nhud = " << to_string(video.hud) << "\ndraw_distance = " << video.draw_distance
-	  << "\nshadows = " << to_string(video.shadows) << "\n\n";
+	  << "\n; shadows: original (the arcade's dithered quads) | modern (soft blended) | off\nshadows = " << to_string(video.shadows)
+	  << "\nshadow_strength = " << video.shadow_strength << "\nshadow_softness = " << video.shadow_softness << "\n\n";
 
 	o << "[audio]\nenabled = " << b(audio.enabled) << "\nvolume = " << audio.volume << "\nlatency_ms = " << audio.latency_ms << "\n\n";
 
-	o << "[controls]\nbackground_input = " << b(controls.background_input) << "\nallow_duplicate_devices = "
+	o << "[controls]\n; shifter: sticky | toggling | sequential | h-pattern (MAME's shifter types)\nshifter = " << to_string(controls.shifter) << "\nbackground_input = " << b(controls.background_input) << "\nallow_duplicate_devices = "
 	  << b(controls.allow_duplicate_devices) << "\nignore_devices = " << controls.ignore_devices << "\n\n";
 
 	o << "[digital]\n; MAME key names (LEFT, LCONTROL, SPACE, F2, ...); NONE = unbound\n";

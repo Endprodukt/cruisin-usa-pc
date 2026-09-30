@@ -36,6 +36,8 @@ struct VideoOptions
 	bool integer_scale = false;
 	bool keep_aspect = true;
 	float aspect = 4.0f / 3.0f;     // arcade monitor aspect ratio (display area)
+	float shadow_strength = 0.55f;  // darkness of modern shadows (0..1)
+	float shadow_soft = 3.0f;       // penumbra radius in arcade (1x) pixels
 };
 
 class IVideoBackend
@@ -56,6 +58,8 @@ public:
 	virtual void upload_overlay(int page, const uint16_t *layer512, int first_row, int last_row) = 0;
 
 	virtual void draw(int page, const GpuQuad *quads, int count) = 0;
+	// the game's shadow quads (flat dithered triangles): rendered as a soft blended shadow instead
+	virtual void draw_shadows(int page, const GpuQuad *quads, int count) = 0;
 	// freeze the given page as the displayed image (what the monitor shows at vblank); draws recorded
 	// afterwards (the game already renders the next frame) must not show up
 	virtual void latch(int page) = 0;
