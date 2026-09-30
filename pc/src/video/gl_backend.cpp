@@ -246,6 +246,8 @@ public:
 		glClearColor(0, 0, 0, 0);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glUseProgram(m_prog_smask);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, m_tex_ram);
 		set_params({0, 0, 0, 0}, {0, 0, 0, 0});
 		glBindVertexArray(m_vao_quad);
 		glBindBuffer(GL_ARRAY_BUFFER, m_vbo_inst);

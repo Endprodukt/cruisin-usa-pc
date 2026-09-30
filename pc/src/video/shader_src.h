@@ -111,10 +111,12 @@ void main()
 	// Hardware model: vertices sit at pixel centres (x + 0.5, plus 0.001 on "right/bottom" points);
 	// a pixel is covered when its centre lies between the two boundary edges of the scanline and
 	// the texture coordinate is interpolated along the edges and then across the scanline.
+	// the page border strip (half an arcade pixel, only visible when upscaled) follows the first/last pixel row/column
+	vec2 vp = clamp(v_pos, vec2(0.5), vec2(511.5));
 	float xl, xr; vec2 tl, tr;
-	if (!scan(P, T, v_pos.y, false, xl, xr, tl, tr)) discard;
-	if (v_pos.x < xl || v_pos.x >= xr) discard;
-	vec2 uv = mix(tl, tr, (v_pos.x - xl) / max(xr - xl, 1e-6));
+	if (!scan(P, T, vp.y, false, xl, xr, tl, tr)) discard;
+	if (vp.x < xl || vp.x >= xr) discard;
+	vec2 uv = mix(tl, tr, (vp.x - xl) / max(xr - xl, 1e-6));
 
 	if ((flags & 0x2000u) != 0u)
 	{
@@ -206,7 +208,15 @@ layout(location = 2) flat in vec4 f_p23;
 layout(location = 3) flat in vec4 f_t01;
 layout(location = 4) flat in vec4 f_t23;
 layout(location = 5) flat in uvec4 f_misc;
+layout(BIND(0)) uniform usampler2D u_tex;
 layout(location = 0) out vec4 o_color;
+
+uint texel(uint base, int col, int row)
+{
+	int lin = int(base) * 256 + (row & 255) * 256 + col;
+	if (lin < 0 || lin >= 4194304) return 0u;
+	return texelFetch(u_tex, ivec2(lin & 255, lin >> 8), 0).r;
+}
 
 // evaluate the two boundary edges of the quad at height y; returns false if fewer than 2 cross.
 // clampsel: choose edges using y clamped into the vertical extent, but evaluate at the real y
@@ -243,6 +253,14 @@ void main()
 	float xl, xr; vec2 tl, tr;
 	if (!scan(P, T, v_pos.y, false, xl, xr, tl, tr)) discard;
 	if (v_pos.x < xl || v_pos.x >= xr) discard;
+	uint flags = f_misc.x, base = f_misc.z;
+	uint mode = flags & 0xc00u;
+	if ((flags & 0x300u) == 0x100u && (mode == 0x800u || mode == 0xc00u))
+	{
+		vec2 uv = mix(tl, tr, (v_pos.x - xl) / max(xr - xl, 1e-6));
+		ivec2 ti = ivec2(floor(uv));
+		if (texel(base, ti.x, ti.y) == 0u) discard;
+	}
 	o_color = vec4(1.0);
 }
 )GLSL";

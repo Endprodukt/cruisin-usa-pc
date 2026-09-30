@@ -585,6 +585,15 @@ void MidVUnit::dma_trigger()
 	std::memcpy(q.dma, m_dma_data, sizeof(q.dma));
 	q.page = (m_page_control & 4) ? 1 : 0;
 	if (const char *sk = std::getenv("SKIPQ")) { unsigned v = unsigned(std::strtoul(sk, nullptr, 16)); if (q.dma[0] == v) { m_dma_data_index = 0; return; } }
+	if (std::getenv("QBIG") && q.dma[0] != 0x0100 && m_gpu)
+	{ int w = int(int16_t(q.dma[4])) - int(int16_t(q.dma[2])); if (w > 300 || w < -300) { std::fprintf(stderr, "BIG f%llu ", (unsigned long long)m_frame_count); for (int i = 0; i < 16; i++) std::fprintf(stderr, "%04X ", q.dma[i]); std::fprintf(stderr, "\n"); } }
+	if (const char *qd = std::getenv("QDUMP"))
+		if (m_gpu && m_frame_count == uint64_t(std::atoi(qd)))
+		{
+			for (int i = 0; i < 16; i++)
+				std::fprintf(stderr, "%04X ", q.dma[i]);
+			std::fprintf(stderr, "\n");
+		}
 	if (m_gpu)
 	{
 		gpu_add_quad(q);
@@ -1101,7 +1110,7 @@ void MidVUnit::gpu_flush_quads()
 void MidVUnit::gpu_add_quad(const VQuad &q)
 {
 	// the game's shadows are flat dithered quads; in modern mode they become a soft blended pass
-	const bool is_shadow = (q.dma[0] & 0x2000) && (q.dma[0] & 0x300) != 0x100;
+	const bool is_shadow = (q.dma[0] & 0x2000) != 0;
 	if (is_shadow && m_shadow_mode == 2)
 		return;
 	const bool modern = is_shadow && m_shadow_mode == 1;
