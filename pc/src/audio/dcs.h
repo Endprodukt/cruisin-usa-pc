@@ -27,6 +27,9 @@ public:
 	std::function<void(bool)> on_audio_enable;
 
 	bool halted() const { return m_halted; }
+	// diagnostics
+	uint64_t stat_writes = 0, stat_overwrites = 0, stat_reads = 0;
+	bool input_full() const { return !(m_latch_control & 0x800); }
 	uint64_t total_cycles() const { return m_cyc + uint64_t(m_chunk - std::max(0, m_cpu->icount())); }
 
 private:
@@ -75,6 +78,7 @@ private:
 	uint16_t m_control_regs[32] = {};
 
 	// state
+	double   m_carry = 0;
 	bool     m_halted = true;
 	uint32_t m_sounddata_bank = 0;
 	uint16_t m_latch_control = 0;

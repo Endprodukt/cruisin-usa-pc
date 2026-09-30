@@ -1,0 +1,66 @@
+// GPU video backend interface (OpenGL / Vulkan).
+//
+// The V-Unit video hardware is a list of textured/flat quads drawn into two 512x512 paletted
+// pages. The backends render those quads at an N x internal resolution, resolving the
+// palette at draw time, and present the display page scaled to the window.
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+// One hardware quad, exactly as the shader wants it (20 words, used as instance data).
+struct GpuQuad
+{
+	float p[8];              // x0 y0 x1 y1 x2 y2 x3 y3: 1x pixel coordinates (unshifted, integer values)
+	float t[8];              // u0 v0 .. u3 v3: texel coordinates at the vertices (texel centre = +0.5)
+	uint32_t flags;          // DMA word 0 (mode bits)
+	uint32_t pixdata;        // DMA word 1 (palette base)
+	uint32_t texbase;        // DMA word 14 (texture base in 256-byte rows)
+	uint32_t edge;           // bit i: vertex i is a "right" vertex (x+1), bit 4+i: "bottom" vertex (y+1)
+};
+static_assert(sizeof(GpuQuad) == 80, "GpuQuad layout");
+
+struct VideoOptions
+{
+	int  scale = 2;              // internal resolution multiplier, 1..8
+	bool vsync = true;
+	bool filter_textures = false;   // bilinear texture filtering (off = authentic point sampling)
+	bool smooth_output = true;      // linear filtering when scaling the final image to the window
+	bool integer_scale = false;
+	bool keep_aspect = true;
+	float aspect = 4.0f / 3.0f;     // arcade monitor aspect ratio (display area)
+};
+
+class IVideoBackend
+{
+public:
+	virtual ~IVideoBackend() = default;
+
+	virtual const char *name() const = 0;
+	virtual bool init(HWND hwnd, const VideoOptions &opt, std::string &err) = 0;
+	virtual void shutdown() = 0;
+	virtual void resize(int width, int height) = 0;
+	virtual void set_options(const VideoOptions &opt) = 0;   // live changes (filtering, vsync, aspect)
+
+	// state uploads (inclusive first/last indices)
+	virtual void upload_palette(const uint32_t *argb32768, int first, int last) = 0;
+	virtual void upload_texture_rows(const uint8_t *ram4mb, int first_row, int last_row) = 0;   // 256-byte rows
+	// CPU-drawn pixels (index | 0x8000 marks a valid pixel) composited into a page
+	virtual void upload_overlay(int page, const uint16_t *layer512, int first_row, int last_row) = 0;
+
+	virtual void draw(int page, const GpuQuad *quads, int count) = 0;
+	virtual void present(int page, int vis_w, int vis_h) = 0;
+
+	// grab the most recently presented page at internal resolution (RGBA8, top-down); returns size
+	virtual bool read_page(int page, std::vector<uint32_t> &out, int &w, int &h) = 0;
+};
+
+std::unique_ptr<IVideoBackend> create_gl_backend();
+std::unique_ptr<IVideoBackend> create_vk_backend();

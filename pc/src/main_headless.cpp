@@ -4,6 +4,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include "machine/autosetup.h"
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -14,7 +15,7 @@ int main(int argc, char **argv)
 {
 	std::string rom = "D:/Mame/roms/crusnusa.zip", shot = "shot.png", ver = "4.5";
 	int frames = 300;
-	std::string wav;
+	std::string wav, makenv;
 	struct Ev { int at, dur; uint16_t bit; };
 	std::vector<Ev> evs;
 	struct Ax { int at; char which; int val; };
@@ -40,6 +41,7 @@ int main(int argc, char **argv)
 			char c; int at, v; std::string a = argv[++i];
 			if (sscanf(a.c_str(), "%c@%d=%d", &c, &at, &v) == 3) axes.push_back({at, c, v});
 		}
+		else if (!strcmp(argv[i], "--make-nv") && i + 1 < argc) makenv = argv[++i];
 		else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
 		else if (!strcmp(argv[i], "--ver") && i + 1 < argc) ver = argv[++i];
 	}
@@ -49,12 +51,16 @@ int main(int argc, char **argv)
 	std::vector<int16_t> pcm; double rate = 0; int blocks = 0;
 	m.on_audio = [&](const int16_t *b, int n, double r) { pcm.insert(pcm.end(), b, b + n); if (rate == 0) rate = r; blocks++; };
 	m.reset();
+	if (getenv("DEFAULT_NV")) m.load_default_nvram();
+	if (!makenv.empty()) { run_auto_setup(m); m.save_nvram(makenv); fprintf(stderr, "saved %s\n", makenv.c_str()); return 0; }
 	for (int f = 0; f < frames; f++)
 	{
 		for (auto &a : axes) if (a.at == f) { if (a.which == 'w') m.inputs.wheel = a.val; else if (a.which == 'a') m.inputs.accel = a.val; else m.inputs.brake = a.val; }
 		m.inputs.in0 = 0xffff;
 		for (auto &e : evs) if (f >= e.at && f < e.at + e.dur) m.inputs.in0 &= ~e.bit;
 		m.run_frame();
+		{ static bool once = false; if (!once && m.quads_last_frame > 50) { once = true; fprintf(stderr, "first 3D frame: %d\n", f); } }
+		if (getenv("VSTAT") && f % 500 == 0) { fprintf(stderr, "f%d vram r/w %llu/%llu pal %llu tex %llu quads %llu\n", f, (unsigned long long)m.stat_vram_reads, (unsigned long long)m.stat_vram_writes, (unsigned long long)m.stat_pal_writes, (unsigned long long)m.stat_tex_writes, (unsigned long long)m.quads_last_frame); }
 		if (f % 60 == 0) fprintf(stderr, "frame %d pc=%06X quads=%llu vis=%dx%d\n", f, m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
 	if (const char *td = getenv("TEXDUMP"))
@@ -80,6 +86,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "audio: %zu samples @ %.1f Hz, %d blocks, peak %d\n", pcm.size(), rate, blocks, peak);
 	}
 	else fprintf(stderr, "audio: none (%zu samples)\n", pcm.size());
+	if (m.dcs()) fprintf(stderr, "dcs: writes %llu overwrites(lost) %llu reads %llu\n", (unsigned long long)m.dcs()->stat_writes, (unsigned long long)m.dcs()->stat_overwrites, (unsigned long long)m.dcs()->stat_reads);
 	int w = m.screen_w(), h = m.screen_h();
 	std::vector<uint8_t> rgb(size_t(w) * h * 3);
 	for (int y = 0; y < h; y++)

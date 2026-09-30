@@ -9,6 +9,7 @@
 #include <cstdlib>
 
 #include "../../third_party/miniz/miniz.h"
+#include "default_nvram.h"
 
 namespace {
 
@@ -94,6 +95,7 @@ MidVUnit::MidVUnit()
 	m_textureram.assign(0x400000, 0);
 	m_frame.assign(FRAME_STRIDE * 512, 0);
 	sound_rom.assign(0x1000000, 0xff);
+	m_cpu_layer.assign(0x80000, 0);
 
 	// fast paths: RAM at 0x000000 and 0x400000, ROM at 0xc00000
 	for (int p = 0; p < 0x20000 / tms320c3x_device::PAGE_WORDS; p++)
@@ -194,7 +196,7 @@ bool MidVUnit::load_roms(const std::string &zip_path, const std::string &version
 	m_dcs = std::make_unique<Dcs1>(reinterpret_cast<const uint16_t *>(sound_rom.data()), sound_rom.size() / 2);
 	m_dcs->on_audio = [this](const int16_t *b, int n, double r) { if (on_audio) on_audio(b, n, r); };
 	m_dcs->on_audio_enable = [this](bool e) { if (on_audio_enable) on_audio_enable(e); };
-	on_sound_data = [this](uint8_t d) { m_dcs->data_w(d); };
+	on_sound_data = [this](uint8_t d) { dcs_write(d); };
 	on_dcs_reset = [this](int st) { m_dcs->reset_w(st); };
 	return true;
 }
@@ -228,9 +230,39 @@ void MidVUnit::reset()
 int MidVUnit::run_cpu(int cycles)
 {
 	int used = m_cpu->run(cycles);
-	if (m_dcs)
-		m_dcs->advance(used * (Dcs1::ADSP_CLOCK / double(CPU_HZ)));
+	sync_dcs();
 	return used;
+}
+
+// bring the DCS up to the main CPU's current time
+void MidVUnit::sync_dcs()
+{
+	if (!m_dcs)
+		return;
+	uint64_t now = now_cycles();
+	if (now <= m_dcs_synced)
+		return;
+	double delta = double(now - m_dcs_synced) * (Dcs1::ADSP_CLOCK / double(CPU_HZ));
+	m_dcs_synced = now;
+	double use = std::max(0.0, delta - m_dcs_ahead);
+	m_dcs_ahead = std::max(0.0, m_dcs_ahead - delta);
+	if (use > 0)
+		m_dcs->advance(use);
+}
+
+// host -> DCS command byte: make sure the previous byte was consumed first (real hardware
+// has a far tighter host/DSP interleave than our per-scanline slices)
+void MidVUnit::dcs_write(uint8_t d)
+{
+	if (!m_dcs)
+		return;
+	sync_dcs();
+	for (int guard = 0; m_dcs->input_full() && guard < 100; guard++)
+	{
+		m_dcs->advance(100);
+		m_dcs_ahead += 100;
+	}
+	m_dcs->data_w(d);
 }
 
 uint64_t MidVUnit::now_cycles() const
@@ -245,7 +277,10 @@ uint64_t MidVUnit::now_cycles() const
 uint32_t MidVUnit::bus_read(offs_t addr)
 {
 	if (addr >= 0x900000 && addr < 0x980000)
+	{
+		stat_vram_reads++;
 		return m_videoram[addr - 0x900000];
+	}
 	if (addr >= 0xa00000 && addr < 0xc00000)
 	{
 		size_t o = size_t(addr - 0xa00000) * 2;
@@ -280,12 +315,30 @@ void MidVUnit::bus_write(offs_t addr, uint32_t data)
 	}
 	if (addr >= 0x900000 && addr < 0x980000)
 	{
+		stat_vram_writes++;
 		m_videoram[addr - 0x900000] = uint16_t(data);
+		if (m_gpu)
+		{
+			if (!m_gq.empty()) gpu_flush_quads();
+			uint32_t off = addr - 0x900000;
+			int pg = (off >> 18) & 1, row = (off >> 9) & 511;
+			m_cpu_layer[off] = uint16_t((data & 0x7fff) | 0x8000);
+			m_ovl_lo[pg] = std::min(m_ovl_lo[pg], row);
+			m_ovl_hi[pg] = std::max(m_ovl_hi[pg], row);
+		}
 		return;
 	}
 	if (addr >= 0xa00000 && addr < 0xc00000)
 	{
+		stat_tex_writes++;
 		size_t o = size_t(addr - 0xa00000) * 2;
+		if (m_gpu)
+		{
+			if (!m_gq.empty()) gpu_flush_quads();
+			int row = int(o >> 8);
+			m_tex_lo = std::min(m_tex_lo, row);
+			m_tex_hi = std::max(m_tex_hi, row);
+		}
 		m_textureram[o] = uint8_t(data);
 		m_textureram[o + 1] = uint8_t(data >> 8);
 		return;
@@ -298,6 +351,13 @@ void MidVUnit::bus_write(offs_t addr, uint32_t data)
 	}
 	if (addr >= 0x9e0000 && addr < 0x9e8000)
 	{
+		stat_pal_writes++;
+		if (m_gpu)
+		{
+			if (!m_gq.empty()) gpu_flush_quads();
+			m_pal_lo = std::min(m_pal_lo, int(addr - 0x9e0000));
+			m_pal_hi = std::max(m_pal_hi, int(addr - 0x9e0000));
+		}
 		m_paletteram[addr - 0x9e0000] = data;
 		m_palette_rgb[addr - 0x9e0000] =
 			(uint32_t(pal5(data >> 10)) << 16) | (uint32_t(pal5(data >> 5)) << 8) | pal5(data);
@@ -524,6 +584,13 @@ void MidVUnit::dma_trigger()
 	VQuad q;
 	std::memcpy(q.dma, m_dma_data, sizeof(q.dma));
 	q.page = (m_page_control & 4) ? 1 : 0;
+	if (m_gpu)
+	{
+		gpu_add_quad(q);
+		quads_last_frame++;
+		m_dma_data_index = 0;
+		return;
+	}
 	if (const char *qd = std::getenv("QDUMP"))
 		if (m_frame_count == uint64_t(std::atoi(qd)))
 		{
@@ -580,7 +647,7 @@ void MidVUnit::update_screen_rows(int from, int to, int page)
 
 void MidVUnit::page_control_write(uint32_t data)
 {
-	if ((m_page_control ^ data) & 1)
+	if (((m_page_control ^ data) & 1) && !m_gpu)
 	{
 		// the visible page flips: everything up to the current beam position was drawn from the old page
 		int upto = m_vpos - 1;
@@ -845,7 +912,9 @@ bool MidVUnit::run_frame()
 	for (m_vpos = 0; m_vpos < m_vtotal; m_vpos++)
 	{
 		// visible area ends here: draw the remainder of the visible page (vblank start)
-		if (m_vpos == m_vis_h)
+		if (m_vpos == m_vis_h && m_gpu)
+			m_present_page = m_page_control & 1;
+		if (m_vpos == m_vis_h && !m_gpu)
 		{
 			if (m_partial_next_row < m_vis_h)
 				update_screen_rows(m_partial_next_row, m_vis_h - 1, m_page_control & 1);
@@ -896,7 +965,7 @@ bool MidVUnit::run_frame()
 	m_frame_count++;
 
 	// convert the indexed frame to RGB with the palette as it is at end of frame
-	for (int y = 0; y < m_vis_h; y++)
+	for (int y = 0; y < (m_gpu ? 0 : m_vis_h); y++)
 	{
 		uint32_t *row = &m_frame[size_t(y) * FRAME_STRIDE];
 		for (int x = 0; x < m_vis_w; x++)
@@ -908,6 +977,14 @@ bool MidVUnit::run_frame()
 // ---------------------------------------------------------------------------------------
 // NVRAM
 // ---------------------------------------------------------------------------------------
+
+void MidVUnit::load_default_nvram()
+{
+	std::fill(m_nvram.begin(), m_nvram.end(), 0xffffffffu);
+	for (const NvPair &p : kDefaultNvram)
+		if (p.index < m_nvram.size())
+			m_nvram[p.index] = p.value;
+}
 
 bool MidVUnit::load_nvram(const std::string &path)
 {
@@ -927,4 +1004,121 @@ bool MidVUnit::save_nvram(const std::string &path) const
 	size_t n = std::fwrite(m_nvram.data(), 4, m_nvram.size(), f);
 	std::fclose(f);
 	return n == m_nvram.size();
+}
+
+
+// ---------------------------------------------------------------------------------------
+// GPU feed
+// ---------------------------------------------------------------------------------------
+
+void MidVUnit::attach_video_backend(IVideoBackend *gpu)
+{
+	m_gpu = gpu;
+	m_gq.clear();
+	m_gq.reserve(4096);
+	if (!gpu)
+		return;
+	// everything the GPU knows is stale: push full palette / texture state on the next sync
+	m_pal_lo = 0; m_pal_hi = 0x7fff;
+	m_tex_lo = 0; m_tex_hi = 16383;
+	for (int pg = 0; pg < 2; pg++)
+	{
+		m_ovl_lo[pg] = 0; m_ovl_hi[pg] = 511;
+		// replay whatever the CPU drew so far as overlay content
+		for (size_t i = 0; i < 0x40000; i++)
+			m_cpu_layer[size_t(pg) * 0x40000 + i] = uint16_t((m_videoram[size_t(pg) * 0x40000 + i] & 0x7fff) | 0x8000);
+	}
+}
+
+void MidVUnit::gpu_sync_state()
+{
+	if (!m_gpu)
+		return;
+	if (m_pal_hi >= 0)
+	{
+		m_gpu->upload_palette(m_palette_rgb.data(), m_pal_lo, m_pal_hi);
+		m_pal_lo = 0x7fffffff; m_pal_hi = -1;
+	}
+	if (m_tex_hi >= 0)
+	{
+		m_gpu->upload_texture_rows(m_textureram.data(), m_tex_lo, m_tex_hi);
+		m_tex_lo = 0x7fffffff; m_tex_hi = -1;
+	}
+	for (int pg = 0; pg < 2; pg++)
+	{
+		if (m_ovl_hi[pg] < 0)
+			continue;
+		uint16_t *layer = m_cpu_layer.data() + size_t(pg) * 0x40000;
+		m_gpu->upload_overlay(pg, layer, m_ovl_lo[pg], m_ovl_hi[pg]);
+		// pixels are consumed: clear the valid bits of the uploaded rows
+		for (int y = m_ovl_lo[pg]; y <= m_ovl_hi[pg]; y++)
+			for (int x = 0; x < 512; x++)
+				layer[size_t(y) * 512 + x] &= 0x7fff;
+		m_ovl_lo[pg] = 0x7fffffff; m_ovl_hi[pg] = -1;
+	}
+}
+
+void MidVUnit::gpu_flush_quads()
+{
+	if (!m_gpu || m_gq.empty())
+		return;
+	gpu_sync_state();
+	m_gpu->draw(m_gq_page, m_gq.data(), int(m_gq.size()));
+	m_gq.clear();
+}
+
+void MidVUnit::gpu_add_quad(const VQuad &q)
+{
+	if (!m_gq.empty() && q.page != m_gq_page)
+		gpu_flush_quads();
+	m_gq_page = q.page;
+
+	const uint16_t *d = q.dma;
+	GpuQuad g{};
+	float vx[4], vy[4];
+	for (int i = 0; i < 4; i++)
+	{
+		vx[i] = float(int16_t(d[2 + i * 2]));
+		vy[i] = float(int16_t(d[3 + i * 2]));
+		g.p[i * 2] = vx[i];
+		g.p[i * 2 + 1] = vy[i];
+		g.t[i * 2] = float(d[10 + i] & 0xff) + 0.5f;
+		g.t[i * 2 + 1] = float(d[10 + i] >> 8) + 0.5f;
+	}
+
+	// hardware model: vertices are pixel centres; "right"/"bottom" points get a 0.001 nudge so that
+	// their edge pixels are included (same rule as the reference rasterizer)
+	for (int i = 0; i < 4; i++) { g.p[i * 2] += 0.5f; g.p[i * 2 + 1] += 0.5f; }
+	uint8_t rmask = 0, bmask = 0, eqmask = 0;
+	for (int vn = 0; vn < 4; vn++)
+	{
+		int nx = (vn + 1) & 3;
+		if (vy[nx] == vy[vn] && vx[nx] == vx[vn]) eqmask |= 1 << vn;
+		if (vy[nx] > vy[vn] || (vy[nx] == vy[vn] && vx[nx] < vx[vn])) rmask |= 1 << vn;
+		if (vx[nx] < vx[vn] || (vx[nx] == vx[vn] && vy[nx] < vy[vn])) bmask |= 1 << vn;
+	}
+	if (eqmask != 0x0f)
+		for (int vn = 0; vn < 4; vn++)
+		{
+			int eff = vn;
+			while (eqmask & (1 << eff)) eff = (eff + 1) & 3;
+			if (rmask & (1 << eff)) g.p[vn * 2] += 0.001f;
+			if (bmask & (1 << eff)) g.p[vn * 2 + 1] += 0.001f;
+		}
+	g.edge = 0;
+	g.flags = d[0];
+	g.pixdata = d[1];
+	g.texbase = d[14];
+	m_gq.push_back(g);
+	if (m_gq.size() >= 4096)
+		gpu_flush_quads();
+}
+
+void MidVUnit::present_gpu()
+{
+	if (!m_gpu)
+		return;
+	gpu_flush_quads();
+	gpu_sync_state();
+	m_gpu->present(m_present_page, m_vis_w, m_vis_h);
 }

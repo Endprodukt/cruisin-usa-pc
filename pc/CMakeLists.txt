@@ -21,8 +21,12 @@ target_link_libraries(machine PUBLIC cpu_c3x cpu_adsp miniz)
 add_executable(cruisn_headless src/main_headless.cpp)
 target_link_libraries(cruisn_headless PRIVATE machine)
 
-add_executable(cruisn_usa WIN32 src/main_win.cpp src/platform/audio_wasapi.cpp)
-target_link_libraries(cruisn_usa PRIVATE machine)
+add_library(volk STATIC third_party/volk/volk.c)
+target_include_directories(volk PUBLIC third_party/volk third_party/vulkan/include)
+target_compile_definitions(volk PUBLIC VK_USE_PLATFORM_WIN32_KHR VK_NO_PROTOTYPES)
+
+add_executable(cruisn_usa WIN32 src/main_win.cpp src/platform/audio_wasapi.cpp src/video/gl_backend.cpp src/video/vk_backend.cpp)
+target_link_libraries(cruisn_usa PRIVATE machine volk)
 
 add_library(cpu_adsp STATIC src/cpu/adsp2100/adsp2100.cpp)
 target_include_directories(cpu_adsp PUBLIC src)

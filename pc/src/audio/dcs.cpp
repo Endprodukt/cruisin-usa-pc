@@ -112,6 +112,7 @@ void Dcs1::data_write(uint32_t a, uint16_t d)
 
 uint16_t Dcs1::input_latch_r()
 {
+	stat_reads++;
 	input_latch_ack();      // non-RAM boards ack automatically
 	return m_input_data;
 }
@@ -132,6 +133,8 @@ void Dcs1::data_w(uint8_t data)
 {
 	if (m_halted)
 		return;
+	stat_writes++;
+	if (input_full()) stat_overwrites++;
 	m_cpu->set_input(ADSP2105_IRQ2, ASSERT_LINE);
 	m_latch_control &= ~LCTRL_INPUT_EMPTY;
 	m_input_data = data;
@@ -185,7 +188,10 @@ void Dcs1::advance(double adsp_cycles)
 {
 	if (m_halted)
 		return;
-	uint64_t target = m_cyc + uint64_t(std::max(0.0, adsp_cycles));
+	m_carry += std::max(0.0, adsp_cycles);
+	uint64_t whole = uint64_t(m_carry);
+	m_carry -= double(whole);
+	uint64_t target = m_cyc + whole;
 	while (m_cyc < target)
 	{
 		uint64_t next = target;

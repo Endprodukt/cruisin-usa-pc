@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../audio/dcs.h"
+#include "../video/video_backend.h"
 #include "../cpu/tms320c3x/tms320c3x.h"
 
 // Everything the host feeds into the machine. Bits are active-low like the real boards.
@@ -62,6 +63,12 @@ public:
 	static constexpr int FRAME_STRIDE = 512;
 	double refresh_hz() const { return m_refresh_hz; }
 
+	// ---- GPU video path -------------------------------------------------------------------------
+	// With a backend attached, quads are rendered on the GPU (soft rasterizer disabled).
+	void attach_video_backend(IVideoBackend *gpu);
+	void present_gpu();                       // flush pending draws and present the display page
+	int  display_page() const { return m_present_page; }
+
 	// ---- outputs ------------------------------------------------------------------------
 	uint8_t wheel_motor = 0;     // WHLCTLZ latch (force feedback command)
 	uint8_t lamps[8] = {};       // DRVCTLZ optional drivers
@@ -73,6 +80,7 @@ public:
 	std::function<void(bool)> on_audio_enable;
 
 	// ---- persistent state ---------------------------------------------------------------
+	void load_default_nvram();                 // embedded, pre-calibrated CMOS image
 	bool load_nvram(const std::string &path);
 	bool save_nvram(const std::string &path) const;
 
@@ -81,6 +89,8 @@ public:
 	uint64_t total_cycles() const { return m_cycles_total; }
 	uint64_t frames() const { return m_frame_count; }
 	uint64_t quads_last_frame = 0;
+	uint64_t stat_vram_reads = 0, stat_vram_writes = 0, stat_pal_writes = 0, stat_tex_writes = 0;
+	Dcs1 *dcs() { return m_dcs.get(); }
 	const uint8_t *texture_ram() const { return m_textureram.data(); }
 	const uint16_t *video_ram() const { return m_videoram.data(); }
 
@@ -121,6 +131,23 @@ private:
 	std::unique_ptr<tms320c3x_device> m_cpu;
 	std::unique_ptr<Dcs1> m_dcs;
 	int run_cpu(int cycles);
+	void sync_dcs();
+
+	// GPU feed
+	IVideoBackend *m_gpu = nullptr;
+	std::vector<GpuQuad> m_gq;
+	int m_gq_page = 0;
+	int m_present_page = 0;
+	int m_pal_lo = 0x7fffffff, m_pal_hi = -1;
+	int m_tex_lo = 0x7fffffff, m_tex_hi = -1;
+	int m_ovl_lo[2] = {0x7fffffff, 0x7fffffff}, m_ovl_hi[2] = {-1, -1};
+	std::vector<uint16_t> m_cpu_layer;     // CPU-written video RAM pixels, bit 15 = valid
+	void gpu_flush_quads();
+	void gpu_sync_state();
+	void gpu_add_quad(const VQuad &q);
+	void dcs_write(uint8_t d);
+	uint64_t m_dcs_synced = 0;
+	double   m_dcs_ahead = 0;
 
 	std::vector<uint32_t> m_ram0, m_ram1;   // 0x000000 / 0x400000, 128K words each
 	std::vector<uint32_t> m_rom;            // maindata, mapped at 0xc00000 (4M words)
