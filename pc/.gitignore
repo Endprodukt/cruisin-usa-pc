@@ -1,0 +1,6 @@
+build/
+build*/
+*.nv
+roms/
+*.zip
+texdump.png
