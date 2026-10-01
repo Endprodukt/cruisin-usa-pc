@@ -711,7 +711,7 @@ void MidVUnit::dma_trigger()
 		return;
 	}
 	if (texrepl.active() && (q.dma[0] & 0x300) == 0x100 && (q.dma[0] & 0xc00) != 0x400)   // texture export without a GPU (headless)
-		texrepl.lookup(q.dma[14], q.dma[1], m_textureram.data(), m_palette_rgb.data(), m_tex_gen);
+		texrepl.lookup(q.dma, m_textureram.data(), m_palette_rgb.data(), m_tex_gen);
 	if (!skip_raster)
 		draw_quad(q);
 	quads_last_frame++;
@@ -1321,7 +1321,7 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 	}
 	g.edge = 0;
 	if (texrepl.active() && (d[0] & 0x300) == 0x100 && (d[0] & 0xc00) != 0x400)
-		g.edge = texrepl.lookup(d[14], d[1], m_textureram.data(), m_palette_rgb.data(), m_tex_gen);
+		g.edge = texrepl.lookup(d, m_textureram.data(), m_palette_rgb.data(), m_tex_gen);
 	g.flags = d[0];
 	g.pixdata = d[1];
 	g.texbase = d[14];
@@ -1402,7 +1402,7 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->on_hook = nullptr;
 	const bool idle = idle_skip && !std::getenv("NOIDLESKIP");
 	const std::vector<uint32_t> &c = m_ram0;
-	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0;
+	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0;
 	m_ofree_addr = 0;
 	for (uint32_t i = 0; i + 8 < 0x20000; i++)
 	{
@@ -1454,6 +1454,19 @@ void MidVUnit::setup_idle_hooks()
 			for (uint32_t j = i; j > 8 && j + 30 > i; j--)   // OFREECNT: LDI 1100,R0 / STI R0,(OFREECNT) at the start of OBJ_INIT
 				if (c[j] == 0x0860044Cu && (c[j + 1] & 0xffff0000u) == 0x15200000u) { ofreecnt = c[j + 1] & 0xffff; break; }
 		}
+		// (f) SECTION_ROUTINE (OVERLAY.ASM), called when the car passes a point of the track that has a routine:
+		//     CMPI 0,AR0 / RETSEQ / ADDI (ROUTINE_TABLEI),AR0 / LDI *AR0,AR0 / CALLU AR0. The hook sits on the CALLU.
+		//     The towers of both San Francisco bridges share one palette: red for the first bridge; routine 12 (TOWER_PAL_LD) repaints
+		//     it grey at a point between the bridges, routine 13 (TOWER_PAL_RESTORE) makes it red again. With the original view
+		//     distance the second bridge only comes into sight after that point; with a longer one it is seen red first and turns
+		//     grey on the way. So the repaint is done as soon as the car leaves the first bridge (routine 17 / 11, BRIDGE_OFF), which
+		//     is behind the camera from then on.
+		if (c[i] == 0x04E80000u && c[i + 1] == 0x78850000u && (c[i + 2] & 0xffff0000u) == 0x02280000u && c[i + 3] == 0x0848C000u &&
+		    c[i + 4] == 0x70000008u && routine_pc == ~0u)
+		{
+			routine_pc = i + 4;
+			routine_tab = c[c[i + 2] & 0xffff];
+		}
 		// DRONE_VS_DEBRIS / DRONE_VS_SIGN: LDI (ROAD_DEBRISI),AR1 / BU +1 / LDI (SIGN_LISTI),AR1 / LDI (CAR_LIST),R0 / LDI R0,AR0 / RETSEQ
 		if ((c[i] & 0xffff0000u) == 0x08290000u && c[i + 1] == 0x6A000001u && (c[i + 2] & 0xffff0000u) == 0x08290000u &&
 		    (c[i + 3] & 0xffff0000u) == 0x08200000u && c[i + 4] == 0x08080000u && c[i + 5] == 0x78850000u && debris_ptr == 0)
@@ -1463,7 +1476,8 @@ void MidVUnit::setup_idle_hooks()
 		    (c[i + 3] & 0xffff0000u) == 0x152A0000u && (c[i + 1] & 0xffff) == (c[i + 3] & 0xffff) && m_ofree_addr == 0)
 			m_ofree_addr = c[i + 1] & 0xffff;
 	}
-	if (sync_pc == ~0u && sort_top == ~0u && dact_pc == ~0u && snd_pc == ~0u && objinit_pc == ~0u)
+	if (routine_tab == 0 || routine_tab + 46 >= c.size()) routine_pc = ~0u;
+	if (sync_pc == ~0u && sort_top == ~0u && dact_pc == ~0u && snd_pc == ~0u && objinit_pc == ~0u && routine_pc == ~0u)
 		return;
 	m_cpu->hook_pc[0] = sync_pc;
 	m_cpu->hook_pc[1] = sort_entry;
@@ -1471,10 +1485,32 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->hook_pc[3] = dact_pc;
 	m_cpu->hook_pc[4] = snd_pc;
 	m_cpu->hook_pc[5] = objinit_pc;
+	m_cpu->hook_pc[6] = routine_pc;
 	m_cpu->refresh_hooks();
 	m_zsort_first = true;
-	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr]() -> bool {
+	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr, routine_pc, routine_tab]() -> bool {
 		uint32_t pc = m_cpu->pc();
+		if (pc == routine_pc)
+		{
+			const uint32_t target = m_cpu->reg(8);   // AR0 = the routine about to be called
+			int idx = -1;
+			for (int k = 1; k < 46; k++) if (m_ram0[routine_tab + uint32_t(k)] == target) { idx = k; break; }
+			if (debug_routines) std::fprintf(stderr, "ROUTINE %d at frame %llu (mode %X)%s\n", idx, (unsigned long long)m_frame_count, m_ram0[0xC8F5], m_tower_armed ? " tower armed" : "");
+			if (idx == 13) m_tower_armed = true;        // towers red (again): the first bridge is ahead
+			else if (idx == 12) m_tower_armed = false;  // the game repaints them itself
+			else if ((idx == 17 || idx == 11) && m_tower_armed && rom_patches.draw_distance_pct > 100)
+			{
+				// leaving the first bridge: do BRIDGE_OFF's work here and let the game call TOWER_PAL_LD instead
+				m_tower_armed = false;
+				const uint32_t boff = m_ram0[routine_tab + 17];
+				if ((m_ram0[boff] & 0xffff0000u) == 0x08200000u && (m_ram0[boff + 1] & 0xffff0000u) == 0x03600000u)
+				{
+					m_ram0[m_ram0[boff] & 0xffff] &= ~(m_ram0[boff + 1] & 0xffff);   // _MODE &= ~MBRIDGE
+					m_cpu->set_reg(8, m_ram0[routine_tab + 12]);
+				}
+			}
+			return false;
+		}
 		if (pc == objinit_pc)
 		{
 			auto wr = [&](uint32_t a, uint32_t v) {

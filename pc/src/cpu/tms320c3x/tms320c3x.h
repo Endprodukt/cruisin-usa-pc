@@ -71,8 +71,8 @@ public:
 	// run loop. If it returns true the rest of the current time slice is skipped (used to fast-forward the game's idle loops).
 	// After changing hook_pc call refresh_hooks(): the run loop first looks the low bits of the PC up in a small table, so the cost
 	// per instruction stays one byte load however many hooks there are.
-	static constexpr int kHooks = 6;
-	uint32_t hook_pc[kHooks] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+	static constexpr int kHooks = 8;
+	uint32_t hook_pc[kHooks] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
 	uint8_t hook_filter[256] = {};
 	void refresh_hooks()
 	{

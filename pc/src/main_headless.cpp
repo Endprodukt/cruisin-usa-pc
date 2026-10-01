@@ -63,7 +63,7 @@ int main(int argc, char **argv)
 	if (getenv("PCHIST")) m.m_pchist_on = true;
 	if (const char *wm = getenv("WM")) m.rom_patches.wide_margin = atoi(wm);
 	if (getenv("NORASTER")) m.skip_raster = true;
-	if (const char *ex = getenv("EXPORT")) { TexRepl::Config tc; tc.dump = true; tc.dump_dir = ex; m.texrepl.configure(tc); }
+	if (const char *ex = getenv("EXPORT")) { TexRepl::Config tc; tc.dump = true; tc.dump_dir = ex; tc.variants = getenv("EXPORTVAR") != nullptr; m.texrepl.configure(tc); }
 	if (const char *rp = getenv("REPLACE"))
 	{   // load timing of a replacement pack
 		TexRepl::Config tc; tc.replace = true; tc.repl_dir = rp; m.texrepl.configure(tc);
@@ -73,6 +73,7 @@ int main(int argc, char **argv)
 	}
 	if (const char *rb = getenv("RB")) m.rom_patches.rubberband_pct = atoi(rb);
 	if (const char *oc = getenv("OC")) m.cpu_overclock = atoi(oc);
+	if (getenv("ROUTINES")) m.debug_routines = true;
 	if (const char *ao = getenv("AUTOOC")) m.auto_overclock = atoi(ao) != 0;
 	if (getenv("SMOOTH")) m.rom_patches.smooth_frames = true;
 	if (const char *dt = getenv("DCSTHREAD")) m.dcs_thread = atoi(dt);
@@ -110,6 +111,26 @@ int main(int argc, char **argv)
 		}
 		else
 			m.run_frame();
+		if (const char *se = getenv("SHOTEVERY"))
+		{   // SHOTEVERY=n SHOTFROM=f SHOTDIR=dir: a picture every n frames (survey of a whole drive)
+			const int every = atoi(se), from = getenv("SHOTFROM") ? atoi(getenv("SHOTFROM")) : 0;
+			if (every > 0 && f >= from && (f - from) % every == 0 && getenv("SHOTDIR"))
+			{
+				int w = m.screen_w(), h = m.screen_h();
+				std::vector<uint8_t> rgb(size_t(w) * h * 3);
+				for (int y = 0; y < h; y++)
+					for (int x = 0; x < w; x++)
+					{
+						uint32_t c = m.frame_rgba()[y * MidVUnit::FRAME_STRIDE + x];
+						uint8_t *d = &rgb[(size_t(y) * w + x) * 3];
+						d[0] = c >> 16; d[1] = c >> 8; d[2] = c;
+					}
+				size_t len = 0; void *png = tdefl_write_image_to_png_file_in_memory(rgb.data(), w, h, 3, &len);
+				char name[300]; std::snprintf(name, sizeof(name), "%s/f%06d.png", getenv("SHOTDIR"), f);
+				if (FILE *fp = fopen(name, "wb")) { fwrite(png, 1, len, fp); fclose(fp); }
+				mz_free(png);
+			}
+		}
 		if (seq > 0 && f >= frames - seq)
 		{
 			int w = m.screen_w(), h = m.screen_h();

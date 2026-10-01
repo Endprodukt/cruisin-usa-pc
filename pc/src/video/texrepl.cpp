@@ -190,29 +190,7 @@ int TexRepl::load(std::string &log)
 	return m_layers;
 }
 
-void TexRepl::write_dump(uint32_t block, uint32_t pix, uint64_t hash, const char *prefix, const uint8_t *ram, const uint32_t *pal)
-{
-	m_written++;
-	std::error_code ec;
-	fs::create_directories(m_c.dump_dir, ec);
-	std::vector<uint8_t> rgba(256 * 256 * 4);
-	const uint8_t *p = ram + size_t(block) * 65536;
-	for (int i = 0; i < 65536; i++)
-	{
-		uint8_t t = p[i];
-		uint32_t c = pal[(pix + t) & 0x7fff];
-		rgba[size_t(i) * 4 + 0] = uint8_t(c >> 16);
-		rgba[size_t(i) * 4 + 1] = uint8_t(c >> 8);
-		rgba[size_t(i) * 4 + 2] = uint8_t(c);
-		rgba[size_t(i) * 4 + 3] = t == 0 ? 0 : 255;
-	}
-	char name[64];
-	std::snprintf(name, sizeof name, "%s_%016llX.png", prefix, (unsigned long long)hash);
-	if (!m_writer) m_writer = std::make_unique<DumpWriter>();
-	m_writer->post((fs::path(m_c.dump_dir) / name).string(), std::move(rgba));
-}
-
-int TexRepl::block_layer(uint32_t block, uint32_t pix, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen)
+TexRepl::Entry &TexRepl::block_entry(uint32_t block, uint32_t pix, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen)
 {
 	Entry &e = m_cache[(block << 16) | (pix & 0xffff)];
 	bool same = e.tex_gen == tex_gen;
@@ -224,54 +202,106 @@ int TexRepl::block_layer(uint32_t block, uint32_t pix, const uint8_t *ram, const
 		int varied = 0;
 		e.hash = colour_hash(ram, block, pal, pix, e.used, &varied, &e.dhash);
 		e.hash &= ~(1ull << 63); e.dhash |= (1ull << 63);
+		e.varied = varied != 0;
 		for (int i = 0; i < 256; i++) e.pal[i] = pal[(pix + uint32_t(i)) & 0x7fff] & 0xffffffu;
 		auto it = m_table.find(e.hash);
 		if (it == m_table.end()) it = m_table.find(e.dhash);
 		e.layer = it == m_table.end() ? 0 : it->second + 1;
-		// a block of one flat colour is not worth a file; the others are written once they have stayed unchanged for a while
-		const uint64_t name = m_c.variants ? e.hash : e.dhash;
-		if (m_c.dump && varied && m_dumped.insert(name).second)
-			m_pending.push_back({block, pix, name, 0});
 	}
-	return e.layer;
+	return e;
+}
+
+// paint the texels [u0..u1] x [v0..v1] of a block (block coordinates) into its export picture, coloured as the polygon draws them:
+// through its palette, or all in one colour when the texture only serves as a mask (`solid` >= 0). Texels that are already painted
+// keep their colour (merged mode: the first palette wins).
+void TexRepl::paint(Picture &pic, uint32_t block, int u0, int v0, int u1, int v1, uint32_t pix, int solid, bool keyed, const uint8_t *ram, const uint32_t *pal)
+{
+	if (pic.rgba.empty()) pic.rgba.assign(256 * 256 * 4, 0);
+	const uint32_t key = uint32_t(u0) | (uint32_t(v0) << 8) | (uint32_t(u1) << 16) | (uint32_t(v1) << 24);
+	pic.block = block; pic.pix = pix;
+	if (!pic.rects.insert(key).second) return;
+	const uint8_t *p = ram + size_t(block) * 65536;
+	for (int v = v0; v <= v1; v++)
+		for (int u = u0; u <= u1; u++)
+		{
+			uint8_t *d = &pic.rgba[(size_t(v) * 256 + size_t(u)) * 4];
+			if (d[3]) continue;
+			const uint8_t t = p[v * 256 + u];
+			const uint32_t col = pal[(pix + uint32_t(solid >= 0 && t ? solid : t)) & 0x7fff];
+			d[0] = uint8_t(col >> 16); d[1] = uint8_t(col >> 8); d[2] = uint8_t(col);
+			d[3] = (keyed && t == 0) ? 0 : 255;
+		}
+	pic.painted++;
+	pic.age = 0;
+	m_dirty = true;
 }
 
 void TexRepl::flush_pending(const uint8_t *ram, const uint32_t *pal, bool all)
 {
 	constexpr int kStableFrames = 45;
-	for (size_t i = 0; i < m_pending.size();)
+	bool open = false;
+	for (auto it = m_pics.begin(); it != m_pics.end();)
 	{
-		Pending &p = m_pending[i];
+		Picture &pic = it->second;
+		if (pic.painted == pic.written) { ++it; continue; }
+		if (!all && ++pic.age < kStableFrames) { open = true; ++it; continue; }
+		// still the same block (and, for a palette variant, the same colours)? A state that was only passed through (texture
+		// still loading, palette fading) is dropped.
 		bool used[256];
 		uint64_t dh = 0;
-		uint64_t h = colour_hash(ram, p.block, pal, p.pix, used, nullptr, &dh);
+		uint64_t h = colour_hash(ram, pic.block, pal, pic.pix, used, nullptr, &dh);
 		h &= ~(1ull << 63); dh |= (1ull << 63);
-		if ((m_c.variants ? h : dh) != p.name)
-		{
-			// changed since it was drawn: this state is dropped (the next state gets its own entry when it is drawn); it may come
-			// back later, so it is not remembered as written
-			m_dumped.erase(p.name);
-			m_pending[i] = m_pending.back();
-			m_pending.pop_back();
-			continue;
-		}
-		if (all || ++p.age >= kStableFrames)
-		{
-			write_dump(p.block, p.pix, p.name, m_c.variants ? "tex" : "idx", ram, pal);
-			m_pending[i] = m_pending.back();
-			m_pending.pop_back();
-			continue;
-		}
-		i++;
+		if ((m_c.variants ? h : dh) != it->first) { it = m_pics.erase(it); continue; }
+		std::error_code ec;
+		fs::create_directories(m_c.dump_dir, ec);
+		char name[64];
+		std::snprintf(name, sizeof name, "%s_%016llX.png", m_c.variants ? "tex" : "idx", (unsigned long long)it->first);
+		if (!m_writer) m_writer = std::make_unique<DumpWriter>();
+		m_writer->post((fs::path(m_c.dump_dir) / name).string(), pic.rgba);   // a copy: the picture may still grow
+		if (pic.written == 0) m_written++;
+		pic.written = pic.painted;
+		++it;
 	}
+	m_dirty = open;
 }
 
-uint32_t TexRepl::lookup(uint32_t base, uint32_t pix, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen)
+uint32_t TexRepl::lookup(const uint16_t *dma, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen)
 {
 	if (!m_c.dump && m_layers == 0) return 0;
+	const uint32_t base = dma[14], pix = dma[1], mode = dma[0] & 0xc00;
 	if (base >= 0x4000) return 0;   // outside texture RAM (the hardware reads zeros)
 	const uint32_t b0 = base >> 8;
-	uint32_t r = uint32_t(block_layer(b0, pix, ram, pal, tex_gen));
-	if ((base & 255) != 0 && b0 + 1 < 64) r |= uint32_t(block_layer(b0 + 1, pix, ram, pal, tex_gen)) << 16;
+	const bool two = (base & 255) != 0 && b0 + 1 < 64;
+	Entry &e0 = block_entry(b0, pix, ram, pal, tex_gen);
+	uint32_t r = uint32_t(e0.layer);
+	const uint64_t name0 = m_c.variants ? e0.hash : e0.dhash;
+	const bool varied0 = e0.varied;
+	uint64_t name1 = 0; bool varied1 = false;
+	if (two)
+	{
+		Entry &e1 = block_entry(b0 + 1, pix, ram, pal, tex_gen);   // (may rehash the map: e0 is not used after this)
+		r |= uint32_t(e1.layer) << 16;
+		name1 = m_c.variants ? e1.hash : e1.dhash;
+		varied1 = e1.varied;
+	}
+	if (m_c.dump)
+	{
+		// the polygon's texture rectangle (one texel more on every side for the filtered edge), as rows of the texture strip
+		int u0 = 255, u1 = 0, v0 = 255, v1 = 0;
+		for (int i = 0; i < 4; i++)
+		{
+			const int u = dma[10 + i] & 0xff, v = dma[10 + i] >> 8;
+			u0 = std::min(u0, u); u1 = std::max(u1, u); v0 = std::min(v0, v); v1 = std::max(v1, v);
+		}
+		u0 = std::max(0, u0 - 1); u1 = std::min(255, u1 + 1); v0 = std::max(0, v0 - 1); v1 = std::min(255, v1 + 1);
+		const int solid = mode == 0xc00 ? int(dma[0] & 0xff) : -1;
+		const bool keyed = mode != 0;
+		const int row0 = int(base) + v0, row1 = int(base) + v1;   // strip rows
+		const int split = int(b0 + 1) * 256;
+		if (varied0 && row0 < split)
+			paint(m_pics[name0], b0, u0, row0 - int(b0) * 256, u1, std::min(row1, split - 1) - int(b0) * 256, pix, solid, keyed, ram, pal);
+		if (two && varied1 && row1 >= split)
+			paint(m_pics[name1], b0 + 1, u0, std::max(row0, split) - split, u1, row1 - split, pix, solid, keyed, ram, pal);
+	}
 	return r;
 }

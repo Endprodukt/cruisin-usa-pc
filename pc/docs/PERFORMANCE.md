@@ -42,6 +42,22 @@ Same autoplay start, speed after 100/200/300/400/500 frames: 33.9/110.2/175.1/22
 smooth (the remaining difference is the coarser original step). Cost: +0.75 ms CPU per frame. The modern force feedback skips calls
 in which the game state did not change and normalises its per-frame thresholds to two vblanks, so it feels the same at either rate.
 
+## Game cadence with a longer draw distance (`MidVUnit::update_clock`)
+
+A longer draw distance keeps several times more scenery alive; the emulated CPU then needs 4 vblanks per game frame instead of 2
+(measured: 14 instead of 28.5 game frames per second with 400 %). Everything the game counts in frames (ready - set - go, the flag
+girl, logos, the end of a race) runs at half speed and the picture stutters. The CPU clock therefore follows the situation, decided
+once per frame: x3 (x2 below 300 %) where the game's own governor limits the frame rate anyway (FRAMRATE >= 1: races, attract
+drive), 1 + 0.25 per 100 % where it does not, x1 while no scenery is loaded. Page flips per 120 vblanks, original / 400 % before /
+400 % now: race 60 / 30 / 60, first selection screen 59 / 35 / 58, end of race 40 / 40 / 40, attract drive 40 / 30 / 40.
+
+## Frame pacing (`[video] display_sync`)
+
+The machine draws 57.9 pictures per second. On a 60 Hz display that means a repeated picture about twice a second with VSync, or
+tearing and a `Sleep(1)`-grained wait without. Display sync computes exactly one game frame per display refresh (per two or three
+on faster displays) when the display rate is within 6 % of a multiple of 57.9 Hz; the game then runs at the display's pace (+3.6 % at
+60 Hz, sound included). Without it the wait is now exact (sleep, then spin for the last 2 ms): frame times 16.65 +- 0.2 ms.
+
 ## Multithreading
 
 Per-frame work (bench, race, 1x CPU): main CPU interpreter 1.29 ms, sound DSP 0.64 ms, GPU feed 0.08 ms, present 0.06 ms; the GPU

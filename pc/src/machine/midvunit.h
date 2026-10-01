@@ -55,6 +55,7 @@ public:
 
 	bool load_roms(const std::string &zip_path, const std::string &version, std::string &err);
 	void reset();
+	bool debug_routines = false;           // print the track's section routines as they are called (headless)
 	bool auto_overclock = true;            // raise the CPU clock while a longer draw distance needs it (see update_clock)
 	int cpu_overclock = 1;                 // 1..4: more main CPU instructions per emulated time (the game's heavy frames finish sooner)
 	bool skip_raster = false;              // benchmarking: do not rasterise quads on the CPU
@@ -161,6 +162,7 @@ private:
 	std::unique_ptr<Dcs1> m_dcs;
 	int run_cpu(int cycles);
 	void setup_idle_hooks();
+	bool m_tower_armed = false;            // the bridge tower palette is still the first bridge's (see setup_idle_hooks, (f))
 	int m_oc_q4 = 4;                       // effective CPU clock factor in quarters (4 = original speed)
 	uint32_t m_framrate_addr = 0;          // FRAMRATE, the game's frame governor (minimum vblanks per frame - 1)
 	void update_clock();
