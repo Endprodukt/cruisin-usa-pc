@@ -116,6 +116,7 @@ public:
 	uint64_t stat_vram_reads = 0, stat_vram_writes = 0, stat_pal_writes = 0, stat_tex_writes = 0;
 	Dcs1 *dcs() { return m_dcs.get(); }
 	const uint8_t *texture_ram() const { return m_textureram.data(); }
+	const uint32_t *palette_rgb() const { return m_palette_rgb.data(); }
 	const uint16_t *video_ram() const { return m_videoram.data(); }
 
 private:

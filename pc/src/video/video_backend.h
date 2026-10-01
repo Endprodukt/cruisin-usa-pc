@@ -1,4 +1,4 @@
-// GPU video backend interface (OpenGL / Vulkan).
+﻿// GPU video backend interface (OpenGL / Vulkan).
 //
 // The V-Unit video hardware is a list of textured/flat quads drawn into two 512x512 paletted
 // pages. The backends render those quads at an N x internal resolution, resolving the
@@ -23,7 +23,7 @@ struct GpuQuad
 	uint32_t flags;          // DMA word 0 (mode bits)
 	uint32_t pixdata;        // DMA word 1 (palette base)
 	uint32_t texbase;        // DMA word 14 (texture base in 256-byte rows)
-	uint32_t edge;           // bit i: vertex i is a "right" vertex (x+1), bit 4+i: "bottom" vertex (y+1)
+	uint32_t edge;           // texture replacement: layer + 1 of the block holding texbase (low 16 bits) and of the next block (high 16 bits)
 };
 static_assert(sizeof(GpuQuad) == 80, "GpuQuad layout");
 

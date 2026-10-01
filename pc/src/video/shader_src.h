@@ -61,7 +61,7 @@ layout(location = 5) flat in uvec4 f_misc;
 
 layout(BIND(0)) uniform usampler2D u_tex;    // 256 x 16384, R8UI texture RAM
 layout(BIND(1)) uniform sampler2D u_pal;     // 256 x 128, RGBA8 palette (32768 entries)
-layout(BIND(2)) uniform sampler2DArray u_repl; // replacement textures (f_misc.w = layer + 1)
+layout(BIND(2)) uniform sampler2DArray u_repl; // replacement texture blocks (f_misc.w = layer + 1 of the two blocks the window covers)
 layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; vec4 pc; } u_par;
 
 layout(location = 0) out vec4 o_color;
@@ -150,10 +150,17 @@ void main()
 
 	if (f_misc.w != 0u)
 	{
-		vec4 rc = texture(u_repl, vec3(uv * (1.0 / 256.0), float(f_misc.w - 1u)));
-		if (mode != 0u && rc.a < 0.5) discard;
-		o_color = vec4(rc.rgb, 1.0);
-		return;
+		// replacements are 256-row blocks of the texture strip: find the block this texel row falls in
+		float ry = float(base) + mod(uv.y, 256.0);
+		float blk = floor(ry * (1.0 / 256.0));
+		uint lw = uint(blk) == (base >> 8) ? (f_misc.w & 0xffffu) : (f_misc.w >> 16);
+		if (lw != 0u)
+		{
+			vec4 rc = texture(u_repl, vec3(uv.x * (1.0 / 256.0), (ry - blk * 256.0) * (1.0 / 256.0), float(lw - 1u)));
+			if (mode != 0u && rc.a < 0.5) discard;
+			o_color = vec4(rc.rgb, 1.0);
+			return;
+		}
 	}
 
 	bool filt = u_par.pa.x > 0.5;

@@ -61,6 +61,7 @@ int main(int argc, char **argv)
 	if (getenv("PCHIST")) m.m_pchist_on = true;
 	if (const char *wm = getenv("WM")) m.rom_patches.wide_margin = atoi(wm);
 	if (getenv("NORASTER")) m.skip_raster = true;
+	if (const char *ex = getenv("EXPORT")) { TexRepl::Config tc; tc.dump = true; tc.dump_dir = ex; m.texrepl.configure(tc); }
 	if (const char *rb = getenv("RB")) m.rom_patches.rubberband_pct = atoi(rb);
 	if (const char *oc = getenv("OC")) m.cpu_overclock = atoi(oc);
 	m.reset();
@@ -117,6 +118,8 @@ int main(int argc, char **argv)
 	if (getenv("PROFILE")) prof.stop_and_report();
 	if (getenv("CPUTIME")) fprintf(stderr, "CPUTIME main cpu %.1f ms, dsp %.1f ms over %d frames (%.3f ms/frame)%c", m.perf_cpu_ms, m.perf_dcs_ms, frames, m.perf_cpu_ms / frames, 10);
 	if (getenv("RAMUSE")) m.debug_ram_usage();
+	if (getenv("EXPORT")) m.texrepl.flush(m.texture_ram(), m.palette_rgb());
+	if (getenv("EXPORT")) fprintf(stderr, "exported %d textures%c", m.texrepl.dumped(), 10);
 	if (const char *tr = getenv("TEXRAW")) { FILE *tf = fopen(tr, "wb"); fwrite(m.texture_ram(), 1, 0x400000, tf); fclose(tf); }
 	if (const char *td = getenv("TEXDUMP"))
 	{   // TEXDUMP=firstpage  -> 8x8 grid of 256x256 pages as grayscale

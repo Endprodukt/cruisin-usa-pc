@@ -630,6 +630,8 @@ void MidVUnit::dma_trigger()
 		m_dma_data_index = 0;
 		return;
 	}
+	if (texrepl.active() && (q.dma[0] & 0x300) == 0x100 && (q.dma[0] & 0xc00) != 0x400)   // texture export without a GPU (headless)
+		texrepl.lookup(q.dma[14], q.dma[1], m_textureram.data(), m_palette_rgb.data(), m_tex_gen);
 	if (!skip_raster)
 		draw_quad(q);
 	quads_last_frame++;
@@ -954,6 +956,7 @@ bool MidVUnit::run_frame()
 			if (m_wide && quads_last_frame == 0) m_gpu->clear_margins(m_present_page);   // a CPU-drawn screen: no stale 3D at the sides
 			m_gpu->latch(m_present_page, m_vis_h);
 		}
+		if (m_vpos == m_vis_h && texrepl.active()) texrepl.tick(m_textureram.data(), m_palette_rgb.data());
 		if (m_vpos == m_vis_h && !m_gpu)
 		{
 			if (m_partial_next_row < m_vis_h)
@@ -1226,7 +1229,7 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 	}
 	g.edge = 0;
 	if (texrepl.active() && (d[0] & 0x300) == 0x100 && (d[0] & 0xc00) != 0x400)
-		g.edge = uint32_t(texrepl.lookup(d[14], d[1], d[0] & 0xc00, m_textureram.data(), m_palette_rgb.data(), m_tex_gen));
+		g.edge = texrepl.lookup(d[14], d[1], m_textureram.data(), m_palette_rgb.data(), m_tex_gen);
 	g.flags = d[0];
 	g.pixdata = d[1];
 	g.texbase = d[14];

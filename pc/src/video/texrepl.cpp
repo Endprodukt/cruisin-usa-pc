@@ -39,22 +39,20 @@ std::vector<uint8_t> resample(const std::vector<uint8_t> &src, int sw, int sh, i
 }
 }
 
-// Identity of a texture = hash of the colours it actually shows (page bytes seen through the palette), so pages that look the same
-// share one file no matter where in texture RAM they sit or which palette range they use. `used` marks the palette entries it reads.
-uint64_t TexRepl::colour_hash(const uint8_t *ram, uint32_t base, const uint32_t *pal, uint32_t pix, bool keyed, bool *used, int *colours, uint64_t *data_hash)
+// Identity of a block = hash of the colours it shows (bytes seen through the palette) and hash of its bytes. `used` marks the palette
+// entries it reads.
+uint64_t TexRepl::colour_hash(const uint8_t *ram, uint32_t block, const uint32_t *pal, uint32_t pix, bool *used, int *colours, uint64_t *data_hash)
 {
-	uint64_t h = 0x9E3779B97F4A7C15ull;
-	size_t off = size_t(base) * 256 & 0x3fffff, n = std::min<size_t>(65536, 0x400000 - off);
-	const uint8_t *p = ram + off;
+	uint64_t h = 0x9E3779B97F4A7C15ull, dh = 0x7654321ull;
+	const uint8_t *p = ram + size_t(block) * 65536;
 	std::memset(used, 0, 256);
 	uint32_t first = 0xffffffffu;
 	int distinct = 0;
-	uint64_t dh = keyed ? 0x1234567ull : 0x7654321ull;
 	for (size_t i = 0; i < 65536; i++)
 	{
-		uint8_t t = i < n ? p[i] : 0;
+		uint8_t t = p[i];
 		used[t] = true;
-		uint32_t c = (keyed && t == 0) ? 0xff000000u : (pal[(pix + t) & 0x7fff] & 0xffffffu);
+		uint32_t c = t == 0 ? 0xff000000u : (pal[(pix + t) & 0x7fff] & 0xffffffu);
 		if (c != first) { if (first == 0xffffffffu) first = c; else distinct = 1; }
 		h = (h ^ c) * 0xff51afd7ed558ccdull;
 		h ^= h >> 29;
@@ -117,51 +115,87 @@ int TexRepl::load(std::string &log)
 	return m_layers;
 }
 
-void TexRepl::write_dump(uint32_t base, uint32_t pix, uint64_t hash, const char *prefix, bool keyed, const uint8_t *ram, const uint32_t *pal)
+void TexRepl::write_dump(uint32_t block, uint32_t pix, uint64_t hash, const char *prefix, const uint8_t *ram, const uint32_t *pal)
 {
-	if (!m_dumped.insert(hash).second) return;
+	m_written++;
 	std::error_code ec;
 	fs::create_directories(m_c.dump_dir, ec);
 	std::vector<uint8_t> rgba(256 * 256 * 4);
-	size_t off = size_t(base) * 256 & 0x3fffff;
+	const uint8_t *p = ram + size_t(block) * 65536;
 	for (int i = 0; i < 65536; i++)
 	{
-		uint8_t t = off + size_t(i) < 0x400000 ? ram[off + size_t(i)] : 0;
+		uint8_t t = p[i];
 		uint32_t c = pal[(pix + t) & 0x7fff];
 		rgba[size_t(i) * 4 + 0] = uint8_t(c >> 16);
 		rgba[size_t(i) * 4 + 1] = uint8_t(c >> 8);
 		rgba[size_t(i) * 4 + 2] = uint8_t(c);
-		rgba[size_t(i) * 4 + 3] = (keyed && t == 0) ? 0 : 255;
+		rgba[size_t(i) * 4 + 3] = t == 0 ? 0 : 255;
 	}
 	char name[64];
 	std::snprintf(name, sizeof name, "%s_%016llX.png", prefix, (unsigned long long)hash);
 	png_write_rgba((fs::path(m_c.dump_dir) / name).string(), 256, 256, rgba.data());
 }
 
-int TexRepl::lookup(uint32_t base, uint32_t pix, uint32_t mode, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen)
+int TexRepl::block_layer(uint32_t block, uint32_t pix, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen)
 {
-	if (!m_c.dump && m_layers == 0) return 0;
-	const bool keyed = (mode == 0x800 || mode == 0xc00);
-	Entry &e = m_cache[(base << 16) | (pix & 0xffff)];
-	bool same = e.tex_gen == tex_gen && e.keyed == keyed;
+	Entry &e = m_cache[(block << 16) | (pix & 0xffff)];
+	bool same = e.tex_gen == tex_gen;
 	if (same)
 		for (int i = 0; i < 256 && same; i++) same = !e.used[i] || e.pal[i] == (pal[(pix + uint32_t(i)) & 0x7fff] & 0xffffffu);
 	if (!same)
 	{
 		e.tex_gen = tex_gen;
-		e.keyed = keyed;
 		int varied = 0;
-		e.hash = colour_hash(ram, base, pal, pix, keyed, e.used, &varied, &e.dhash);
+		e.hash = colour_hash(ram, block, pal, pix, e.used, &varied, &e.dhash);
 		e.hash &= ~(1ull << 63); e.dhash |= (1ull << 63);
 		for (int i = 0; i < 256; i++) e.pal[i] = pal[(pix + uint32_t(i)) & 0x7fff] & 0xffffffu;
 		auto it = m_table.find(e.hash);
 		if (it == m_table.end()) it = m_table.find(e.dhash);
 		e.layer = it == m_table.end() ? 0 : it->second + 1;
-		if (m_c.dump && varied)
-		{
-			if (m_c.variants) write_dump(base, pix, e.hash, "tex", keyed, ram, pal);
-			else write_dump(base, pix, e.dhash, "idx", keyed, ram, pal);
-		}   // a page of one flat colour is not worth a file
+		// a block of one flat colour is not worth a file; the others are written once they have stayed unchanged for a while
+		const uint64_t name = m_c.variants ? e.hash : e.dhash;
+		if (m_c.dump && varied && m_dumped.insert(name).second)
+			m_pending.push_back({block, pix, name, 0});
 	}
 	return e.layer;
+}
+
+void TexRepl::flush_pending(const uint8_t *ram, const uint32_t *pal, bool all)
+{
+	constexpr int kStableFrames = 45;
+	for (size_t i = 0; i < m_pending.size();)
+	{
+		Pending &p = m_pending[i];
+		bool used[256];
+		uint64_t dh = 0;
+		uint64_t h = colour_hash(ram, p.block, pal, p.pix, used, nullptr, &dh);
+		h &= ~(1ull << 63); dh |= (1ull << 63);
+		if ((m_c.variants ? h : dh) != p.name)
+		{
+			// changed since it was drawn: this state is dropped (the next state gets its own entry when it is drawn); it may come
+			// back later, so it is not remembered as written
+			m_dumped.erase(p.name);
+			m_pending[i] = m_pending.back();
+			m_pending.pop_back();
+			continue;
+		}
+		if (all || ++p.age >= kStableFrames)
+		{
+			write_dump(p.block, p.pix, p.name, m_c.variants ? "tex" : "idx", ram, pal);
+			m_pending[i] = m_pending.back();
+			m_pending.pop_back();
+			continue;
+		}
+		i++;
+	}
+}
+
+uint32_t TexRepl::lookup(uint32_t base, uint32_t pix, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen)
+{
+	if (!m_c.dump && m_layers == 0) return 0;
+	if (base >= 0x4000) return 0;   // outside texture RAM (the hardware reads zeros)
+	const uint32_t b0 = base >> 8;
+	uint32_t r = uint32_t(block_layer(b0, pix, ram, pal, tex_gen));
+	if ((base & 255) != 0 && b0 + 1 < 64) r |= uint32_t(block_layer(b0 + 1, pix, ram, pal, tex_gen)) << 16;
+	return r;
 }
