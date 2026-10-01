@@ -1388,7 +1388,7 @@ void MidVUnit::text_begin()
 	};
 	m_text_on = true;
 	m_text_shift = float(m_wide);
-	if (!m_wide) return;
+	if (!m_wide || !world_shown()) return;   // menus are shown as the arcade's 4:3 picture: nothing to place
 	const uint32_t t = m_cpu->reg(12);   // AR4: TEXT_PTR 1, TEXT_POSX 3, TEXT_HEIGHT 9, TEXT_ADDR 10 (font table: 4 words per character)
 	const uint32_t str = rd(t + 1), posx = rd(t + 3), font = rd(t + 10);
 	const int x0 = int32_t(m_cpu->reg(2)), y0 = int32_t(m_cpu->reg(3)), height = int32_t(rd(t + 9));
@@ -1480,8 +1480,9 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->on_hook = nullptr;
 	const bool idle = idle_skip && !std::getenv("NOIDLESKIP");
 	const std::vector<uint32_t> &c = m_ram0;
-	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0, wdog_pc = ~0u, palq_pc = ~0u, palq_free = 0, palq_active = 0, hit_pc = ~0u, text_pc = ~0u, textend_pc = ~0u;
+	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0, wdog_pc = ~0u, palq_pc = ~0u, palq_free = 0, palq_active = 0, hit_pc = ~0u, text_pc = ~0u, textend_pc = ~0u, carhit_pc = ~0u;
 	m_ofree_addr = 0;
+	m_wreck_addr = 0;
 	for (uint32_t i = 0; i + 8 < 0x20000; i++)
 	{
 		// (a)
@@ -1581,6 +1582,16 @@ void MidVUnit::setup_idle_hooks()
 			text_pc = i;
 			textend_pc = (i - 19) + 3 + (c[i - 19] & 0xffff) + 2;
 		}
+		// PLYRSPIN (COLLA.ASM SPINROT): another car has hit the player's car.
+		//   CMPI (PLYCAR),AR1 / BNE DRONESPIN / CALL BEHINDCK / CMPF 50,R3 / BGT +3
+		// At the CALL: AR0 = the other car, AR1 = the player's car, AR5 = its car block, R3 = closing speed, R0 = turn to give.
+		if ((c[i] & 0xffff0000u) == 0x04A90000u && (c[i + 1] & 0xffff0000u) == 0x6A060000u && (c[i + 2] & 0xff000000u) == 0x62000000u &&
+		    c[i + 3] == 0x04635480u && c[i + 4] == 0x6A090003u && carhit_pc == ~0u)
+			carhit_pc = i + 2;
+		// WRECKST (RACER.ASM): LDF -60,R0 / STF R0,*+AR4(OVELY) / LDI 1,R0 / STI R0,(WRECKFLG) / LDI 0,R0 / STI R0,*+AR5(CARSHAD)
+		if (c[i] == 0x07605900u && c[i + 1] == 0x14400412u && c[i + 2] == 0x08600001u && (c[i + 3] & 0xffff0000u) == 0x15200000u &&
+		    c[i + 4] == 0x08600000u && c[i + 5] == 0x15400541u && m_wreck_addr == 0)
+			m_wreck_addr = c[i + 3] & 0xffff;
 		// the watchdog in the vblank interrupt: ... ADDI 1,R0 / CMPI 300,R0 / BLE ok / BU error. The main loop did not get to
 		// its process dispatch for 300 vblanks: it hangs. (Only counted and, with the jump trace on, reported.)
 		if (c[i] == 0x02600001u && c[i + 1] == 0x04E0012Cu && (c[i + 2] & 0xffff0000u) == 0x6A080000u && wdog_pc == ~0u)
@@ -1609,12 +1620,32 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->hook_pc[9] = hit_pc;
 	m_cpu->hook_pc[10] = text_pc;
 	m_cpu->hook_pc[11] = textend_pc;
+	m_cpu->hook_pc[12] = carhit_pc;
 	m_cpu->refresh_hooks();
 	m_zsort_first = true;
-	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr, routine_pc, routine_tab, wdog_pc, palq_pc, palq_free, palq_active, hit_pc, text_pc, textend_pc]() -> bool {
+	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr, routine_pc, routine_tab, wdog_pc, palq_pc, palq_free, palq_active, hit_pc, text_pc, textend_pc, carhit_pc]() -> bool {
 		uint32_t pc = m_cpu->pc();
 		if (pc == text_pc) { text_begin(); return false; }
 		if (pc == textend_pc) { m_text_on = false; return false; }
+		if (pc == carhit_pc)
+		{
+			auto rd = [&](uint32_t a) -> uint32_t {
+				if (a < m_ram0.size()) return m_ram0[a];
+				if (a >= 0x400000 && a - 0x400000 < m_ram1.size()) return m_ram1[a - 0x400000];
+				return 0;
+			};
+			// where the other car is, seen from the player's car: the game's velocity is (cos, sin)(rot + pi/2) * speed in x, z
+			const uint32_t other = m_cpu->reg(8), me = m_cpu->reg(9), blk = m_cpu->reg(13);
+			const double dx = c3x_to_double(rd(other + 1)) - c3x_to_double(rd(me + 1)), dz = c3x_to_double(rd(other + 3)) - c3x_to_double(rd(me + 3));
+			const double yrot = c3x_to_double(rd(blk + 44)) + 1.5707963, fx = std::cos(yrot), fz = std::sin(yrot), len = std::max(1.0, std::hypot(dx, dz));
+			m_car_hit[0] = float(m_cpu->reg_float(3));
+			m_car_hit[1] = float(m_cpu->reg_float(0));
+			m_car_hit[2] = float((dx * fx + dz * fz) / len);
+			m_car_hit[3] = float(std::fabs(dx * fz - dz * fx) / len);
+			m_car_hits++;
+			if (debug_routines) std::fprintf(stderr, "CARHIT frame %llu closing %.1f turn %+.3f long %+.2f lat %.2f\n", (unsigned long long)m_frame_count, m_car_hit[0], m_car_hit[1], m_car_hit[2], m_car_hit[3]);
+			return false;
+		}
 		if (pc == hit_pc)
 		{
 			auto rd = [&](uint32_t a) -> uint32_t {

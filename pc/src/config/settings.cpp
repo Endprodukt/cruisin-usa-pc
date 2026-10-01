@@ -249,7 +249,11 @@ bool Settings::load(const std::string &path)
 	r.integer("ffb_modern", "centering", ffb.fx_centering, 0, 200);
 	r.integer("ffb_modern", "menu", ffb.fx_menu, 0, 200);
 	r.integer("ffb_modern", "impact", ffb.fx_impact, 0, 200);
-	r.integer("ffb_modern", "surface", ffb.fx_surface, 0, 200);
+	r.integer("ffb_modern", "offroad", ffb.fx_offroad, 0, 200);
+	r.integer("ffb_modern", "object", ffb.fx_object, 0, 200);
+	r.integer("ffb_modern", "standstill", ffb.fx_standstill, 0, 200);
+	r.integer("ffb_modern", "engine_ms_idle", ffb.engine_ms_idle, 4, 200);
+	r.integer("ffb_modern", "engine_ms_max", ffb.engine_ms_max, 4, 200);
 	r.integer("ffb_modern", "kerb", ffb.fx_kerb, 0, 200);
 	r.integer("ffb_modern", "bump", ffb.fx_bump, 0, 200);
 	r.integer("ffb_modern", "collision", ffb.fx_collision, 0, 200);
@@ -325,7 +329,8 @@ bool Settings::save(const std::string &path) const
 	  << "\nrumble_strength = " << ffb.rumble_strength
 	  << "\n; mode: vanilla (the game's own force only) | modern (adds effects from the game's car state, see [ffb_modern])"
 	  << "\nmode = " << to_string(ffb.mode) << "\n\n"
-	  << "[ffb_modern]\n; strength of each effect in percent of its default, 0 = off\naligning = " << ffb.fx_aligning << "\ncentering = " << ffb.fx_centering << "\nmenu = " << ffb.fx_menu << "\nimpact = " << ffb.fx_impact << "\nsurface = " << ffb.fx_surface
+	  << "[ffb_modern]\n; strength of each effect in percent of its default, 0 = off\naligning = " << ffb.fx_aligning << "\ncentering = " << ffb.fx_centering << "\nmenu = " << ffb.fx_menu << "\nimpact = " << ffb.fx_impact << "\noffroad = " << ffb.fx_offroad << "\nobject = " << ffb.fx_object << "\nstandstill = " << ffb.fx_standstill
+	  << "\n; engine vibration: milliseconds per pulse at idle and at full revs (larger = coarser)\nengine_ms_idle = " << ffb.engine_ms_idle << "\nengine_ms_max = " << ffb.engine_ms_max
 	  << "\nkerb = " << ffb.fx_kerb << "\nbump = " << ffb.fx_bump << "\ncollision = " << ffb.fx_collision << "\nspin = " << ffb.fx_spin
 	  << "\nlanding = " << ffb.fx_landing << "\nengine = " << ffb.fx_engine << "\nskid = " << ffb.fx_skid << "\nair = " << ffb.fx_air
 	  << "\nundersteer = " << ffb.fx_understeer << "\n\n";

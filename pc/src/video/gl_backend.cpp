@@ -253,6 +253,8 @@ public:
 	}
 
 	void set_overlay_offsets(int l, int c, int r) override { m_ovl_off[0] = l; m_ovl_off[1] = c; m_ovl_off[2] = r; }
+	void set_pillarbox(bool on) override { m_pillar = on; }
+	bool m_pillar = false;
 
 	void draw(int page, const GpuQuad *q, int count) override
 	{
@@ -348,9 +350,10 @@ public:
 		// letterbox rect in pixels
 		float dw = float(m_win_w), dh = float(m_win_h);
 		float tw = dw, th = dh;
+		const bool pillar = m_pillar && m_opt.wide_margin > 0 && m_opt.keep_aspect;
 		if (m_opt.keep_aspect)
 		{
-			float a = m_opt.aspect;
+			float a = pillar ? 4.0f / 3.0f : m_opt.aspect;
 			if (dw / dh > a) { th = dh; tw = dh * a; } else { tw = dw; th = dw / a; }
 			if (m_opt.integer_scale)
 			{
@@ -364,7 +367,8 @@ public:
 		Params p{};
 		float nx0 = x0 / dw * 2 - 1, nx1 = (x0 + tw) / dw * 2 - 1;
 		float ny_top = 1 - y0 / dh * 2, ny_bot = 1 - (y0 + th) / dh * 2;
-		set_params({nx0, ny_top, nx1, ny_bot}, {0, 0, float(vis_w + 2 * m_opt.wide_margin) / page_w_px(), float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0});
+		const float u0 = pillar ? float(m_opt.wide_margin) / page_w_px() : 0.0f, u1 = float(vis_w + (pillar ? 1 : 2) * m_opt.wide_margin) / page_w_px();
+		set_params({nx0, ny_top, nx1, ny_bot}, {u0, 0, u1, float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0});
 		(void)p;
 
 		glUseProgram(m_prog_present);

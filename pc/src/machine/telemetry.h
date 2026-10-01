@@ -33,6 +33,12 @@ struct Telemetry
 	uint32_t hits_wall = 0;      // the edge of the world,
 	uint32_t hits_animal = 0;    // animals on the road,
 	uint32_t hits_hard = 0;      // and objects that do not give way (trees, poles)
+	uint32_t car_hits = 0;       // running count of other cars touching the player's car, and of the last one:
+	float car_hit_speed = 0;     //   the closing speed (game speed units),
+	float car_hit_rot = 0;       //   the turn the game gives the player's car (sign as d_rot),
+	float car_hit_long = 0;      //   where the other car was: +1 straight ahead .. -1 straight behind,
+	float car_hit_lat = 0;       //   and how far to the side (0 in line .. 1 beside)
+	int wreck = 0;               // the player's car is somersaulting through the air (WRECKFLG)
 };
 
 double c3x_to_double(uint32_t w);   // TMS320C3x 32-bit short float

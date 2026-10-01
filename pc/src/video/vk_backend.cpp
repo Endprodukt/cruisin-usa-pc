@@ -261,6 +261,8 @@ public:
 	}
 
 	void set_overlay_offsets(int l, int c, int r) override { m_ovl_off[0] = l; m_ovl_off[1] = c; m_ovl_off[2] = r; }
+	void set_pillarbox(bool on) override { m_pillar = on; }
+	bool m_pillar = false;
 
 	void upload_overlay(int page, const uint16_t *layer, int first, int last) override
 	{
@@ -407,9 +409,10 @@ public:
 		// letterbox rect
 		float dw = float(m_sc_ext.width), dh = float(m_sc_ext.height);
 		float tw = dw, th = dh;
+		const bool pillar = m_pillar && m_opt.wide_margin > 0 && m_opt.keep_aspect;
 		if (m_opt.keep_aspect)
 		{
-			float a = m_opt.aspect;
+			float a = pillar ? 4.0f / 3.0f : m_opt.aspect;
 			if (dw / dh > a) { th = dh; tw = dh * a; } else { tw = dw; th = dw / a; }
 			if (m_opt.integer_scale)
 			{
@@ -420,7 +423,7 @@ public:
 		}
 		float x0 = (dw - tw) * 0.5f, y0 = (dh - th) * 0.5f;
 		Params p{{x0 / dw * 2 - 1, y0 / dh * 2 - 1, (x0 + tw) / dw * 2 - 1, (y0 + th) / dh * 2 - 1},
-		         {0, 0, float(vis_w + 2 * m_opt.wide_margin) / page_w_px(), float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0}};
+		         {pillar ? float(m_opt.wide_margin) / page_w_px() : 0.0f, 0, float(vis_w + (pillar ? 1 : 2) * m_opt.wide_margin) / page_w_px(), float(vis_h) / 512.0f}, {float(m_opt.aa), 0, 0, 0}};
 		uint32_t dyn = write_params(p);
 
 		VkClearValue clear{};

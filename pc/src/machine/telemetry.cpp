@@ -52,5 +52,7 @@ bool MidVUnit::read_telemetry(Telemetry &t) const
 	t.hits_wall = m_obj_hits[2];
 	t.hits_animal = m_obj_hits[3];
 	t.hits_hard = m_obj_hits[4];
+	t.car_hits = m_car_hits; t.car_hit_speed = m_car_hit[0]; t.car_hit_rot = m_car_hit[1]; t.car_hit_long = m_car_hit[2]; t.car_hit_lat = m_car_hit[3];
+	t.wreck = m_wreck_addr ? int(m_ram0[m_wreck_addr] != 0) : 0;
 	return true;
 }

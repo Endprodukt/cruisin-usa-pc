@@ -195,7 +195,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	Settings S;
 	S.load(ini);
 	if (S.nvram.empty()) S.nvram = "cruisn_usa.nv";
-	S.nvram = exe_relative(S.nvram);
+	const bool first_start = GetFileAttributesA(ini.c_str()) == INVALID_FILE_ATTRIBUTES;
 
 	// command line overrides (testing and scripting)
 	std::string shot = arg_value(a, "--shot");
@@ -234,6 +234,33 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	if (a.find("--play") != std::string::npos || !shot.empty() || autoplay) want_launcher = false;
 	if (a.find("--launcher") != std::string::npos || (GetAsyncKeyState(VK_SHIFT) & 0x8000)) want_launcher = true;
 
+	const bool scripted = !shot.empty() || autoplay || a.find("--save-ini") != std::string::npos || a.find("--list-devices") != std::string::npos;
+	if (!scripted)
+	{
+		// The very first start (no configuration yet): create the configuration and the save file next to the program, so that
+		// both exist and point there, and ask for the one thing that cannot be shipped: the game's ROM set.
+		if (S.rom.empty())
+			for (const char *guess : {"crusnusa.zip", "roms/crusnusa.zip", "roms\\crusnusa.zip"})
+				if (GetFileAttributesA(exe_relative(guess).c_str()) != INVALID_FILE_ATTRIBUTES) { S.rom = guess; break; }
+		if (first_start)
+		{
+			create_default_save(exe_relative(S.nvram));
+			S.save(ini);
+		}
+		const bool rom_ok = !S.rom.empty() && GetFileAttributesA(exe_relative(S.rom).c_str()) != INVALID_FILE_ATTRIBUTES;
+		if (!rom_ok && (first_start || !want_launcher))
+		{
+			const int r = MessageBoxA(nullptr,
+			    "Welcome to Cruis'n USA for Windows.\n\n"
+			    "The game itself is not part of this program: it needs the ROM set crusnusa.zip (the MAME set of Cruis'n USA).\n\n"
+			    "Press OK to point to your crusnusa.zip now, or Cancel to do it later in the launcher (Home > ROM zip).",
+			    "Cruis'n USA - ROM set needed", MB_OKCANCEL | MB_ICONINFORMATION);
+			std::string pth;
+			if (r == IDOK && browse_rom(nullptr, pth)) { S.rom = pth; S.save(ini); }
+			want_launcher = true;
+		}
+	}
+
 	if (a.find("--save-ini") != std::string::npos)      // write the effective configuration and quit (also creates a default file)
 		return S.save(ini) ? 0 : 1;
 
@@ -262,7 +289,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 	MidVUnit m;
 	std::string err;
-	if (!m.load_roms(S.rom, S.version, err))
+	if (!m.load_roms(exe_relative(S.rom), S.version, err))
 	{
 		MessageBoxA(nullptr, ("ROM load failed:\n" + err + "\n\nSet the ROM path in the launcher (Home > ROM zip).").c_str(), "Cruis'n USA", MB_ICONERROR);
 		return 1;
@@ -277,7 +304,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	m.set_wide_margin(m.rom_patches.wide_margin);
 	m.set_hud_spread(S.video.hud == HudPlacement::Edges ? 1.0f : S.video.hud == HudPlacement::Quarter25 ? 0.25f : S.video.hud == HudPlacement::Half50 ? 0.5f : S.video.hud == HudPlacement::Quarter75 ? 0.75f : 0.0f);
 	m.reset();
-	if (!m.load_nvram(S.nvram))
+	if (!m.load_nvram(exe_relative(S.nvram)))
 		m.load_default_nvram();        // embedded, pre-calibrated CMOS: no calibration screen, ever
 	m.inputs.dsw = S.dsw;
 
@@ -452,7 +479,6 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 		// hotkeys: F5/F6 internal resolution, F7 texture filter, F8 vsync, F9 output smoothing
 		bool vchanged = false;
-		if (g_pressed[VK_F11] && video) { S.video.export_textures = !S.video.export_textures; TexRepl::Config tc; tc.dump = S.video.export_textures; tc.variants = S.video.export_variants; tc.replace = S.video.replace_textures; tc.dump_dir = exe_relative("textures/dump"); tc.repl_dir = exe_relative("textures/replace"); m.texrepl.configure(tc); }
 		if (g_pressed[VK_F3]) { S.video.aa = (S.video.aa + 1) % 4; vchanged = true; }
 		if (g_pressed[VK_F4]) { S.video.shadows = ShadowMode((int(S.video.shadows) + 1) % 3); m.set_shadow_mode(int(S.video.shadows)); vchanged = true; }
 		if (g_pressed[VK_F5]) { S.video.internal_scale = std::max(1, S.video.internal_scale - 1); vchanged = true; }
@@ -522,6 +548,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			next_frame = now_sec() - t_start;   // keeps the clock mode's bookkeeping current for a switch (F8)
 		}
 		const double perf_p0 = perf.on ? perf_now_ms() : 0.0;
+		if (video) video->set_pillarbox(!m.world_shown());   // menus and 2D screens: the arcade's 4:3 picture, black bars beside it
 		present();
 		if (perf.on && video) perf.gpu(video->last_gpu_ms());
 		if (perf.on) { perf.presented(perf_now_ms() - perf_p0); if (!perf.summary().empty()) SetWindowTextA(hwnd, ("Cruis'n USA (PC) - " + perf.summary()).c_str()); }
@@ -574,7 +601,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	controls.ffb_stop();
 	outputs.stop();
 	audio.stop();
-	m.save_nvram(S.nvram);
+	m.save_nvram(exe_relative(S.nvram));
 	if (video) video->shutdown();
 	hub.shutdown();
 	timeEndPeriod(1);

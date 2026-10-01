@@ -16,10 +16,13 @@ struct FfbModernConfig
 	float centering = 0.35f;  // light speed dependent self-centring on top
 	float menu = 1.0f;        // the arcade's own force outside a race (attract, selection screens, results)
 	float impact = 1.0f;      // directional kick when the car's heading or direction changes abruptly (collisions)
-	float surface = 1.0f;     // rumble strips / gravel / grass, scaled by speed
+	float surface = 1.0f;     // off the road (grass, dirt, gravel: all of it is "shoulder" to the game), scaled by speed
+	float object = 1.0f;      // running into roadside objects: signs, posts, barrels, bushes, animals
+	float standstill = 1.0f;  // resistance of the wheel while the car stands or crawls (tyres scrubbing on the spot)
+	float engine_ms_idle = 45.0f, engine_ms_max = 10.0f;   // period of the engine vibration at idle and at full revs
 	float kerb = 1.0f;        // sideways tug when a wheel drops off the road
-	float bump = 1.0f;        // bumps reported by the game, and running over signs, barrels, posts, bushes
-	float collision = 1.0f;   // shake when the car loses speed suddenly
+	float bump = 1.0f;        // bumps: road seams, potholes, rails
+	float collision = 1.0f;   // other cars hitting the car (from any side), walls, trees, sudden loss of speed
 	float spin = 1.0f;        // spin-out: the wheel is thrown to one side and held there while the car rotates
 	float landing = 1.0f;     // touching down after a jump
 	float engine = 0.25f;     // engine vibration
@@ -60,7 +63,10 @@ private:
 	float m_spin_target = 0, m_spin_force = 0;   // held force during a spin-out
 	float m_spin_dir = 0;
 	float m_thud = 0;                            // short one-sided push when an object is hit
-	float m_wall_cool = 0;
+	float m_wall_cool = 0, m_car_cool = 0;
+	float m_wreck_force = 0; double m_wreck_ph = 0;   // somersault: the wheel is torn from side to side
+	float m_steer_last = 0, m_steer_vel = 0;     // wheel speed (for the resistance at a standstill)
+	bool m_off_road = false;
 
 	// smoothed continuous effects
 	float m_surface_amp = 0, m_skid_amp = 0, m_engine_amp = 0, m_air = 0, m_light = 0, m_grip_loss = 0;

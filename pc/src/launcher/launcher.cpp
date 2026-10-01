@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <commdlg.h>
 #include <GL/gl.h>
 
 #include <algorithm>
@@ -20,6 +21,7 @@
 #include "imgui_impl_win32.h"
 
 #pragma comment(lib, "opengl32.lib")
+#pragma comment(lib, "comdlg32.lib")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -133,9 +135,15 @@ void page_home(Launcher &L)
 	ImGui::SeparatorText("Game");
 	char rom[512];
 	std::snprintf(rom, sizeof(rom), "%s", L.s.rom.c_str());
-	ImGui::SetNextItemWidth(-140);
-	if (edited(L, ImGui::InputText("ROM zip", rom, sizeof(rom)))) L.s.rom = rom;
-	help("Path to crusnusa.zip (the MAME ROM set). The zip is only read, never modified.");
+	ImGui::SetNextItemWidth(-230);
+	if (edited(L, ImGui::InputText("##rom", rom, sizeof(rom)))) L.s.rom = rom;
+	ImGui::SameLine();
+	if (ImGui::Button("Browse...")) { std::string pth = L.s.rom; if (browse_rom(GetActiveWindow(), pth)) { L.s.rom = pth; L.dirty = true; } }
+	ImGui::SameLine();
+	ImGui::TextUnformatted("ROM zip");
+	help("Path to crusnusa.zip (the MAME ROM set). It is not part of this program. The zip is only read, never modified.");
+	if (L.s.rom.empty()) ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "No ROM set yet: point to your crusnusa.zip to be able to play.");
+	else if (GetFileAttributesA(exe_relative(L.s.rom).c_str()) == INVALID_FILE_ATTRIBUTES) ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "This file does not exist.");
 	static const char *const versions[] = {"4.5", "4.4", "4.1", "4.0", "2.1", "2.0", "1.1"};
 	int vi = 0;
 	for (int i = 0; i < 7; i++) if (L.s.version == versions[i]) vi = i;
@@ -281,7 +289,7 @@ void page_video(Launcher &L)
 	ImGui::BeginDisabled(!gpu);
 	edited(L, ImGui::Checkbox("Export textures while playing", &v.export_textures));
 	help("Writes every texture that gets drawn to textures/dump next to the program as a 256 x 256 PNG (tex_<hash>.png; textures that look the same share one file). "
-	     "Upscale them with any tool and keep the names. F11 toggles the export in game.");
+	     "Upscale them with any tool and keep the names. The export is switched here only (there is no key for it in the game).");
 	edited(L, ImGui::Checkbox("Export every palette variant (car colours etc.)", &v.export_variants));
 	help("Off: one file (idx_<hash>.png) per distinct texture page, shown in the first colours seen; a replacement of it is used for all "
 	     "colour variants. On: one file (tex_<hash>.png) for every colour variant, which allows per-colour replacements but exports many more files.");
@@ -664,13 +672,21 @@ void controls_ffb(Launcher &L)
 			fx("Menu effects", f.fx_menu, "Strength of the arcade's own force outside a race (selection screens, results). In a race the force comes from the car state only; the attract mode has no force.");
 			fx("Impact kick", f.fx_impact, "Directional kick when the car's direction changes abruptly: a hit from the left jerks the wheel left, "
 			                                   "a car spinning right throws the wheel to the left.");
-			fx("Road surface", f.fx_surface, "Rumble strips, gravel and grass; stronger and faster with speed.");
+			fx("Off-road surface", f.fx_offroad, "Grass, dirt and gravel beside the road: a coarse rumble that gets stronger and faster with speed.");
+			fx("Roadside objects", f.fx_object, "Running into signs, posts, lamps, bushes, barrels, barriers, cones and animals: a knock and a push from the side the object stood on.");
+			fx("Standstill resistance", f.fx_standstill, "Weight of the wheel while the car stands or crawls (the tyres scrub on the spot). Fades out by about 20 mph.");
 			fx("Kerb tug", f.fx_kerb, "A sideways tug when a wheel drops off the edge of the road.");
-			fx("Bumps", f.fx_bump, "Bumps and road seams.");
-			fx("Collisions", f.fx_collision, "A jolt when the car loses speed suddenly (walls, other cars).");
-			fx("Spin-out", f.fx_spin, "The wheel is thrown when the car spins out.");
+			fx("Bumps", f.fx_bump, "Bumps, road seams and rails.");
+			fx("Collisions", f.fx_collision, "Other cars hitting the car from any side (also from behind), walls, trees and poles.");
+			fx("Spin-out", f.fx_spin, "The wheel is thrown to one side while the car spins out, and torn from side to side while it somersaults.");
 			fx("Landing", f.fx_landing, "A thump when the car touches down after a jump.");
-			fx("Engine", f.fx_engine, "Fine vibration that follows the engine revs.");
+			fx("Engine", f.fx_engine, "Vibration that follows the engine revs.");
+			ImGui::SetNextItemWidth(300);
+			edited(L, ImGui::SliderInt("Engine pulse at idle", &f.engine_ms_idle, 4, 200, "%d ms"));
+			help("Time between two engine pulses at idle. Larger = coarser, slower throb; smaller = finer buzz.");
+			ImGui::SetNextItemWidth(300);
+			edited(L, ImGui::SliderInt("Engine pulse at full revs", &f.engine_ms_max, 4, 200, "%d ms"));
+			help("Time between two engine pulses at the rev limit. The pulse moves between the two values with the revs.");
 			fx("Tyre rattle", f.fx_skid, "Vibration while the tyres slide.");
 			fx("Air time lightness", f.fx_air, "The wheel goes light while the car is airborne.");
 			fx("Understeer lightness", f.fx_understeer, "The wheel lightens when the tyres lose grip.");
@@ -1018,6 +1034,40 @@ void apply_style()
 
 } // namespace
 
+bool browse_rom(void *owner_hwnd, std::string &path)
+{
+	char file[MAX_PATH] = {};
+	std::snprintf(file, sizeof(file), "%s", path.c_str());
+	for (char &ch : file) if (ch == '/') ch = '\\';
+	OPENFILENAMEA ofn{};
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = static_cast<HWND>(owner_hwnd);
+	ofn.lpstrFilter = "Cruis'n USA ROM set (crusnusa.zip)\0crusnusa.zip\0Zip files (*.zip)\0*.zip\0All files\0*.*\0";
+	ofn.lpstrFile = file;
+	ofn.nMaxFile = sizeof(file);
+	ofn.lpstrTitle = "Where is your crusnusa.zip?";
+	ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+	if (!GetOpenFileNameA(&ofn))
+	{
+		// a path that does not exist any more makes the dialog refuse to open: try again without it
+		if (CommDlgExtendedError() == 0 || file[0] == 0) return false;
+		file[0] = 0;
+		if (!GetOpenFileNameA(&ofn)) return false;
+	}
+	path = file;
+	return true;
+}
+
+bool create_default_save(const std::string &path)
+{
+	if (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES) return true;
+	std::vector<uint32_t> nv(cmos::WORDS, 0xffffffffu);
+	for (const NvPair &p : kDefaultNvram) if (p.index < nv.size()) nv[p.index] = p.value;
+	cmos::set(nv, cmos::ADJ_FREE_PLAY, 1);   // same default as MidVUnit::load_default_nvram
+	cmos::fix_checksum(nv);
+	return cmos::save_file(path, nv);
+}
+
 LauncherResult launcher_run(Settings &settings, const std::string &ini_path, InputHub &hub, Controls &controls)
 {
 	SetProcessDPIAware();
@@ -1119,7 +1169,16 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.45f, 0.26f, 1));
 		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.58f, 0.33f, 1));
 		ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.24f, 0.70f, 0.40f, 1));
-		if (ImGui::Button("PLAY", ImVec2(-1, bh))) L.play = true;
+		if (ImGui::Button("PLAY", ImVec2(-1, bh)))
+		{
+			if (L.s.rom.empty() || GetFileAttributesA(exe_relative(L.s.rom).c_str()) == INVALID_FILE_ATTRIBUTES)
+			{
+				std::string pth = L.s.rom;
+				if (browse_rom(hwnd, pth)) { L.s.rom = pth; L.dirty = true; L.play = true; }
+				else { L.page = P_HOME; L.status = "Set the ROM zip first."; }
+			}
+			else L.play = true;
+		}
 		ImGui::PopStyleColor(3);
 		if (ImGui::Button("SAVE", ImVec2(-1, bh)))
 		{

@@ -318,6 +318,15 @@ int main(int argc, char **argv)
 				pt = t;
 			}
 		}
+		if (getenv("SURFLOG"))
+		{   // what the car drives on: every change of CAR_ONROAD (object id of the piece under the car), with the frictions and bumps
+			static int last = -1, lastbump = 0; Telemetry t;
+			if (m.read_telemetry(t))
+			{
+				if (t.onroad != last) { fprintf(stderr, "S %d onroad=%X spd=%.0f d2c=%.0f rdfr=%.3f offr=%.3f trac=%.3f%c", f, t.onroad, t.speed, t.dist_to_center, t.road_friction, t.offroad_friction, t.traction, 10); last = t.onroad; }
+				if (t.bump != lastbump) { if (t.bump) fprintf(stderr, "B %d bump=%d onroad=%X spd=%.0f%c", f, t.bump, t.onroad, t.speed, 10); lastbump = t.bump; }
+			}
+		}
 		if (const char *tl = getenv("TELEMLOG")) { Telemetry t; if (m.read_telemetry(t) && f % atoi(tl) == 0) fprintf(stderr, "T %d spd=%.2f skid=%.2f thr=%.2f brk=%.2f turn=%.3f trac=%.2f rpm=%.1f yv=%.3f xm=%.3f zm=%.3f xl=%.3f zl=%.3f d2c=%.1f road=%d onroad=%d bump=%d spin=%d air=%d/%d gear=%d yv0=%.2f dy0=%.2f poly=%d\n", f, t.speed, t.skid, t.throttle, t.brake, t.turn, t.traction, t.rpm, t.y_vel, t.x_mom, t.z_mom, t.x_lean, t.z_lean, t.dist_to_center, (int)t.road_friction, t.onroad, t.bump, t.spin, t.air_front, t.air_rear, t.gear, t.susp_yv[0], t.susp_dy[0], t.road_poly[0]); }
 		if (f % 60 == 0) fprintf(stderr, "frame %d free=%d mode=%X pc=%06X quads=%llu vis=%dx%d\n", f, m.free_objects(), m.ram_word(0xC8F5) | (m.ram_word(0xE49C) << 16), m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}

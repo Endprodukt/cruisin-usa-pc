@@ -7,7 +7,11 @@ namespace {
 constexpr double TWO_PI = 6.283185307179586;
 constexpr float PI_F = 3.14159265f;
 constexpr float TOP_SPEED = 290.0f;          // CARSPEED at full speed (measured)
-constexpr int ROAD = 0x300, SHOULDER = 0x310;
+// CAR_ONROAD is the id of the piece under the car. Road: 0x300, and 0x330 (road piece with low gravity, the jumps). Everything
+// beside the road is "shoulder" to the game, grass, dirt and gravel alike: 0x310, 0x320 (shoulder that pushes the car back) and
+// now and then plain ground (0x9xx). 0 and 1 turn up for single frames (nothing found): they say nothing about the surface.
+bool known_surface(int id) { return id >= 0x300; }
+bool is_road(int id) { return id == 0x300 || id == 0x330; }
 
 float smooth(float cur, float target, float dt, float tau)
 {
@@ -54,9 +58,10 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 	m_steps++;
 	m_bump_cool -= 1.0f / 58.0f;
 	m_wall_cool -= 1.0f / 58.0f;
+	m_car_cool -= 1.0f / 58.0f;
 	if (m_have_prev && t.speed == m_prev.speed && t.y_rot == m_prev.y_rot && t.v_rot == m_prev.v_rot && t.susp_yv[1] == m_prev.susp_yv[1] &&
 	    t.hits_object == m_prev.hits_object && t.hits_light == m_prev.hits_light && t.hits_wall == m_prev.hits_wall &&
-	    t.hits_animal == m_prev.hits_animal && t.hits_hard == m_prev.hits_hard && t.spin == m_prev.spin)
+	    t.hits_animal == m_prev.hits_animal && t.hits_hard == m_prev.hits_hard && t.spin == m_prev.spin && t.car_hits == m_prev.car_hits && t.wreck == m_prev.wreck)
 		return;
 	const float per2 = 2.0f / float(std::clamp(m_steps, 1, 4));
 	m_steps = 0;
@@ -90,7 +95,9 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 	if (t.spin && std::fabs(rot_right) > 0.004f) m_spin_dir = rot_right > 0 ? -1.0f : 1.0f;
 	if (!t.spin) m_spin_dir = 0;
 	m_spin_target = m_spin_dir * std::min(0.85f, 0.35f + std::fabs(rot_right) * 4.5f) * m_c.spin;
-	if (t.spin) m_sat_target = 0;
+	if (t.spin || t.wreck) m_sat_target = 0;
+	if (t.wreck) m_spin_target = 0;      // a somersault is felt as the wheel being torn to and fro (step), not as a held throw
+	if (known_surface(t.onroad)) m_off_road = !is_road(t.onroad);
 
 	if (m_have_prev)
 	{
@@ -107,8 +114,7 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 		}
 
 		// leaving the road: a tug towards the side the wheel dropped off
-		bool was_road = p.onroad == ROAD, now_road = t.onroad == ROAD;
-		if (was_road && !now_road && t.onroad != 0)
+		if (known_surface(p.onroad) && known_surface(t.onroad) && is_road(p.onroad) && !is_road(t.onroad))
 		{
 			// dist_to_center is positive to the left of the road centre in the game's convention (like its angles)
 			float side = t.dist_to_center >= 0 ? -1.0f : 1.0f;
@@ -116,13 +122,31 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 			m_kick_decay = 9.0f;
 		}
 
-		// bump reported by the game
-		if (t.bump > p.bump) add_jolt(m_c.bump * (0.08f + 0.04f * std::min(t.bump, 10)) * (0.3f + 0.7f * v), 28.0f, 9.0f);
+		// another car touches the car (the game's car collision routine, from any side). The closing speed sets the strength:
+		// 20 is what the game calls a big bump, above 50 it may spin the car. A shake both ways; a kick to the side when the
+		// other car came from the side; and when it came from behind a second, slower knock: the car is shoved forward.
+		const bool hit_car = t.car_hits != p.car_hits;
+		if (hit_car && m_car_cool <= 0)
+		{
+			const float inten = std::clamp(t.car_hit_speed / 60.0f, 0.0f, 1.0f);
+			const float amp = m_c.collision * (0.35f + 0.50f * inten);
+			add_jolt(amp * 0.8f, 13.0f, 9.0f);
+			if (t.car_hit_long < -0.4f) add_jolt(amp * 0.7f, 7.0f, 6.0f);
+			if (!t.spin && std::fabs(t.car_hit_rot) > 0.0005f)
+			{
+				m_impact = (t.car_hit_rot > 0 ? 1.0f : -1.0f) * amp * (0.25f + 0.55f * std::min(1.0f, t.car_hit_lat * 1.5f));
+				m_impact_decay = 8.0f;
+			}
+			m_car_cool = 0.12f;
+		}
+
+		// bump reported by the game (rails, and the "big collision" flag of a car hit, which is felt above already)
+		if (t.bump > p.bump && !hit_car) add_jolt(m_c.bump * (0.08f + 0.04f * std::min(t.bump, 10)) * (0.3f + 0.7f * v), 28.0f, 9.0f);
 
 		// vertical suspension speed spikes (potholes, road seams, jumps)
 		float worst = 0;
 		for (int i = 1; i < 5; i++) worst = std::max(worst, std::fabs(t.susp_yv[i] - p.susp_yv[i]) * per2);
-		if (worst > 6.0f && t.air_front == 0 && t.air_rear == 0 && m_bump_cool <= 0)
+		if (worst > 6.0f && t.air_front == 0 && t.air_rear == 0 && m_bump_cool <= 0 && !t.wreck)
 		{
 			add_jolt(m_c.bump * std::min(0.35f, worst / 80.0f) * (0.3f + 0.7f * v), 34.0f, 12.0f);
 			m_bump_cool = 0.15f;
@@ -137,20 +161,24 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 		const bool hit_animal = t.hits_animal != p.hits_animal, hit_hard = t.hits_hard != p.hits_hard;
 		if (hit_animal)   // a cow or a deer: heavier than a sign
 		{
-			m_thud += side * m_c.bump * (0.40f + 0.30f * v);
-			add_jolt(m_c.bump * (0.30f + 0.22f * v), 11.0f, 14.0f);
+			m_thud += side * m_c.object * (0.50f + 0.30f * v);
+			add_jolt(m_c.object * (0.40f + 0.25f * v), 11.0f, 12.0f);
 		}
 		if (hit_hard)     // a tree or a pole stops the car: a hard knock (the loss of speed itself is not added on top)
 		{
-			m_thud += side * m_c.collision * (0.40f + 0.35f * v);
-			add_jolt(m_c.collision * (0.30f + 0.25f * v), 12.0f, 12.0f);
+			m_thud += side * m_c.collision * (0.45f + 0.35f * v);
+			add_jolt(m_c.collision * (0.35f + 0.30f * v), 12.0f, 11.0f);
 		}
-		if (hit_obj)
+		if (hit_obj)      // signs, posts, lamps, barrels, barriers, cones
 		{
-			m_thud += side * m_c.bump * (0.30f + 0.25f * v);
-			add_jolt(m_c.bump * (0.22f + 0.18f * v), 14.0f, 18.0f);
+			m_thud += side * m_c.object * (0.40f + 0.30f * v);
+			add_jolt(m_c.object * (0.30f + 0.22f * v), 14.0f, 15.0f);
 		}
-		if (hit_bush) add_jolt(m_c.bump * (0.08f + 0.10f * v), 18.0f, 16.0f);
+		if (hit_bush)     // sage brush, flying parts
+		{
+			m_thud += side * m_c.object * (0.14f + 0.12f * v);
+			add_jolt(m_c.object * (0.16f + 0.14f * v), 18.0f, 16.0f);
+		}
 		if (hit_wall)
 		{
 			m_thud += side * m_c.collision * (0.35f + 0.3f * v);
@@ -160,8 +188,12 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 
 		// collision: a big loss of speed in one frame (one knock, not a rattle). Skipped when one of the hits above explains it.
 		float dv = p.speed - t.speed;
-		if (dv * per2 > 5.0f && (t.bump > 0 || t.spin || dv * per2 > 10.0f) && !hit_obj && !hit_wall && !hit_bush && !hit_animal && !hit_hard)
+		if (dv * per2 > 5.0f && (t.bump > 0 || t.spin || dv * per2 > 10.0f) && !hit_obj && !hit_wall && !hit_bush && !hit_animal && !hit_hard && !hit_car)
 			add_jolt(m_c.collision * std::min(0.6f, 0.2f + dv / 50.0f), 14.0f, 14.0f);
+
+		// the somersault starts with a slam and ends with the car crashing back onto its wheels
+		if (t.wreck && !p.wreck) { add_jolt(m_c.collision * 0.8f, 12.0f, 8.0f); m_wreck_ph = 0; }
+		if (!t.wreck && p.wreck) add_jolt(m_c.landing * 0.9f, 16.0f, 6.0f);
 
 		// spin-out start: a slam in the direction the wheel is about to be held
 		if (t.spin && !p.spin && m_spin_dir != 0)
@@ -193,11 +225,25 @@ float FfbModern::step(double dt)
 		// aligning torque and centring, smoothed a little so that single frames do not click
 		m_sat = smooth(m_sat, m_sat_target, fdt, 0.012f);
 		float centre = -m_steer * (0.04f + 0.30f * std::clamp(t.speed / 170.0f, 0.0f, 1.0f)) * m_c.centering;
+		// Standing or crawling, a real wheel is heavy: the tyres scrub on the spot. The physics above give nothing there (no
+		// speed, no slip), so the wheel was limp. A spring towards the centre plus a drag against the wheel's own movement,
+		// both fading out by 40 speed units (about 20 mph) where the aligning torque has taken over.
+		const float still = 1.0f - std::clamp(t.speed / 40.0f, 0.0f, 1.0f);
+		m_steer_vel = smooth(m_steer_vel, (m_steer - m_steer_last) / std::max(fdt, 1e-4f), fdt, 0.03f);
+		m_steer_last = m_steer;
+		centre += (-m_steer * 0.20f - std::clamp(m_steer_vel * 0.09f, -0.22f, 0.22f)) * still * m_c.standstill;
 		bool air_all = t.air_front && t.air_rear;
 		bool air_front = t.air_front != 0;
 		m_air = smooth(m_air, (air_all || air_front) ? 1.0f : 0.0f, fdt, (air_all || air_front) ? 0.08f : 0.03f);
 		float airs = 1.0f - std::min(0.9f, m_air * std::min(1.0f, m_c.air));
-		out += m_c.master * (m_sat + centre) * airs;
+		out += m_c.master * (m_sat + centre) * airs * (t.wreck ? 0.0f : 1.0f);
+
+		// somersault: the front wheels slam onto the road, leave it, slam down the other way round: the wheel is torn to one
+		// side and back, a good three times a second, for as long as the car tumbles
+		if (t.wreck) m_wreck_ph += TWO_PI * 3.4 * dt;
+		const float wreck_target = t.wreck ? (std::sin(m_wreck_ph) >= 0 ? 1.0f : -1.0f) * 0.8f * m_c.spin : 0.0f;
+		m_wreck_force = smooth(m_wreck_force, wreck_target, fdt, 0.022f);
+		out += m_c.master * m_wreck_force;
 
 		// directional kick from impacts and spins
 		m_impact *= std::exp(-m_impact_decay * fdt);
@@ -214,10 +260,11 @@ float FfbModern::step(double dt)
 		out += m_c.master * std::clamp(m_thud, -0.7f, 0.7f);
 
 		// continuous vibration targets
-		float surf = 0, hz = 20.0f + 70.0f * v;
-		if (t.onroad == SHOULDER) surf = 0.05f + 0.07f * v;
-		else if (t.onroad != ROAD && t.onroad != 0) surf = 0.12f + 0.16f * v;
-		surf *= m_c.surface * (v > 0.03f ? 1.0f : 0.0f);
+		// off the road: a coarse, uneven rumble that gets faster and stronger with speed (felt from walking pace on)
+		float surf = 0, hz = 9.0f + 26.0f * v;
+		if (m_off_road && !t.wreck && !(t.air_front && t.air_rear))
+			surf = (t.onroad == 0x320 ? 0.16f + 0.26f * v : 0.11f + 0.22f * v) * std::clamp(v / 0.04f, 0.0f, 1.0f);
+		surf *= m_c.surface;
 		m_surface_amp = smooth(m_surface_amp, surf, fdt, 0.06f);
 		m_surface_hz = hz;
 
@@ -230,7 +277,10 @@ float FfbModern::step(double dt)
 
 		m_ph_surface += TWO_PI * m_surface_hz * dt;
 		m_ph_skid += TWO_PI * 37.0 * dt;
-		m_ph_engine += TWO_PI * (22.0 + 1.6 * t.rpm) * dt;
+		// engine: one pulse every engine_ms_idle ms at idle, getting quicker to engine_ms_max at full revs (rpm 0..50)
+		const float rev = std::clamp(t.rpm / 50.0f, 0.0f, 1.0f);
+		const double eng_ms = std::clamp(double(m_c.engine_ms_idle + (m_c.engine_ms_max - m_c.engine_ms_idle) * rev), 2.0, 500.0);
+		m_ph_engine += TWO_PI * (1000.0 / eng_ms) * dt;
 		float s = m_surface_amp * (0.65f * float(std::sin(m_ph_surface)) + 0.35f * float(std::sin(m_ph_surface * 2.31 + 1.0)));
 		float k = m_skid_amp * float(std::sin(m_ph_skid));
 		float e = m_engine_amp * float(std::sin(m_ph_engine));
@@ -241,7 +291,7 @@ float FfbModern::step(double dt)
 		m_kick *= std::exp(-m_kick_decay * fdt);
 		if (std::fabs(m_kick) < 0.002f) m_kick = 0;
 		out += m_c.master * std::clamp(m_kick, -0.45f, 0.45f);
-		vib += std::fabs(m_kick) * 0.5f + std::fabs(m_impact) * 0.5f + std::fabs(m_thud) * 0.5f;
+		vib += std::fabs(m_kick) * 0.5f + std::fabs(m_impact) * 0.5f + std::fabs(m_thud) * 0.5f + std::fabs(m_wreck_force) * 0.6f;
 
 		// jolts (summed and limited so that several at once do not slam the wheel)
 		float jolt_sum = 0;
@@ -258,7 +308,8 @@ float FfbModern::step(double dt)
 	else
 	{
 		m_sat = m_surface_amp = m_skid_amp = m_engine_amp = m_air = m_light = 0;
-		m_kick = m_impact = m_thud = 0;
+		m_kick = m_impact = m_thud = m_wreck_force = m_steer_vel = 0;
+		m_steer_last = m_steer;
 		m_spin_force = m_spin_target = m_spin_dir = 0;
 		for (Jolt &j : m_jolts) j.amp = 0;
 		out = m_c.menu * m_arcade;   // menus: the arcade's own force (attract, track select, results)

@@ -59,7 +59,10 @@ public:
 	tms320c3x_device &cpu_debug() { return *m_cpu; }
 	void ram_poke(uint32_t a, uint32_t v) { if (a < m_ram0.size()) m_ram0[a] = v; else if (a >= 0x400000 && a - 0x400000 < m_ram1.size()) m_ram1[a - 0x400000] = v; }
 	uint32_t ram_peek(uint32_t a) const { return (a >= 0x809000 && a < 0x80A000) ? m_iram_page[a - 0x809000] : a < m_ram0.size() ? m_ram0[a] : (a >= 0x400000 && a - 0x400000 < m_ram1.size()) ? m_ram1[a - 0x400000] : 0xDEADBEEFu; }
-	bool in_attract() const { return (m_ram0[0xC8F5] & 0xf) == 2; }   // _MODE == MATTR: the attract mode (nobody is playing)
+	bool in_attract() const { return (m_ram0[0xC8F5] & 0xf) == 2; }
+	// The 3D world fills the picture: a race, its finish (bonus) or the attract mode's demo race. Everything else is a menu
+	// or a 2D screen made for the arcade's 4:3 picture (boot, selection screens, initials, continue, high scores, logos).
+	bool world_shown() const { const uint32_t m = m_ram0[0xC8F5]; return (m & 0xf) == 4 || (m & 0xf) == 5 || ((m & 0xf) == 2 && (m & 0x200)); }   // _MODE == MATTR: the attract mode (nobody is playing)
 	uint64_t palette_queue_overflows = 0;  // times the palette transfer queue was full and was flushed by the host
 	uint32_t rom_word(uint32_t i) const { return i < m_rom.size() ? m_rom[i] : 0; }
 	uint64_t watchdog_resets = 0;          // times the game's watchdog fired (the main loop hung)
@@ -177,6 +180,8 @@ private:
 	uint32_t m_framrate_addr = 0;          // FRAMRATE, the game's frame governor (minimum vblanks per frame - 1)
 	void update_clock();
 	uint32_t m_idle_flag_addr = 0, m_idle_sync_addr = 0, m_dgroup_count_addr = 0, m_ofree_addr = 0;
+	uint32_t m_car_hits = 0; float m_car_hit[4] = {};   // other cars hitting the player's car (see Telemetry)
+	uint32_t m_wreck_addr = 0;             // WRECKFLG
 	uint32_t m_obj_hits[5] = {};   // player hits: light (bushes, debris), road objects, walls, animals, immobile objects
 	uint32_t m_hit_obj[8] = {}; uint64_t m_hit_frame[8] = {}; int m_hit_next = 0;   // objects hit lately (one count per contact)
 	bool m_zsort_first = true;

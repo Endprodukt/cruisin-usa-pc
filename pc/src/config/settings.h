@@ -93,15 +93,18 @@ struct FfbSettings
 	int rumble_strength = 100;
 	FfbMode mode = FfbMode::Modern;   // vanilla: only the force the game computes; modern: plus effects from the game's car state
 	// modern effect strengths, percent of their default (0 = off)
-	int fx_surface = 0, fx_kerb = 30, fx_bump = 30, fx_collision = 70, fx_spin = 70;
+	int fx_offroad = 60, fx_kerb = 30, fx_bump = 30, fx_collision = 70, fx_spin = 70;
 	int fx_landing = 70, fx_engine = 5, fx_skid = 5, fx_air = 70, fx_understeer = 70;
 	int fx_aligning = 110, fx_centering = 80, fx_menu = 100, fx_impact = 60;
+	int fx_object = 100, fx_standstill = 100;
+	int engine_ms_idle = 45, engine_ms_max = 10;   // period of the engine vibration at idle / at full revs (ms)
 	void reset_effects()
 	{
 		const FfbSettings d;
-		fx_surface = d.fx_surface; fx_kerb = d.fx_kerb; fx_bump = d.fx_bump; fx_collision = d.fx_collision; fx_spin = d.fx_spin;
+		fx_offroad = d.fx_offroad; fx_kerb = d.fx_kerb; fx_bump = d.fx_bump; fx_collision = d.fx_collision; fx_spin = d.fx_spin;
 		fx_landing = d.fx_landing; fx_engine = d.fx_engine; fx_skid = d.fx_skid; fx_air = d.fx_air; fx_understeer = d.fx_understeer;
 		fx_aligning = d.fx_aligning; fx_centering = d.fx_centering; fx_menu = d.fx_menu; fx_impact = d.fx_impact;
+		fx_object = d.fx_object; fx_standstill = d.fx_standstill; engine_ms_idle = d.engine_ms_idle; engine_ms_max = d.engine_ms_max;
 	}
 };
 
@@ -115,7 +118,7 @@ struct OutputSettings
 struct Settings
 {
 	// paths / game
-	std::string rom = "D:/Mame/roms/crusnusa.zip";
+	std::string rom;           // path of crusnusa.zip; empty until the user has pointed to it (asked for at the first start)
 	std::string version = "4.5";
 	std::string nvram = "cruisn_usa.nv";
 	bool show_launcher = true;
