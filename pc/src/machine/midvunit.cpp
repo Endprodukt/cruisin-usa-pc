@@ -261,7 +261,8 @@ int MidVUnit::run_cpu(int cycles)
 	int used;
 	{
 		PerfTimer pt(perf_cpu_ms);
-		used = m_cpu->run(cycles);
+		// overclock: the CPU gets `cpu_overclock` times the instructions in the same emulated time
+		used = m_cpu->run(cycles * cpu_overclock) / cpu_overclock;
 	}
 	if (m_pchist_on) m_pchist[m_cpu->pc() >> 2]++;
 	sync_dcs();
@@ -304,7 +305,7 @@ void MidVUnit::dcs_write(uint8_t d)
 
 uint64_t MidVUnit::now_cycles() const
 {
-	return m_cycles_total + uint64_t(m_slice_len - std::max(0, m_cpu->icount()));
+	return m_cycles_total + uint64_t(std::max(0, m_slice_len * cpu_overclock - std::max(0, m_cpu->icount())) / cpu_overclock);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -950,6 +951,7 @@ bool MidVUnit::run_frame()
 			m_present_page = m_page_control & 1;
 			gpu_flush_quads();
 			gpu_sync_state();
+			if (m_wide && quads_last_frame == 0) m_gpu->clear_margins(m_present_page);   // a CPU-drawn screen: no stale 3D at the sides
 			m_gpu->latch(m_present_page, m_vis_h);
 		}
 		if (m_vpos == m_vis_h && !m_gpu)
@@ -1301,38 +1303,77 @@ bool MidVUnit::writer_is_2d()
 // ---------------------------------------------------------------------------------------
 void MidVUnit::setup_idle_hooks()
 {
-	m_cpu->hook_pc[0] = m_cpu->hook_pc[1] = m_cpu->hook_pc[2] = ~0u;
+	for (uint32_t &h : m_cpu->hook_pc) h = ~0u;
 	m_cpu->on_hook = nullptr;
-	if (!idle_skip || std::getenv("NOIDLESKIP"))
-		return;
+	const bool idle = idle_skip && !std::getenv("NOIDLESKIP");
 	const std::vector<uint32_t> &c = m_ram0;
-	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u;
+	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u;
+	m_ofree_addr = 0;
 	for (uint32_t i = 0; i + 8 < 0x20000; i++)
 	{
 		// (a)
-		if ((c[i] & 0xffff0000u) == 0x08200000u && (c[i + 1] & 0xffff0000u) == 0x04A00000u && (c[i] & 0xffff) == (c[i + 1] & 0xffff) &&
+		if (idle && (c[i] & 0xffff0000u) == 0x08200000u && (c[i + 1] & 0xffff0000u) == 0x04A00000u && (c[i] & 0xffff) == (c[i + 1] & 0xffff) &&
 		    c[i + 2] == 0x6A05FFFEu && c[i + 3] == 0x78800000u && sync_pc == ~0u)
 		{
 			sync_pc = i + 1;
 			m_idle_sync_addr = c[i] & 0xffff;
 		}
 		// (b)  LDI 1,R0 / STI R0,(CLEARRDY) / SUBI R6,R6 / LDI (OACTIVEI),AR0 / LDI *AR0,AR1
-		if (c[i] == 0x08600001u && (c[i + 1] & 0xffff0000u) == 0x15200000u && c[i + 2] == 0x18060006u &&
+		if (idle && c[i] == 0x08600001u && (c[i + 1] & 0xffff0000u) == 0x15200000u && c[i + 2] == 0x18060006u &&
 		    (c[i + 3] & 0xffff0000u) == 0x08280000u && c[i + 4] == 0x0849C000u && sort_entry == ~0u)
 		{
 			sort_entry = i;
 			sort_top = i + 2;
 			m_idle_flag_addr = c[i + 1] & 0xffff;
 		}
+		// (c) BGD_WATCHER "activate the next scenery section":  CMPF (DACT_DIST),R0 / BGT NOACT / LDI AR0,AR2 / CALL activate /
+		//     LDI (DGROUP_COUNT),AR1 / MPYI 5,AR1. With a longer view distance more sections are wanted than the 20-entry section table
+		//     holds, so the activation is held back while the table is nearly full.
+		if (rom_patches.draw_distance_pct > 100 && (c[i] & 0xffff0000u) == 0x04200000u && (c[i + 1] & 0xffff0000u) == 0x6A090000u &&
+		    c[i + 2] == 0x080A0008u && (c[i + 3] & 0xff000000u) == 0x62000000u && (c[i + 4] & 0xffff0000u) == 0x08290000u &&
+		    c[i + 5] == 0x0AE90005u && dact_pc == ~0u)
+		{
+			dact_pc = i + 1;   // the branch: taken = no activation
+			dact_skip = i + 2 + (c[i + 1] & 0xffff);
+			m_dgroup_count_addr = c[i + 4] & 0xffff;
+		}
+		// OBJ_FREE: PUSH R0 / LDI (OFREE),R0 / STI R0,*AR2 / STI AR2,(OFREE)  -> head of the free object list
+		if (c[i] == 0x0F200000u && (c[i + 1] & 0xffff0000u) == 0x08200000u && c[i + 2] == 0x1540C200u &&
+		    (c[i + 3] & 0xffff0000u) == 0x152A0000u && (c[i + 1] & 0xffff) == (c[i + 3] & 0xffff) && m_ofree_addr == 0)
+			m_ofree_addr = c[i + 1] & 0xffff;
 	}
-	if (sync_pc == ~0u && sort_top == ~0u)
+	if (sync_pc == ~0u && sort_top == ~0u && dact_pc == ~0u)
 		return;
 	m_cpu->hook_pc[0] = sync_pc;
 	m_cpu->hook_pc[1] = sort_entry;
 	m_cpu->hook_pc[2] = sort_top;
+	m_cpu->hook_pc[3] = dact_pc;
 	m_zsort_first = true;
-	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top]() -> bool {
+	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip]() -> bool {
 		uint32_t pc = m_cpu->pc();
+		if (pc == dact_pc)
+		{
+			// hold the next section back while the section table is nearly full or the object pool runs low
+			// (a section brings up to a few hundred objects; running out makes the game reset)
+			bool hold = m_ram0[m_dgroup_count_addr] >= 16;
+			if (!hold && m_ofree_addr)
+			{
+				int n = 0;
+				uint32_t o = m_ram0[m_ofree_addr];
+				while (o && n < 600)
+				{
+					uint32_t next;
+					if (o < m_ram0.size()) next = m_ram0[o];
+					else if (o >= 0x400000 && o - 0x400000 < m_ram1.size()) next = m_ram1[o - 0x400000];
+					else break;
+					o = next;
+					n++;
+				}
+				hold = n < 500;
+			}
+			if (hold) { m_cpu->set_pc(dact_skip); return true; }
+			return false;
+		}
 		if (pc == sync_pc)
 		{
 			// R0 still equals the polled word: nothing changes until the next interrupt
@@ -1368,3 +1409,18 @@ const uint64_t *MidVUnit::cpu_hits() const { return m_cpu->m_hits; }
 #else
 const uint64_t *MidVUnit::cpu_hits() const { return nullptr; }
 #endif
+
+int MidVUnit::free_objects() const
+{
+	if (!m_ofree_addr) return -1;
+	int n = 0;
+	uint32_t o = m_ram0[m_ofree_addr];
+	while (o && n < 5000)
+	{
+		if (o < m_ram0.size()) o = m_ram0[o];
+		else if (o >= 0x400000 && o - 0x400000 < m_ram1.size()) o = m_ram1[o - 0x400000];
+		else break;
+		n++;
+	}
+	return n;
+}

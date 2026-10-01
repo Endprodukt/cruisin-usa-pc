@@ -71,16 +71,24 @@ void draw_distance(std::vector<uint32_t> &ram, int pct, int &applied, std::strin
 			log += "  level-of-detail switching disabled\n";
 		}
 
-		// scenery sections, dynamic objects and the object lists work over k times the original distances
+		// scenery sections are activated k times further ahead. Only the activation distance changes: the deactivation distances
+		// (sections behind the camera) stay, otherwise the 20-entry section table fills up with sections nobody sees and the game
+		// runs out of road ahead (it restarts). A CPU hook additionally holds new sections back while the table is nearly full.
 		if (b >= 0)
 		{
-			for (int i = 0; i < 5; i++) ram[size_t(b) + size_t(i)] = c3x_float(std::min(double(i == 1 ? 5000 : i == 0 ? 15000 : i == 2 ? 80000 : i == 3 ? 15000 : 45000) * k, 1.0e6));
+			ram[size_t(b) + 2] = c3x_float(80000.0 * k);
 			applied++;
-			log += "  scenery activation and deactivation distances x" + std::to_string(pct) + "%\n";
+			log += "  scenery activation distance x" + std::to_string(pct) + "%\n";
 		}
 		const uint32_t act[2] = {75000u, 80000u};   // ACTIVEHI1 / ACTIVEHI of the object lists
 		long a2 = find_seq(ram, act, 2, scan);
-		if (a2 >= 0) { ram[size_t(a2)] = uint32_t(75000 * k); ram[size_t(a2) + 1] = uint32_t(80000 * k); applied++; }
+		if (a2 >= 0)
+		{
+			const double ka = std::min(k, 1.5);   // the active object window: more than 1.5x made the game lock up (too many live objects)
+			ram[size_t(a2)] = uint32_t(75000 * ka);
+			ram[size_t(a2) + 1] = uint32_t(80000 * ka);
+			applied++;
+		}
 
 		// The engine projects with a 1/z table of 5000 entries (z / 16, up to 80000). A longer table is built in a free stretch of the
 		// ROM image and the table pointer, the table limit (CMPI/LDIGT 4999 in the projection code) and the far clip are moved.

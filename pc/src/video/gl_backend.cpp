@@ -233,6 +233,20 @@ public:
 		}
 	}
 
+	void clear_margins(int page) override
+	{
+		if (m_opt.wide_margin <= 0) return;
+		bind_page(page);
+		const int m = m_opt.wide_margin * m_opt.scale;
+		glEnable(GL_SCISSOR_TEST);
+		glClearColor(0, 0, 0, 1);
+		glScissor(0, 0, m, page_h());
+		glClear(GL_COLOR_BUFFER_BIT);
+		glScissor(page_w() - m, 0, m, page_h());
+		glClear(GL_COLOR_BUFFER_BIT);
+		glDisable(GL_SCISSOR_TEST);
+	}
+
 	void set_overlay_offsets(int l, int c, int r) override { m_ovl_off[0] = l; m_ovl_off[1] = c; m_ovl_off[2] = r; }
 
 	void draw(int page, const GpuQuad *q, int count) override

@@ -244,6 +244,22 @@ public:
 		copy_rows_to_image(m_tex_ram, ram + size_t(first) * 256, 256, 256, first, last - first + 1);
 	}
 
+	void clear_margins(int page) override
+	{
+		if (m_opt.wide_margin <= 0) return;
+		begin_cb();
+		begin_page_pass(page);
+		const uint32_t m = uint32_t(m_opt.wide_margin * m_opt.scale);
+		VkClearAttachment ca{VK_IMAGE_ASPECT_COLOR_BIT, 0, {}};
+		ca.clearValue.color = {{0, 0, 0, 1}};
+		VkClearRect r[2]{};
+		r[0].rect = {{0, 0}, {m, uint32_t(page_h())}};
+		r[1].rect = {{int32_t(uint32_t(page_w()) - m), 0}, {m, uint32_t(page_h())}};
+		r[0].layerCount = r[1].layerCount = 1;
+		vkCmdClearAttachments(m_cb, 1, &ca, 2, r);
+		vkCmdEndRenderPass(m_cb);
+	}
+
 	void set_overlay_offsets(int l, int c, int r) override { m_ovl_off[0] = l; m_ovl_off[1] = c; m_ovl_off[2] = r; }
 
 	void upload_overlay(int page, const uint16_t *layer, int first, int last) override

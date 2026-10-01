@@ -68,9 +68,10 @@ public:
 
 	// Execution hooks: when the program counter reaches one of hook_pc (before the instruction runs), on_hook() is called from the
 	// run loop. If it returns true the rest of the current time slice is skipped (used to fast-forward the game's idle loops).
-	uint32_t hook_pc[3] = {~0u, ~0u, ~0u};
+	uint32_t hook_pc[4] = {~0u, ~0u, ~0u, ~0u};
 	std::function<bool()> on_hook;
 	void skip_rest_of_slice() { m_icount = 0; }
+	void set_pc(uint32_t pc) { m_pc = pc; }
 #ifdef C3X_PROFILE
 	uint64_t m_hits[2048] = {};
 #endif

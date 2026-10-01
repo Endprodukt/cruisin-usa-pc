@@ -54,9 +54,12 @@ public:
 
 	bool load_roms(const std::string &zip_path, const std::string &version, std::string &err);
 	void reset();
+	int cpu_overclock = 1;                 // 1..4: more main CPU instructions per emulated time (the game's heavy frames finish sooner)
 	bool skip_raster = false;              // benchmarking: do not rasterise quads on the CPU
 	bool idle_skip = true;                 // fast-forward the game's wait loops (see setup_idle_hooks)
 	void debug_ram_usage() const;
+	int free_objects() const;
+	uint32_t ram_word(uint32_t a) const { return a < m_ram0.size() ? m_ram0[a] : 0; }
 	// performance counters (read and cleared by the front end)
 	double perf_cpu_ms = 0, perf_dcs_ms = 0;   // main CPU interpreter / sound DSP time
 	double perf_feed_ms = 0;               // time spent handing quads / state to the video backend
@@ -153,7 +156,7 @@ private:
 	std::unique_ptr<Dcs1> m_dcs;
 	int run_cpu(int cycles);
 	void setup_idle_hooks();
-	uint32_t m_idle_flag_addr = 0, m_idle_sync_addr = 0;
+	uint32_t m_idle_flag_addr = 0, m_idle_sync_addr = 0, m_dgroup_count_addr = 0, m_ofree_addr = 0;
 	bool m_zsort_first = true;
 	void sync_dcs();
 

@@ -321,7 +321,7 @@ int tms320c3x_device::run(int cycles)
 			continue;
 		}
 
-		if ((m_pc == hook_pc[0] || m_pc == hook_pc[1] || m_pc == hook_pc[2]) && on_hook && on_hook())
+		if ((m_pc == hook_pc[0] || m_pc == hook_pc[1] || m_pc == hook_pc[2] || m_pc == hook_pc[3]) && on_hook && on_hook())
 			continue;
 
 		execute_one();

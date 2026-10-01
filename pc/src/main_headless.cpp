@@ -62,6 +62,7 @@ int main(int argc, char **argv)
 	if (const char *wm = getenv("WM")) m.rom_patches.wide_margin = atoi(wm);
 	if (getenv("NORASTER")) m.skip_raster = true;
 	if (const char *rb = getenv("RB")) m.rom_patches.rubberband_pct = atoi(rb);
+	if (const char *oc = getenv("OC")) m.cpu_overclock = atoi(oc);
 	m.reset();
 	if (getenv("DEFAULT_NV")) m.load_default_nvram();
 	if (const char *adj = getenv("ADJ")) { int idx, val, n = 0; const char *q = adj; while (sscanf(q, "%d=%d%n", &idx, &val, &n) == 2) { cmos::set(m.nvram(), idx, uint32_t(val)); q += n; if (*q == ',') q++; } }
@@ -110,7 +111,7 @@ int main(int argc, char **argv)
 			(void)kicks;
 		}
 		if (const char *tl = getenv("TELEMLOG")) { Telemetry t; if (m.read_telemetry(t) && f % atoi(tl) == 0) fprintf(stderr, "T %d spd=%.2f skid=%.2f thr=%.2f brk=%.2f turn=%.3f trac=%.2f rpm=%.1f yv=%.3f xm=%.3f zm=%.3f xl=%.3f zl=%.3f d2c=%.1f road=%d onroad=%d bump=%d spin=%d air=%d/%d gear=%d yv0=%.2f dy0=%.2f col=%d\n", f, t.speed, t.skid, t.throttle, t.brake, t.turn, t.traction, t.rpm, t.y_vel, t.x_mom, t.z_mom, t.x_lean, t.z_lean, t.dist_to_center, (int)t.road_friction, t.onroad, t.bump, t.spin, t.air_front, t.air_rear, t.gear, t.susp_yv[0], t.susp_dy[0], t.collided[0]); }
-		if (f % 60 == 0) fprintf(stderr, "frame %d pc=%06X quads=%llu vis=%dx%d\n", f, m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
+		if (f % 60 == 0) fprintf(stderr, "frame %d free=%d mode=%X pc=%06X quads=%llu vis=%dx%d\n", f, m.free_objects(), m.ram_word(0xC8F5) | (m.ram_word(0xE49C) << 16), m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
 	if (const uint64_t *h = m.cpu_hits()) { std::vector<std::pair<uint64_t, int>> v; uint64_t tot = 0; for (int i = 0; i < 2048; i++) { v.push_back({h[i], i}); tot += h[i]; } std::sort(v.rbegin(), v.rend()); fprintf(stderr, "OPS total %llu%c", (unsigned long long)tot, 10); for (int i = 0; i < 25; i++) fprintf(stderr, "OP %03X %llu (%.1f%%)%c", v[i].second, (unsigned long long)v[i].first, 100.0 * v[i].first / double(tot), 10); }
 	if (getenv("PROFILE")) prof.stop_and_report();
