@@ -64,6 +64,7 @@ int main(int argc, char **argv)
 	if (const char *ex = getenv("EXPORT")) { TexRepl::Config tc; tc.dump = true; tc.dump_dir = ex; m.texrepl.configure(tc); }
 	if (const char *rb = getenv("RB")) m.rom_patches.rubberband_pct = atoi(rb);
 	if (const char *oc = getenv("OC")) m.cpu_overclock = atoi(oc);
+	if (getenv("SMOOTH")) m.rom_patches.smooth_frames = true;
 	m.reset();
 	if (getenv("DEFAULT_NV")) m.load_default_nvram();
 	if (const char *adj = getenv("ADJ")) { int idx, val, n = 0; const char *q = adj; while (sscanf(q, "%d=%d%n", &idx, &val, &n) == 2) { cmos::set(m.nvram(), idx, uint32_t(val)); q += n; if (*q == ',') q++; } }
@@ -110,6 +111,31 @@ int main(int argc, char **argv)
 			for (int k = 0; k < 4; k++) { float o = fx.step(1.0 / 232.0); mx = std::max(mx, std::fabs(o)); sum2 += o * o; sum1 += o; n++; }
 			if (f % atoi(getenv("FFBTEST")) == 0 && ok) { fprintf(stderr, "FFB f%d wheel=%d spd=%.0f slip=%.3f onroad=%X mean=%+.2f max=%.2f rms=%.3f vib=%.2f\n", f, m.inputs.wheel, t.speed, fx.slip(), t.onroad, sum1 / std::max(1, n), mx, std::sqrt(sum2 / std::max(1, n)), fx.vibration()); mx = 0; sum2 = 0; sum1 = 0; n = 0; }
 			(void)kicks;
+		}
+		if (getenv("SWAPLOG"))
+		{   // share of vblanks in which a new picture was drawn (all screens), per 120 frames
+			static uint64_t last = 0;
+			if (f % 120 == 119) { fprintf(stderr, "SWAP f%d mode=%X flips %d/120%c", f, m.ram_word(0xC8F5), int(m.page_flips - last), 10); last = m.page_flips; }
+		}
+		if (getenv("NFLOG"))
+		{   // histogram of NFRAMES (vblanks per game frame) in races, printed every 600 frames
+			static uint32_t nf_addr = 0; static int hist[5] = {}; static uint32_t last_inf = 0;
+			if (!nf_addr)
+				for (uint32_t i = 2; i + 1 < 0x20000 && !nf_addr; i++)
+				{
+					uint32_t a = m.ram_word(i), b = m.ram_word(i + 1), c = m.ram_word(i - 2);
+					if ((a & 0xffff0000u) == 0x15210000u && (b & 0xffff0000u) == 0x15200000u && c == (0x08200000u | (a & 0xffff))) nf_addr = b & 0xffff;
+				}
+			Telemetry t;
+			if (nf_addr && m.read_telemetry(t))
+			{
+				// count each game frame once: the per-frame step of a moving car changes when a new frame ran
+				static float lastspd = -1; static int same = 0;
+				uint32_t nf = m.ram_word(nf_addr);
+				if (t.speed != lastspd) { hist[std::min<uint32_t>(nf, 4)]++; lastspd = t.speed; }
+				(void)same; (void)last_inf;
+			}
+			if (f % 600 == 599 && nf_addr) { fprintf(stderr, "FRAMRATE=%u ", m.ram_word(0xC961)); fprintf(stderr, "NFRAMES hist 1:%d 2:%d 3:%d 4+:%d%c", hist[1], hist[2], hist[3], hist[4], 10); for (int &h : hist) h = 0; }
 		}
 		if (getenv("COLLOG"))
 		{   // object hits and spins, with the modern force feedback's output over the frame

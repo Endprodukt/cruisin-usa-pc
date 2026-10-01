@@ -682,6 +682,7 @@ void MidVUnit::update_screen_rows(int from, int to, int page)
 
 void MidVUnit::page_control_write(uint32_t data)
 {
+	if ((m_page_control ^ data) & 1) page_flips++;
 	if (((m_page_control ^ data) & 1) && !m_gpu)
 	{
 		// the visible page flips: everything up to the current beam position was drawn from the old page

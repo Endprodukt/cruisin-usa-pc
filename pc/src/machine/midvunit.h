@@ -56,6 +56,7 @@ public:
 	void reset();
 	int cpu_overclock = 1;                 // 1..4: more main CPU instructions per emulated time (the game's heavy frames finish sooner)
 	bool skip_raster = false;              // benchmarking: do not rasterise quads on the CPU
+	uint64_t page_flips = 0;               // displayed page changes = new pictures shown (game frame rate)
 	bool idle_skip = true;                 // fast-forward the game's wait loops (see setup_idle_hooks)
 	void debug_ram_usage() const;
 	int free_objects() const;

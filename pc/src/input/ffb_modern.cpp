@@ -45,8 +45,20 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 		m_speed_n = 0;
 		m_sat_target = 0;
 		m_slip = m_prev_slip = 0;
+		m_steps = 0;
 		return;
 	}
+	// The game computes a new frame every one or two vblanks (two in the original races, one with the smooth-frames mod). Calls
+	// in between see the same state and are skipped; changes per frame are normalised to two vblanks, the rate the thresholds
+	// below were tuned at.
+	m_steps++;
+	m_bump_cool -= 1.0f / 58.0f;
+	m_wall_cool -= 1.0f / 58.0f;
+	if (m_have_prev && t.speed == m_prev.speed && t.y_rot == m_prev.y_rot && t.v_rot == m_prev.v_rot && t.susp_yv[1] == m_prev.susp_yv[1] &&
+	    t.hits_object == m_prev.hits_object && t.hits_light == m_prev.hits_light && t.hits_wall == m_prev.hits_wall && t.spin == m_prev.spin)
+		return;
+	const float per2 = 2.0f / float(std::clamp(m_steps, 1, 4));
+	m_steps = 0;
 	m_t = t;
 	m_speed_n = std::clamp(t.speed / TOP_SPEED, 0.0f, 1.2f);
 	const float v = m_speed_n;
@@ -86,7 +98,7 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 		// abrupt change of the slip angle between two frames = something hit the car: a kick that pulls the same way
 		// the aligning torque will pull (towards the direction the car now travels relative to the wheels)
 		float dslip = wrap(m_slip - m_prev_slip);
-		if (std::fabs(dslip) > 0.06f && t.speed > 15.0f && !t.spin && !p.spin)
+		if (std::fabs(dslip) * per2 > 0.06f && t.speed > 15.0f && !t.spin && !p.spin)
 		{
 			float amp = std::min(0.9f, (std::fabs(dslip) - 0.04f) * 3.0f) * (0.4f + 0.6f * v) * m_c.impact;
 			m_impact = (dslip > 0 ? -1.0f : 1.0f) * amp;   // slip grew to the right -> wheel jerked left
@@ -108,7 +120,7 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 
 		// vertical suspension speed spikes (potholes, road seams, jumps)
 		float worst = 0;
-		for (int i = 1; i < 5; i++) worst = std::max(worst, std::fabs(t.susp_yv[i] - p.susp_yv[i]));
+		for (int i = 1; i < 5; i++) worst = std::max(worst, std::fabs(t.susp_yv[i] - p.susp_yv[i]) * per2);
 		if (worst > 6.0f && t.air_front == 0 && t.air_rear == 0 && m_bump_cool <= 0)
 		{
 			add_jolt(m_c.bump * std::min(0.35f, worst / 80.0f) * (0.3f + 0.7f * v), 34.0f, 12.0f);
@@ -135,7 +147,7 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 
 		// collision: a big loss of speed in one frame (one knock, not a rattle). Skipped when one of the hits above explains it.
 		float dv = p.speed - t.speed;
-		if (dv > 5.0f && (t.bump > 0 || t.spin || dv > 10.0f) && !hit_obj && !hit_wall && !hit_bush)
+		if (dv * per2 > 5.0f && (t.bump > 0 || t.spin || dv * per2 > 10.0f) && !hit_obj && !hit_wall && !hit_bush)
 			add_jolt(m_c.collision * std::min(0.6f, 0.2f + dv / 50.0f), 14.0f, 14.0f);
 
 		// spin-out start: a slam in the direction the wheel is about to be held
@@ -152,8 +164,6 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 	m_prev = t;
 	m_prev_slip = m_slip;
 	m_have_prev = true;
-	m_bump_cool -= 1.0f / 58.0f;
-	m_wall_cool -= 1.0f / 58.0f;
 }
 
 float FfbModern::step(double dt)

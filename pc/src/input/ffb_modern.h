@@ -49,6 +49,7 @@ private:
 	FfbModernConfig m_c;
 	Telemetry m_t, m_prev;
 	bool m_have_prev = false;
+	int m_steps = 0;   // calls since the game state last changed (vblanks per game frame)
 	float m_arcade = 0, m_steer = 0;
 	float m_speed_n = 0;
 

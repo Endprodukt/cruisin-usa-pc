@@ -112,6 +112,7 @@ struct Settings
 	std::string nvram = "cruisn_usa.nv";
 	bool show_launcher = true;
 	bool fast_boot = true;
+	bool smooth_frames = false; // up to 57 game frames per second instead of 28.5 (frame governor off, CPU clock x2)
 	int rubberband = 100;      // opponents' catch-up boost in percent of the original (0 = none)
 
 	VideoSettings video;

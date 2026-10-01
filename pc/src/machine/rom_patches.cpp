@@ -215,6 +215,28 @@ void rubberband(std::vector<uint32_t> &ram, int pct, int &applied, std::string &
 		}
 }
 
+// Frame governor (CUSA.ASM MAINLOOP): a new game frame starts only when at least FRAMRATE vblanks have passed. Races and the
+// head-to-head logo set it to 2 (INTRO.ASM INIT_GAMELEG), i.e. at most 28.5 frames per second. Everything that moves is scaled by
+// NFRAMES (vblanks since the last frame), so with 1 the game simply takes smaller steps more often, provided the CPU finishes a
+// frame within one vblank (the host raises the CPU clock for that).
+void smooth_frames(std::vector<uint32_t> &ram, int &applied, std::string &log)
+{
+	const size_t scan = 0x20000;
+	// MWAIT0: LDI (INFRAMES),R0 / CMPI (FRAMRATE),R0 / BLT MWAIT0
+	long best = -1;
+	for (size_t i = 0; i + 3 < scan && best < 0; i++)
+		if ((ram[i] & 0xffff0000u) == 0x08200000u && (ram[i + 1] & 0xffff0000u) == 0x04A00000u && ram[i + 2] == 0x6A07FFFDu)
+			best = long(ram[i + 1] & 0xffff);
+	if (best < 0) { log += "  frame governor not found\n"; return; }
+	// FRAMRATE is "minimum vblanks - 1": the wait for it comes before the page swap request, which itself waits for the next vblank.
+	// 0 (the attract mode's value) allows a frame per vblank. Every "LDI 1/2,R0 / STI R0,(FRAMRATE)" becomes 0.
+	int n = 0;
+	for (size_t i = 0; i + 1 < scan; i++)
+		if ((ram[i] == 0x08600001u || ram[i] == 0x08600002u) && ram[i + 1] == (0x15200000u | uint32_t(best))) { ram[i] = 0x08600000u; n++; }
+	applied += n;
+	log += "  frame governor -> 0 (" + std::to_string(n) + " sites)\n";
+}
+
 } // namespace
 
 int apply_rom_patches(std::vector<uint32_t> &ram, const RomPatchOptions &opt, std::string &log)
@@ -223,5 +245,6 @@ int apply_rom_patches(std::vector<uint32_t> &ram, const RomPatchOptions &opt, st
 	draw_distance(ram, opt.draw_distance_pct, applied, log);
 	rubberband(ram, opt.rubberband_pct, applied, log);
 	widescreen(ram, opt.wide_margin, applied, log);
+	if (opt.smooth_frames) smooth_frames(ram, applied, log);
 	return applied;
 }
