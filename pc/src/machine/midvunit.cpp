@@ -10,6 +10,7 @@
 
 #include "../../third_party/miniz/miniz.h"
 #include "default_nvram.h"
+#include "cmos.h"
 
 #include <windows.h>
 namespace {
@@ -279,13 +280,41 @@ void MidVUnit::reset()
 	galil_set_input(":");
 }
 
+// The emulated CPU's clock factor for the coming frame.
+//
+// A longer draw distance keeps several times more scenery alive, and the arcade CPU then needs three or four vblanks per game
+// frame instead of two. The game counts its sequences (ready - set - go, the flag girl, logos, everything that SLEEPs) in game
+// frames, so they would run at half speed, and the picture would stutter. The game itself limits the frame rate with its governor
+// (FRAMRATE: at least FRAMRATE + 1 vblanks per frame, 1 in races and in the attract drive), so giving the CPU more clock there
+// only lets it keep the governor's pace again: measured with 400 % and 21:9, three times the clock gives exactly the original
+// cadence in races (2 vblanks), at the end of a race and in the attract drive (3 vblanks).
+// Where the game sets no governor (the first selection screen, logos) the original pace is given by the CPU alone; there the
+// clock is raised only moderately, in proportion to the draw distance, and not at all while no scenery is loaded.
+void MidVUnit::update_clock()
+{
+	int q = std::max(1, cpu_overclock) * 4;
+	const int dd = rom_patches.draw_distance_pct;
+	if (auto_overclock && dd > 100 && m_dgroup_count_addr)
+	{
+		const uint32_t groups = m_ram0[m_dgroup_count_addr];
+		if (groups > 0 && groups <= 20)
+		{
+			const bool governed = m_framrate_addr && m_ram0[m_framrate_addr] >= 1 && m_ram0[m_framrate_addr] <= 4;
+			const int want = governed ? (dd >= 300 ? 12 : 8) : 4 + (dd - 100) / 100;
+			q = std::max(q, want);
+		}
+	}
+	m_oc_q4 = q;
+}
+
 int MidVUnit::run_cpu(int cycles)
 {
 	int used;
 	{
 		PerfTimer pt(perf_cpu_ms);
-		// overclock: the CPU gets `cpu_overclock` times the instructions in the same emulated time
-		used = m_cpu->run(cycles * cpu_overclock) / cpu_overclock;
+		// overclock: the CPU gets m_oc_q4 / 4 times the instructions in the same emulated time
+		const int ran = m_cpu->run(cycles * m_oc_q4 / 4);
+		used = std::max(ran * 4 / m_oc_q4, std::min(cycles, ran));
 	}
 	if (m_pchist_on) m_pchist[m_cpu->pc() >> 2]++;
 	sync_dcs();
@@ -355,7 +384,7 @@ void MidVUnit::dcs_write(uint8_t d)
 
 uint64_t MidVUnit::now_cycles() const
 {
-	return m_cycles_total + uint64_t(std::max(0, m_slice_len * cpu_overclock - std::max(0, m_cpu->icount())) / cpu_overclock);
+	return m_cycles_total + uint64_t(std::max(0, m_slice_len * m_oc_q4 / 4 - std::max(0, m_cpu->icount())) * 4 / m_oc_q4);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -990,6 +1019,7 @@ void MidVUnit::draw_quad(const VQuad &q)
 bool MidVUnit::run_frame()
 {
 	quads_last_frame = 0;
+	update_clock();
 	m_video_changed = false;
 	m_partial_next_row = 0;
 
@@ -1088,6 +1118,7 @@ void MidVUnit::load_default_nvram()
 	for (const NvPair &p : kDefaultNvram)
 		if (p.index < m_nvram.size())
 			m_nvram[p.index] = p.value;
+	cmos::set(m_nvram, cmos::ADJ_FREE_PLAY, 1);   // free play by default: a PC has no coin slot
 }
 
 bool MidVUnit::load_nvram(const std::string &path)
@@ -1390,6 +1421,9 @@ void MidVUnit::setup_idle_hooks()
 			sort_top = i + 2;
 			m_idle_flag_addr = c[i + 1] & 0xffff;
 		}
+		// MWAIT0 in the main loop: LDI (INFRAMES),R0 / CMPI (FRAMRATE),R0 / BLT MWAIT0  -> the frame governor's address
+		if ((c[i] & 0xffff0000u) == 0x08200000u && (c[i + 1] & 0xffff0000u) == 0x04A00000u && c[i + 2] == 0x6A07FFFDu && m_framrate_addr == 0)
+			m_framrate_addr = c[i + 1] & 0xffff;
 		// (c) BGD_WATCHER "activate the next scenery section":  CMPF (DACT_DIST),R0 / BGT NOACT / LDI AR0,AR2 / CALL activate /
 		//     LDI (DGROUP_COUNT),AR1 / MPYI 5,AR1. With a longer view distance more sections are wanted than the 20-entry section table
 		//     holds, so the activation is held back while the table is nearly full.

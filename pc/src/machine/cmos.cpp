@@ -43,7 +43,7 @@ const std::vector<AdjInfo> &adjustments()
 {
 	// index, label, help, kind, min, max, step, default (limits and defaults are the game's own VADJTAB)
 	static const std::vector<AdjInfo> t = {
-		{ADJ_FREE_PLAY, "Free play", "No coins needed.", AdjInfo::OnOff, 0, 1, 1, 0},
+		{ADJ_FREE_PLAY, "Free play", "No coins needed.", AdjInfo::OnOff, 0, 1, 1, 1},
 		{ADJ_FREEGAME, "First place awards free game", "", AdjInfo::OnOff, 0, 1, 1, 1},
 		{ADJ_MAX_CREDITS, "Max credits", "10 to 50.", AdjInfo::Credits, 10, 50, 1, 30},
 		{ADJ_DIFFICULTY, "Game difficulty", "0 (easy) to 9 (hard).", AdjInfo::Number, 0, 9, 1, 5},

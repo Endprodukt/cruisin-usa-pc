@@ -196,6 +196,7 @@ bool Settings::load(const std::string &path)
 	r.choice("video", "aspect", video.aspect, kAspect);
 	r.boolean("video", "integer_scale", video.integer_scale);
 	r.boolean("video", "vsync", video.vsync);
+	r.boolean("video", "display_sync", video.display_sync);
 	r.boolean("video", "texture_filter", video.texture_filter);
 	r.boolean("video", "smooth_output", video.smooth_output);
 	r.integer("video", "aa", video.aa, 0, 3);
@@ -244,7 +245,6 @@ bool Settings::load(const std::string &path)
 	r.boolean("ffb", "rumble", ffb.rumble);
 	r.integer("ffb", "rumble_strength", ffb.rumble_strength, 0, 200);
 	r.choice("ffb", "mode", ffb.mode, kFfbMode);
-	r.integer("ffb_modern", "master", ffb.fx_master, 0, 200);
 	r.integer("ffb_modern", "aligning", ffb.fx_aligning, 0, 200);
 	r.integer("ffb_modern", "centering", ffb.fx_centering, 0, 200);
 	r.integer("ffb_modern", "menu", ffb.fx_menu, 0, 200);
@@ -266,6 +266,7 @@ bool Settings::load(const std::string &path)
 
 	int d = dsw;
 	r.integer("dip", "switches", d, 0, 0xffff);
+	if (d == 0xf9fe) d = 0xf9bf;   // the former default (motion on, link slave): never chosen by hand, follow the new default
 	dsw = uint16_t(d);
 	return true;
 }
@@ -283,7 +284,7 @@ bool Settings::save(const std::string &path) const
 	  << "\nwindow_width = " << video.window_w << "\nwindow_height = " << video.window_h << "\nmonitor = " << video.monitor
 	  << "\n; internal_scale 1..8 x the arcade's 512x400\ninternal_scale = " << video.internal_scale
 	  << "\n; aspect: 4:3 | 16:9 | 21:9 | stretch\naspect = " << to_string(video.aspect)
-	  << "\ninteger_scale = " << b(video.integer_scale) << "\nvsync = " << b(video.vsync)
+	  << "\ninteger_scale = " << b(video.integer_scale) << "\nvsync = " << b(video.vsync) << "\n; one game frame per display refresh: smoothest picture, the game runs at the display's pace (60 Hz: 3.6 % faster than the arcade's 57.9 Hz)\ndisplay_sync = " << b(video.display_sync)
 	  << "\n; aa: 0 off | 1..3 FXAA light/normal/strong (post filter; internal_scale above 1 is supersampling)\naa = " << video.aa << "\n; textures: export_textures writes every drawn texture to textures/dump (tex_<hash>.png); files with the same\n; name in textures/replace are drawn instead (any square size up to 2048)\nexport_textures = " << b(video.export_textures) << "\nexport_variants = " << b(video.export_variants) << "\nreplace_textures = " << b(video.replace_textures)
 	  << "\ntexture_filter = " << b(video.texture_filter) << "\nsmooth_output = " << b(video.smooth_output)
 	  << "\n; reserved for the widescreen / rendering stage\nwidescreen_hack = " << b(video.widescreen_hack)
@@ -324,7 +325,7 @@ bool Settings::save(const std::string &path) const
 	  << "\nrumble_strength = " << ffb.rumble_strength
 	  << "\n; mode: vanilla (the game's own force only) | modern (adds effects from the game's car state, see [ffb_modern])"
 	  << "\nmode = " << to_string(ffb.mode) << "\n\n"
-	  << "[ffb_modern]\n; strength of each effect in percent of its default, 0 = off\nmaster = " << ffb.fx_master << "\naligning = " << ffb.fx_aligning << "\ncentering = " << ffb.fx_centering << "\narcade = " << ffb.fx_menu << "\nimpact = " << ffb.fx_impact << "\nsurface = " << ffb.fx_surface
+	  << "[ffb_modern]\n; strength of each effect in percent of its default, 0 = off\naligning = " << ffb.fx_aligning << "\ncentering = " << ffb.fx_centering << "\narcade = " << ffb.fx_menu << "\nimpact = " << ffb.fx_impact << "\nsurface = " << ffb.fx_surface
 	  << "\nkerb = " << ffb.fx_kerb << "\nbump = " << ffb.fx_bump << "\ncollision = " << ffb.fx_collision << "\nspin = " << ffb.fx_spin
 	  << "\nlanding = " << ffb.fx_landing << "\nengine = " << ffb.fx_engine << "\nskid = " << ffb.fx_skid << "\nair = " << ffb.fx_air
 	  << "\nundersteer = " << ffb.fx_understeer << "\n\n";

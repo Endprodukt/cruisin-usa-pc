@@ -23,7 +23,7 @@ struct MachineInputs
 {
 	uint16_t in0  = 0xffff;   // coins/start/test/service/volume/gear (active low)
 	uint16_t in1  = 0x007f;   // radio + 3 view buttons (active low), motion bits (active high)
-	uint16_t dsw  = 0xf9fe;   // dip switches
+	uint16_t dsw  = 0xf9bf;   // dip switches (link master, motion off)
 	uint8_t  wheel = 0x80;    // ADC ch1, 0x10..0xf0, 0x80 = centre
 	uint8_t  accel = 0x00;    // ADC ch2
 	uint8_t  brake = 0x00;    // ADC ch3
@@ -55,6 +55,7 @@ public:
 
 	bool load_roms(const std::string &zip_path, const std::string &version, std::string &err);
 	void reset();
+	bool auto_overclock = true;            // raise the CPU clock while a longer draw distance needs it (see update_clock)
 	int cpu_overclock = 1;                 // 1..4: more main CPU instructions per emulated time (the game's heavy frames finish sooner)
 	bool skip_raster = false;              // benchmarking: do not rasterise quads on the CPU
 	uint64_t page_flips = 0;               // displayed page changes = new pictures shown (game frame rate)
@@ -160,6 +161,9 @@ private:
 	std::unique_ptr<Dcs1> m_dcs;
 	int run_cpu(int cycles);
 	void setup_idle_hooks();
+	int m_oc_q4 = 4;                       // effective CPU clock factor in quarters (4 = original speed)
+	uint32_t m_framrate_addr = 0;          // FRAMRATE, the game's frame governor (minimum vblanks per frame - 1)
+	void update_clock();
 	uint32_t m_idle_flag_addr = 0, m_idle_sync_addr = 0, m_dgroup_count_addr = 0, m_ofree_addr = 0;
 	uint32_t m_obj_hits[3] = {};   // player hits: bushes, small road objects, walls (counted at the game's sound calls)
 	bool m_zsort_first = true;

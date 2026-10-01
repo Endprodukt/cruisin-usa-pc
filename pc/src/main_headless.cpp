@@ -73,6 +73,7 @@ int main(int argc, char **argv)
 	}
 	if (const char *rb = getenv("RB")) m.rom_patches.rubberband_pct = atoi(rb);
 	if (const char *oc = getenv("OC")) m.cpu_overclock = atoi(oc);
+	if (const char *ao = getenv("AUTOOC")) m.auto_overclock = atoi(ao) != 0;
 	if (getenv("SMOOTH")) m.rom_patches.smooth_frames = true;
 	if (const char *dt = getenv("DCSTHREAD")) m.dcs_thread = atoi(dt);
 	m.reset();
@@ -139,7 +140,7 @@ int main(int argc, char **argv)
 		if (getenv("SWAPLOG"))
 		{   // share of vblanks in which a new picture was drawn (all screens), per 120 frames
 			static uint64_t last = 0;
-			if (f % 120 == 119) { fprintf(stderr, "SWAP f%d mode=%X flips %d/120%c", f, m.ram_word(0xC8F5), int(m.page_flips - last), 10); last = m.page_flips; }
+			if (f % 120 == 119) { fprintf(stderr, "SWAP f%d mode=%X gov=%u groups=%u flips %d/120%c", f, m.ram_word(0xC8F5), m.ram_word(0xC961), m.ram_word(0xE49C), int(m.page_flips - last), 10); last = m.page_flips; }
 		}
 		if (getenv("NFLOG"))
 		{   // histogram of NFRAMES (vblanks per game frame) in races, printed every 600 frames

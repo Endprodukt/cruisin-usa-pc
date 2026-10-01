@@ -239,7 +239,14 @@ void page_video(Launcher &L)
 	     "F3 cycles the mode in game.");
 	edited(L, ImGui::Checkbox("Smooth scaling to the window", &v.smooth_output));
 	edited(L, ImGui::Checkbox("Integer scaling", &v.integer_scale));
+	edited(L, ImGui::Checkbox("Display sync (smoothest)", &v.display_sync));
+	help("The arcade board draws 57.9 pictures per second, which fits no PC display: with VSync a picture is shown twice about twice a second, "
+	     "without VSync the picture tears. Display sync computes exactly one game frame per display refresh instead, so every picture is "
+	     "shown equally long. The game then runs at the display's pace: 3.6 % faster on a 60 Hz display (the sound follows). Used when the "
+	     "display rate is within 6 % of a multiple of 57.9 Hz (60, 120, 175 Hz ...); otherwise the exact arcade speed is kept. Turns VSync on.");
+	ImGui::BeginDisabled(v.display_sync);
 	edited(L, ImGui::Checkbox("VSync", &v.vsync));
+	ImGui::EndDisabled();
 
 	ImGui::SeparatorText("Shadows");
 	ImGui::BeginDisabled(!gpu);
@@ -636,7 +643,7 @@ void controls_ffb(Launcher &L)
 	ImGui::TextDisabled("Will use: %s", tgt >= 0 ? L.hub.info(tgt).name.c_str() : "no wheel with a motor found");
 	ImGui::SetNextItemWidth(300);
 	edited(L, ImGui::SliderInt("Strength", &f.strength, 0, 200, "%d%%"));
-	help("Scale of the game's force. The wheel's own driver strength still applies on top.");
+	help("Overall strength of everything sent to the wheel: the game's force, and in Modern mode every effect below. The wheel's own driver strength still applies on top.");
 	ImGui::SetNextItemWidth(300);
 	edited(L, ImGui::SliderInt("Device gain", &f.device_gain, 0, 100, "%d%%"));
 	edited(L, ImGui::Checkbox("Invert direction", &f.invert));
@@ -650,6 +657,8 @@ void controls_ffb(Launcher &L)
 	}
 	help("Briefly pushes the wheel and watches which way the steering axis moves, then sets the direction. Keep your hands off the wheel.");
 	help("Turn on if the wheel pulls away from the road instead of towards it.");
+	if (ImGui::Button("Test wheel (short pulse)", ImVec2(220, 0)))
+		L.status = (tgt >= 0 && L.hub.test_pulse(tgt)) ? "Test pulse sent to " + L.hub.info(tgt).name : "No wheel with a motor found.";
 	if (f.mode == FfbMode::Modern)
 	{
 		ImGui::SeparatorText("Modern effects");
@@ -666,7 +675,6 @@ void controls_ffb(Launcher &L)
 			fx("Menu effects", f.fx_menu, "Strength of the arcade's own force outside a race (attract mode, selection screens, results). In a race the force comes from the car state only.");
 			fx("Impact kick", f.fx_impact, "Directional kick when the car's direction changes abruptly: a hit from the left jerks the wheel left, "
 			                                   "a car spinning right throws the wheel to the left.");
-			fx("All effects", f.fx_master, "Overall strength of everything the modern model produces (aligning torque, kicks, vibrations). The final Strength slider above scales the sum.");
 			fx("Road surface", f.fx_surface, "Rumble strips, gravel and grass; stronger and faster with speed.");
 			fx("Kerb tug", f.fx_kerb, "A sideways tug when a wheel drops off the edge of the road.");
 			fx("Bumps", f.fx_bump, "Bumps and road seams.");
@@ -679,7 +687,7 @@ void controls_ffb(Launcher &L)
 			fx("Understeer lightness", f.fx_understeer, "The wheel lightens when the tyres lose grip.");
 			if (ImGui::Button("Reset effect strengths"))
 			{
-				f.fx_master = 100; f.fx_surface = 100; f.fx_kerb = 70; f.fx_bump = 100; f.fx_collision = 100; f.fx_spin = 100;
+				f.fx_surface = 100; f.fx_kerb = 70; f.fx_bump = 100; f.fx_collision = 100; f.fx_spin = 100;
 				f.fx_landing = 100; f.fx_engine = 25; f.fx_aligning = 100; f.fx_centering = 35; f.fx_menu = 100; f.fx_impact = 100; f.fx_skid = 100; f.fx_air = 100; f.fx_understeer = 100; L.dirty = true;
 			}
 		}
@@ -689,11 +697,13 @@ void controls_ffb(Launcher &L)
 	ImGui::SetNextItemWidth(300);
 	edited(L, ImGui::SliderInt("Rumble strength", &f.rumble_strength, 0, 200, "%d%%"));
 	ImGui::Spacing();
-	if (ImGui::Button("Test (short pulse)", ImVec2(180, 0)))
+	if (ImGui::Button("Test rumble (short pulse)", ImVec2(220, 0)))
 	{
-		int d = tgt >= 0 ? tgt : -1;
-		if (d < 0) for (int i = 0; i < L.hub.count(); i++) if (L.hub.info(i).ffb) { d = i; break; }
-		L.status = (d >= 0 && L.hub.test_pulse(d)) ? "Test pulse sent to " + L.hub.info(d).name : "No device with a motor could be driven.";
+		// the gamepads only: the wheel has its own test button above
+		int sent = 0; std::string names;
+		for (int i = 0; i < L.hub.count(); i++)
+			if (L.hub.info(i).backend == Backend::XInput && L.hub.info(i).ffb && L.hub.test_pulse(i)) { names = L.hub.info(i).name; sent = 1; break; }
+		L.status = sent ? "Rumble pulse sent to " + names : "No XInput pad connected.";
 	}
 	if (!L.status.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", L.status.c_str()); }
 	L.hub.tick();
@@ -722,6 +732,7 @@ void nv_load(Launcher &L)
 	{
 		L.nv.assign(cmos::WORDS, 0xffffffffu);
 		for (const NvPair &p : kDefaultNvram) if (p.index < L.nv.size()) L.nv[p.index] = p.value;
+		cmos::set(L.nv, cmos::ADJ_FREE_PLAY, 1);   // same default as MidVUnit::load_default_nvram
 		L.nv_from_default = true;
 	}
 	L.nv_loaded = true;
@@ -877,7 +888,7 @@ void page_dip(Launcher &L)
 	}
 	ImGui::Spacing();
 	ImGui::Text("DSW = 0x%04X", L.s.dsw);
-	if (ImGui::Button("Defaults")) { L.s.dsw = 0xf9fe; L.dirty = true; }
+	if (ImGui::Button("Defaults")) { L.s.dsw = 0xf9bf; L.dirty = true; }
 }
 
 // ---- outputs / network -------------------------------------------------------------------------------------------

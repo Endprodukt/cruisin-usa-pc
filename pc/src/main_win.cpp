@@ -351,6 +351,24 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	Outputs outputs;
 	if (S.outputs.mode != OutputMode::Off) outputs.start(S.outputs);
 
+	// Display sync: one game frame per sync_k display refreshes instead of the machine's own 57.9 Hz clock. sync_speed is the
+	// resulting game speed (1.036 at 59.94 Hz); the sound is played at the same factor.
+	double sync_speed = 1.0;
+	int sync_k = 0;   // 0 = off (the machine's own clock)
+	if (video && S.video.display_sync && !bench)
+	{
+		MONITORINFOEXW mi{}; mi.cbSize = sizeof(mi);
+		DEVMODEW dm{}; dm.dmSize = sizeof(dm);
+		if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1)
+		{
+			double hz = double(dm.dmDisplayFrequency);
+			if (dm.dmDisplayFrequency % 60 == 59) hz = (hz + 1.0) * 1000.0 / 1001.0;   // 59 / 119 = the NTSC rates 59.94 / 119.88
+			const int k = std::max(1, int(hz / m.refresh_hz() + 0.5));
+			const double speed = hz / k / m.refresh_hz();
+			if (speed > 0.94 && speed < 1.06) { sync_k = k; sync_speed = speed; }
+		}
+	}
+
 	AudioOut audio;
 	bool audio_ok = S.audio.enabled && audio.start();
 	audio.set_volume(float(S.audio.volume) / 100.0f);
@@ -358,7 +376,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	auto hook_audio = [&](bool on) {
 		if (on && audio_ok)
 		{
-			m.on_audio = [&audio](const int16_t *b, int n, double rate) { audio.push(b, n, rate); };
+			m.on_audio = [&audio, &sync_speed](const int16_t *b, int n, double rate) { audio.push(b, n, rate * sync_speed); };
 			m.on_audio_enable = [&audio](bool e) { if (!e) audio.clear(); };
 		}
 		else { m.on_audio = nullptr; m.on_audio_enable = nullptr; }
@@ -396,6 +414,21 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	hook_audio(true);
 	std::fill(std::begin(g_pressed), std::end(g_pressed), false);
 
+	// wait until `until` (seconds on the now_sec clock): sleep while more than 2 ms remain, then spin (Sleep alone is only
+	// accurate to a millisecond or two, which shows as uneven frame times)
+	timeBeginPeriod(1);
+	auto wait_until = [&](double until) {
+		for (;;)
+		{
+			const double left = until - now_sec();
+			if (left <= 0) break;
+			if (left > 0.002) Sleep(DWORD((left - 0.0015) * 1000.0)); else YieldProcessor();
+		}
+	};
+	if (sync_k) { S.video.vsync = true; vopt = make_video_options(S.video); if (video) video->set_options(vopt); }
+	int sync_phase = 0;
+	double sync_last = 0;
+
 	double t_start = now_sec();
 	double next_frame = 0;
 	double fps_t = 0; int fps_n = 0; int shot_count = 0;
@@ -422,7 +455,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		if (g_pressed[VK_F5]) { S.video.internal_scale = std::max(1, S.video.internal_scale - 1); vchanged = true; }
 		if (g_pressed[VK_F6]) { S.video.internal_scale = std::min(8, S.video.internal_scale + 1); vchanged = true; }
 		if (g_pressed[VK_F7]) { S.video.texture_filter = !S.video.texture_filter; vchanged = true; }
-		if (g_pressed[VK_F8]) { S.video.vsync = !S.video.vsync; vchanged = true; }
+		if (g_pressed[VK_F8]) { S.video.vsync = !S.video.vsync; vchanged = true; if (!S.video.vsync) { sync_k = 0; sync_speed = 1.0; next_frame = now_sec() - t_start; } }
 		if (g_pressed[VK_F9]) { S.video.smooth_output = !S.video.smooth_output; vchanged = true; }
 		if (vchanged)
 		{
@@ -434,7 +467,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		bool ran = false;
 		const double perf_t0 = perf.on ? perf_now_ms() : 0.0;
 		const double feed0 = m.perf_feed_ms, cpu0 = m.perf_cpu_ms, dcs0 = m.perf_dcs_ms; const uint64_t draws0 = m.perf_draws, quads0 = m.perf_quads;
-		for (int guard = 0; t >= next_frame && guard < (bench ? 1 : 3); guard++)
+		// display sync: exactly one frame every sync_k presents (each present waits for the display's vblank)
+		const bool sync_due = sync_k && (sync_phase++ % sync_k) == 0;
+		for (int guard = 0; (sync_k ? (sync_due && guard == 0) : t >= next_frame) && guard < (bench ? 1 : 3); guard++)
 		{
 			bool focused = GetForegroundWindow() == hwnd;
 			controls.update(m.inputs, focused);
@@ -460,7 +495,15 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 		if (perf.on && ran) perf.emulated(perf_now_ms() - perf_t0, m.perf_feed_ms - feed0, m.perf_draws - draws0, m.perf_quads - quads0, m.perf_cpu_ms - cpu0, m.perf_dcs_ms - dcs0);
 		bool vsync = video ? S.video.vsync : false;
-		if (!ran && !vsync) { Sleep(1); continue; }
+		if (!sync_k && !ran && !vsync) { wait_until(t_start + next_frame); continue; }
+		if (sync_k)
+		{
+			// should the driver not wait for the vblank (VSync forced off, window on another display), keep the pace by the clock
+			const double period = 1.0 / (m.refresh_hz() * sync_speed) / sync_k;
+			if (sync_last > 0 && now_sec() - sync_last < period * 0.6) wait_until(sync_last + period);
+			sync_last = now_sec();
+			next_frame = now_sec() - t_start;   // keeps the clock mode's bookkeeping current for a switch (F8)
+		}
 		const double perf_p0 = perf.on ? perf_now_ms() : 0.0;
 		present();
 		if (perf.on && video) perf.gpu(video->last_gpu_ms());

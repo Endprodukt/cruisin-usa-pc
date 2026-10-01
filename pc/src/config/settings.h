@@ -27,6 +27,7 @@ struct VideoSettings
 	AspectMode aspect = AspectMode::Native43;
 	bool integer_scale = false;
 	bool vsync = true;
+	bool display_sync = true;                 // one game frame per display refresh (game speed follows the display, within 6 %); implies vsync
 	bool texture_filter = false;              // bilinear texture filtering on the GPU
 	bool export_textures = false;
 	bool export_variants = false;             // one file per palette variant (e.g. every car colour) instead of one per page             // write every drawn texture to textures/dump
@@ -92,7 +93,7 @@ struct FfbSettings
 	int rumble_strength = 100;
 	FfbMode mode = FfbMode::Modern;   // vanilla: only the force the game computes; modern: plus effects from the game's car state
 	// modern effect strengths, percent of their default (0 = off)
-	int fx_master = 100, fx_surface = 100, fx_kerb = 70, fx_bump = 100, fx_collision = 100, fx_spin = 100;
+	int fx_surface = 100, fx_kerb = 70, fx_bump = 100, fx_collision = 100, fx_spin = 100;
 	int fx_landing = 100, fx_engine = 25, fx_skid = 100, fx_air = 100, fx_understeer = 100;
 	int fx_aligning = 100, fx_centering = 35, fx_menu = 100, fx_impact = 100;
 };
@@ -121,7 +122,7 @@ struct Settings
 	ControlSettings controls;
 	FfbSettings ffb;
 	OutputSettings outputs;
-	uint16_t dsw = 0xf9fe;     // cabinet DIP switches (see the DIP page)
+	uint16_t dsw = 0xf9bf;     // cabinet DIP switches (see the DIP page): link master, motion off
 
 	Settings();
 	void reset_controls_to_defaults();
