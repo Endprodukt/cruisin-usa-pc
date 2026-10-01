@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../audio/dcs.h"
+#include "dcs_worker.h"
 #include "../video/video_backend.h"
 #include "../cpu/tms320c3x/tms320c3x.h"
 
@@ -57,6 +58,7 @@ public:
 	int cpu_overclock = 1;                 // 1..4: more main CPU instructions per emulated time (the game's heavy frames finish sooner)
 	bool skip_raster = false;              // benchmarking: do not rasterise quads on the CPU
 	uint64_t page_flips = 0;               // displayed page changes = new pictures shown (game frame rate)
+	int dcs_thread = 0;                    // sound DSP on its own thread: -1 auto (4+ hardware threads), 0 off, 1 on
 	bool idle_skip = true;                 // fast-forward the game's wait loops (see setup_idle_hooks)
 	void debug_ram_usage() const;
 	int free_objects() const;
@@ -188,6 +190,13 @@ private:
 	void dcs_write(uint8_t d);
 	uint64_t m_dcs_synced = 0;
 	double   m_dcs_ahead = 0;
+	std::unique_ptr<DcsWorker> m_dcs_worker;
+	void dcs_direct() { if (m_dcs_worker) m_dcs_worker->drain(); }   // before touching m_dcs on the main thread
+	void dcs_end_frame();
+	// with the worker the DSP's sound output is collected and handed to on_audio at the end of the frame (on the main thread)
+	struct AudioEvent { int count; double rate; int enable; };   // enable: -1 = `count` samples, 0/1 = on_audio_enable
+	std::vector<AudioEvent> m_aud_ev;
+	std::vector<int16_t> m_aud_pcm;
 
 	std::vector<uint32_t> m_code_orig;      // pristine first 128K words of the ROM (patches are applied to m_rom at reset)
 	std::vector<uint32_t> m_ram0, m_ram1;   // 0x000000 / 0x400000, 128K words each

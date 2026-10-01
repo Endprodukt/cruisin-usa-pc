@@ -7,6 +7,8 @@
 #include "machine/autosetup.h"
 #include "machine/cmos.h"
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cmath>
 #include <sstream>
 #include "profiler.h"
@@ -62,13 +64,22 @@ int main(int argc, char **argv)
 	if (const char *wm = getenv("WM")) m.rom_patches.wide_margin = atoi(wm);
 	if (getenv("NORASTER")) m.skip_raster = true;
 	if (const char *ex = getenv("EXPORT")) { TexRepl::Config tc; tc.dump = true; tc.dump_dir = ex; m.texrepl.configure(tc); }
+	if (const char *rp = getenv("REPLACE"))
+	{   // load timing of a replacement pack
+		TexRepl::Config tc; tc.replace = true; tc.repl_dir = rp; m.texrepl.configure(tc);
+		std::string log; const auto t0 = std::chrono::steady_clock::now();
+		m.texrepl.load(log);
+		fprintf(stderr, "REPLACE load %.0f ms: %s", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), log.c_str());
+	}
 	if (const char *rb = getenv("RB")) m.rom_patches.rubberband_pct = atoi(rb);
 	if (const char *oc = getenv("OC")) m.cpu_overclock = atoi(oc);
 	if (getenv("SMOOTH")) m.rom_patches.smooth_frames = true;
+	if (const char *dt = getenv("DCSTHREAD")) m.dcs_thread = atoi(dt);
 	m.reset();
 	if (getenv("DEFAULT_NV")) m.load_default_nvram();
 	if (const char *adj = getenv("ADJ")) { int idx, val, n = 0; const char *q = adj; while (sscanf(q, "%d=%d%n", &idx, &val, &n) == 2) { cmos::set(m.nvram(), idx, uint32_t(val)); q += n; if (*q == ',') q++; } }
 	if (!makenv.empty()) { run_auto_setup(m); m.save_nvram(makenv); fprintf(stderr, "saved %s\n", makenv.c_str()); return 0; }
+	const auto wall0 = std::chrono::steady_clock::now();
 	SampleProfiler prof;
 	if (getenv("PROFILE")) prof.start();
 	for (int f = 0; f < frames; f++)
@@ -84,7 +95,20 @@ int main(int argc, char **argv)
 			if (hit(140) || hit(320) || hit(500) || hit(680) || hit(860) || hit(1040)) m.inputs.in0 &= ~in0bit::START;
 			if (af > 1300) m.inputs.accel = 255;
 		}
-		m.run_frame();
+		if (getenv("PACE"))
+		{   // like the app: one emulated frame per 17.27 ms; report frames whose emulation took long
+			static auto next = std::chrono::steady_clock::now();
+			std::this_thread::sleep_until(next);
+			next += std::chrono::microseconds(17270);
+			const auto t0 = std::chrono::steady_clock::now();
+			m.run_frame();
+			const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+			static double worst = 0; static int slow = 0;
+			worst = std::max(worst, ms); if (ms > 6.0) slow++;
+			if (f % 600 == 599) { fprintf(stderr, "PACE f%d worst %.2f ms, %d frames > 6 ms%c", f, worst, slow, 10); worst = 0; slow = 0; }
+		}
+		else
+			m.run_frame();
 		if (seq > 0 && f >= frames - seq)
 		{
 			int w = m.screen_w(), h = m.screen_h();
@@ -160,6 +184,11 @@ int main(int argc, char **argv)
 	if (getenv("PROFILE")) prof.stop_and_report();
 	if (getenv("CPUTIME")) fprintf(stderr, "CPUTIME main cpu %.1f ms, dsp %.1f ms over %d frames (%.3f ms/frame)%c", m.perf_cpu_ms, m.perf_dcs_ms, frames, m.perf_cpu_ms / frames, 10);
 	if (getenv("RAMUSE")) m.debug_ram_usage();
+	if (getenv("CPUTIME"))
+	{
+		const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wall0).count();
+		fprintf(stderr, "WALL %.1f ms over %d frames (%.3f ms/frame)%c", ms, frames, ms / frames, 10);
+	}
 	if (getenv("EXPORT")) m.texrepl.flush(m.texture_ram(), m.palette_rgb());
 	if (getenv("EXPORT")) fprintf(stderr, "exported %d textures%c", m.texrepl.dumped(), 10);
 	if (const char *tr = getenv("TEXRAW")) { FILE *tf = fopen(tr, "wb"); fwrite(m.texture_ram(), 1, 0x400000, tf); fclose(tf); }

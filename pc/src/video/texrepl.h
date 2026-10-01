@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -28,6 +29,11 @@ public:
 		int max_res = 2048;
 		bool variants = false;   // export: one file per palette variant (colour hash) instead of one per distinct page data
 	};
+
+	TexRepl();
+	~TexRepl();   // waits for the dump files still being written
+	TexRepl(const TexRepl &) = delete;
+	TexRepl &operator=(const TexRepl &) = delete;
 
 	void configure(const Config &c) { m_c = c; }
 	bool active() const { return m_c.dump || m_layers > 0; }
@@ -63,6 +69,8 @@ private:
 	int block_layer(uint32_t block, uint32_t pix, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen);
 	void flush_pending(const uint8_t *ram, const uint32_t *pal, bool all);
 
+	struct DumpWriter;                       // one background thread that encodes and writes the PNG files
+	std::unique_ptr<DumpWriter> m_writer;
 	struct Pending { uint32_t block, pix; uint64_t name; int age; };
 	std::vector<Pending> m_pending;
 	int m_written = 0;

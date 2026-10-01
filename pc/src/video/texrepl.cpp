@@ -1,6 +1,11 @@
 #include "texrepl.h"
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -39,6 +44,66 @@ std::vector<uint8_t> resample(const std::vector<uint8_t> &src, int sw, int sh, i
 }
 }
 
+// Export: PNG encoding (zlib) takes a few milliseconds per block, too long for the emulation thread (a hitch whenever new textures
+// appear). The pixels are converted on the emulation thread and handed to one persistent writer thread.
+struct TexRepl::DumpWriter
+{
+	struct Job { std::string path; std::vector<uint8_t> rgba; };
+	std::mutex mx;
+	std::condition_variable cv;
+	std::deque<Job> jobs;
+	bool quit = false;
+	std::thread thread;
+
+	DumpWriter()
+	{
+		thread = std::thread([this] {
+			for (;;)
+			{
+				Job j;
+				{
+					std::unique_lock<std::mutex> lk(mx);
+					cv.wait(lk, [&] { return quit || !jobs.empty(); });
+					if (jobs.empty()) return;   // quit, and everything is written
+					j = std::move(jobs.front());
+					jobs.pop_front();
+				}
+				png_write_rgba(j.path, 256, 256, j.rgba.data());
+			}
+		});
+	}
+	~DumpWriter()
+	{
+		{ std::lock_guard<std::mutex> lk(mx); quit = true; }
+		cv.notify_one();
+		thread.join();
+	}
+	void post(std::string path, std::vector<uint8_t> rgba)
+	{
+		{ std::lock_guard<std::mutex> lk(mx); jobs.push_back({std::move(path), std::move(rgba)}); }
+		cv.notify_one();
+	}
+};
+
+TexRepl::TexRepl() = default;
+TexRepl::~TexRepl() = default;
+
+namespace {
+// run fn(i) for i in [0, n) on a few threads (startup work only; the threads end with the call)
+template <class F> void parallel_for(size_t n, F fn)
+{
+	const size_t hw = std::max(1u, std::thread::hardware_concurrency());
+	const size_t nt = std::min<size_t>({n, hw, 8});
+	if (nt <= 1) { for (size_t i = 0; i < n; i++) fn(i); return; }
+	std::atomic<size_t> next{0};
+	std::vector<std::thread> ts;
+	for (size_t t = 0; t + 1 < nt; t++)
+		ts.emplace_back([&] { for (size_t i; (i = next.fetch_add(1)) < n;) fn(i); });
+	for (size_t i; (i = next.fetch_add(1)) < n;) fn(i);
+	for (auto &t : ts) t.join();
+}
+}
+
 // Identity of a block = hash of the colours it shows (bytes seen through the palette) and hash of its bytes. `used` marks the palette
 // entries it reads.
 uint64_t TexRepl::colour_hash(const uint8_t *ram, uint32_t block, const uint32_t *pal, uint32_t pix, bool *used, int *colours, uint64_t *data_hash)
@@ -72,9 +137,8 @@ int TexRepl::load(std::string &log)
 	std::error_code ec;
 	if (!fs::is_directory(m_c.repl_dir, ec)) { log += "replacement folder not found: " + m_c.repl_dir + "\n"; return 0; }
 
-	struct Item { uint32_t base, pix, hash; std::string path; uint64_t hash64 = 0; int w = 0, h = 0; std::vector<uint8_t> rgba; };
-	std::vector<Item> items;
-	int maxres = 256;
+	struct Item { std::string path, name, err; uint64_t hash64 = 0; int w = 0, h = 0; bool ok = false; std::vector<uint8_t> rgba; };
+	std::vector<Item> found;
 	for (auto &de : fs::directory_iterator(m_c.repl_dir, ec))
 	{
 		if (!de.is_regular_file()) continue;
@@ -82,11 +146,22 @@ int TexRepl::load(std::string &log)
 		unsigned long long hh;
 		bool is_idx = false;
 		if (std::sscanf(name.c_str(), "tex_%llx.png", &hh) != 1) { if (std::sscanf(name.c_str(), "idx_%llx.png", &hh) != 1) continue; is_idx = true; }
-		Item it{0, 0, 0, de.path().string()};
+		Item it;
+		it.path = de.path().string();
+		it.name = name;
 		it.hash64 = is_idx ? (hh | (1ull << 63)) : (hh & ~(1ull << 63));
-		std::string err;
-		if (!png_read_rgba(it.path, it.w, it.h, it.rgba, &err)) { log += name + ": " + err + "\n"; continue; }
-		if (it.w < 16 || it.h < 16) continue;
+		found.push_back(std::move(it));
+	}
+	// decoding is independent per file: spread it over the cores (an upscaled pack can be hundreds of large PNGs)
+	parallel_for(found.size(), [&](size_t i) {
+		Item &it = found[i];
+		it.ok = png_read_rgba(it.path, it.w, it.h, it.rgba, &it.err) && it.w >= 16 && it.h >= 16;
+	});
+	std::vector<Item> items;
+	int maxres = 256;
+	for (Item &it : found)
+	{
+		if (!it.ok) { if (!it.err.empty()) log += it.name + ": " + it.err + "\n"; continue; }
 		maxres = std::max(maxres, std::max(it.w, it.h));
 		items.push_back(std::move(it));
 	}
@@ -103,12 +178,12 @@ int TexRepl::load(std::string &log)
 		log += "replacement pack has " + std::to_string(items.size()) + " textures; only the first " + std::to_string(max_layers) + " fit at " + std::to_string(res) + " px\n";
 		items.resize(max_layers);
 	}
-	for (auto &it : items)
-	{
-		m_table[it.hash64] = int(m_pages.size());
-		m_pages.push_back(resample(it.rgba, it.w, it.h, res));
-		it.rgba.clear(); it.rgba.shrink_to_fit();
-	}
+	m_pages.resize(items.size());
+	parallel_for(items.size(), [&](size_t i) {
+		m_pages[i] = resample(items[i].rgba, items[i].w, items[i].h, res);
+		items[i].rgba.clear(); items[i].rgba.shrink_to_fit();
+	});
+	for (size_t i = 0; i < items.size(); i++) m_table[items[i].hash64] = int(i);
 	m_res = res;
 	m_layers = int(m_pages.size());
 	log += "loaded " + std::to_string(m_layers) + " replacement textures at " + std::to_string(res) + " px\n";
@@ -133,7 +208,8 @@ void TexRepl::write_dump(uint32_t block, uint32_t pix, uint64_t hash, const char
 	}
 	char name[64];
 	std::snprintf(name, sizeof name, "%s_%016llX.png", prefix, (unsigned long long)hash);
-	png_write_rgba((fs::path(m_c.dump_dir) / name).string(), 256, 256, rgba.data());
+	if (!m_writer) m_writer = std::make_unique<DumpWriter>();
+	m_writer->post((fs::path(m_c.dump_dir) / name).string(), std::move(rgba));
 }
 
 int TexRepl::block_layer(uint32_t block, uint32_t pix, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen)

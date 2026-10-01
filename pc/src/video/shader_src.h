@@ -127,12 +127,17 @@ void main()
 		float ymin = min(min(P[0].y, P[1].y), min(P[2].y, P[3].y));
 		float ymax = max(max(P[0].y, P[1].y), max(P[2].y, P[3].y));
 		if (vp.y < ymin - 0.5 || vp.y >= ymax + 0.5) discard;
-		if (!scan(P, T, vp.y, true, xl, xr, tl, tr)) discard;
-		xl -= 0.5; xr += 0.5;
+		// the added border takes span and texture coordinates from the nearest row / column inside the polygon: extrapolating
+		// the edges would reach texels outside the polygon's part of the texture page (stray colours along the seams)
+		if (!scan(P, T, clamp(vp.y, ymin, ymax - 1e-3), false, xl, xr, tl, tr)) discard;
+		if (vp.x < xl - 0.5 || vp.x >= xr + 0.5) discard;
 	}
-	else if (!scan(P, T, vp.y, false, xl, xr, tl, tr)) discard;
-	if (vp.x < xl || vp.x >= xr) discard;
-	vec2 uv = mix(tl, tr, (vp.x - xl) / max(xr - xl, 1e-6));
+	else
+	{
+		if (!scan(P, T, vp.y, false, xl, xr, tl, tr)) discard;
+		if (vp.x < xl || vp.x >= xr) discard;
+	}
+	vec2 uv = mix(tl, tr, clamp((vp.x - xl) / max(xr - xl, 1e-6), 0.0, 1.0));
 
 	if ((flags & 0x2000u) != 0u)
 	{

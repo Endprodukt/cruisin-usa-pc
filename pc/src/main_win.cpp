@@ -269,6 +269,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	m.rom_patches.rubberband_pct = S.rubberband;
 	m.rom_patches.smooth_frames = S.smooth_frames;
 	m.cpu_overclock = S.smooth_frames ? 2 : 1;   // a frame per vblank needs the frame's work done within one vblank
+	m.dcs_thread = S.dsp_thread;
+	if (std::string v = arg_value(a, "--dcs-thread"); !v.empty()) m.dcs_thread = std::atoi(v.c_str());   // -1 auto, 0 off, 1 on
 	m.rom_patches.wide_margin = S.video.renderer == Renderer::Cpu ? 0 : wide_margin_for(S.video);
 	m.set_wide_margin(m.rom_patches.wide_margin);
 	m.set_hud_spread(S.video.hud == HudPlacement::Edges ? 1.0f : S.video.hud == HudPlacement::Quarter25 ? 0.25f : S.video.hud == HudPlacement::Half50 ? 0.5f : S.video.hud == HudPlacement::Quarter75 ? 0.75f : 0.0f);

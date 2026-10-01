@@ -132,7 +132,10 @@ MidVUnit::MidVUnit()
 	m_cpu->on_xf1 = [](int) {};
 }
 
-MidVUnit::~MidVUnit() = default;
+MidVUnit::~MidVUnit()
+{
+	m_dcs_worker.reset();   // first: its last slices still deliver sound into members declared after it
+}
 
 bool MidVUnit::load_roms(const std::string &zip_path, const std::string &version, std::string &err)
 {
@@ -213,10 +216,17 @@ bool MidVUnit::load_roms(const std::string &zip_path, const std::string &version
 	}
 
 	m_dcs = std::make_unique<Dcs1>(reinterpret_cast<const uint16_t *>(sound_rom.data()), sound_rom.size() / 2);
-	m_dcs->on_audio = [this](const int16_t *b, int n, double r) { if (on_audio) on_audio(b, n, r); };
-	m_dcs->on_audio_enable = [this](bool e) { if (on_audio_enable) on_audio_enable(e); };
+	m_dcs->on_audio = [this](const int16_t *b, int n, double r) {
+		if (!m_dcs_worker) { if (on_audio) on_audio(b, n, r); return; }
+		m_aud_pcm.insert(m_aud_pcm.end(), b, b + n);   // worker thread (or the main thread while the worker is drained)
+		m_aud_ev.push_back({n, r, -1});
+	};
+	m_dcs->on_audio_enable = [this](bool e) {
+		if (!m_dcs_worker) { if (on_audio_enable) on_audio_enable(e); return; }
+		m_aud_ev.push_back({0, 0.0, e ? 1 : 0});
+	};
 	on_sound_data = [this](uint8_t d) { dcs_write(d); };
-	on_dcs_reset = [this](int st) { m_dcs->reset_w(st); };
+	on_dcs_reset = [this](int st) { dcs_direct(); m_dcs->reset_w(st); };
 	return true;
 }
 
@@ -250,7 +260,15 @@ void MidVUnit::reset()
 	m_htotal = 666; m_vtotal = 432; m_vis_w = 512; m_vis_h = 400;
 	m_refresh_hz = VIDEO_PIXCLK / (m_htotal * m_vtotal);
 	m_cpu->reset();
-	if (m_dcs) { m_dcs->reset_w(0); m_dcs->reset_w(1); }
+	if (m_dcs)
+	{
+		dcs_direct();
+		m_dcs->reset_w(0);
+		m_dcs->reset_w(1);
+		const bool want = dcs_thread > 0 || (dcs_thread < 0 && DcsWorker::worthwhile());
+		if (want && !m_dcs_worker) m_dcs_worker = std::make_unique<DcsWorker>(*m_dcs);
+		if (!want && m_dcs_worker) { dcs_end_frame(); m_dcs_worker.reset(); }
+	}
 	m_wheel_board_output = 0;
 	m_wheel_board_last = 0;
 	galil_set_input(":");
@@ -281,11 +299,37 @@ void MidVUnit::sync_dcs()
 	m_dcs_synced = now;
 	double use = std::max(0.0, delta - m_dcs_ahead);
 	m_dcs_ahead = std::max(0.0, m_dcs_ahead - delta);
-	if (use > 0)
+	if (use <= 0)
+		return;
+	if (m_dcs_worker)
 	{
-		PerfTimer pt(perf_dcs_ms);
-		m_dcs->advance(use);
+		m_dcs_worker->advance(use);
+		return;
 	}
+	PerfTimer pt(perf_dcs_ms);
+	m_dcs->advance(use);
+}
+
+// end of an emulated frame: let the worker catch up and pass its sound output on, in the order it was produced
+void MidVUnit::dcs_end_frame()
+{
+	if (!m_dcs_worker)
+		return;
+	m_dcs_worker->drain();
+	perf_dcs_ms += m_dcs_worker->take_busy_ms();
+	size_t off = 0;
+	for (const AudioEvent &e : m_aud_ev)
+	{
+		if (e.enable < 0)
+		{
+			if (on_audio) on_audio(m_aud_pcm.data() + off, e.count, e.rate);
+			off += size_t(e.count);
+		}
+		else if (on_audio_enable)
+			on_audio_enable(e.enable != 0);
+	}
+	m_aud_ev.clear();
+	m_aud_pcm.clear();
 }
 
 // host -> DCS command byte: make sure the previous byte was consumed first (real hardware
@@ -295,6 +339,7 @@ void MidVUnit::dcs_write(uint8_t d)
 	if (!m_dcs)
 		return;
 	sync_dcs();
+	dcs_direct();   // the latch state below must include every slice queued so far
 	for (int guard = 0; m_dcs->input_full() && guard < 100; guard++)
 	{
 		m_dcs->advance(100);
@@ -1007,6 +1052,7 @@ bool MidVUnit::run_frame()
 		}
 	}
 	m_frame_count++;
+	dcs_end_frame();
 
 	// convert the indexed frame to RGB with the palette as it is at end of frame
 	for (int y = 0; y < (m_gpu ? 0 : m_vis_h); y++)

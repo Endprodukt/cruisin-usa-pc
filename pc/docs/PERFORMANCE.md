@@ -19,3 +19,71 @@ Findings and changes (RTX 3060, 8x internal resolution, 21:9, FXAA):
 Measured: emulation 7-9 ms -> ~2.5 ms per frame in the same race; Vulkan with VSync on reaches the display rate.
 Whole-program optimisation (/GL /LTCG) was tried and gave nothing.
 The game logic is tied to the arcade's 57.9 Hz frame clock (time step based on the vblank count); it was not changed.
+
+## Smooth frames (optional, `[game] smooth_frames`, `--smooth 1`)
+
+The main loop (CUSA.ASM `MAINLOOP`) waits until `INFRAMES >= FRAMRATE` before it requests the page swap, and the swap itself waits for
+the next vblank, so FRAMRATE is "minimum vblanks per frame - 1". Races (`INIT_GAMELEG`) and the head-to-head logo set it to 2, the
+selection screens to 1; in both cases the arcade CPU also needs more than one vblank per frame. Every movement is scaled by
+`NFRAMES` (vblanks since the last frame), so the option rewrites all `LDI 1/2,R0 / STI R0,(FRAMRATE)` to 0 (the attract mode's value;
+the address is taken from the MWAIT0 loop) and runs the emulated CPU at twice the clock (`cpu_overclock = 2`).
+
+| Screen | Original | Smooth |
+|---|---|---|
+| race | 28.5 fps (NFRAMES always 2) | 57 fps (NFRAMES always 1) |
+| car / track selection | ~19 fps | 57 fps |
+
+Same autoplay start, speed after 100/200/300/400/500 frames: 33.9/110.2/175.1/223.1/261.3 original, 33.3/109.2/173.6/221.3/259.9
+smooth (the remaining difference is the coarser original step). Cost: +0.75 ms CPU per frame. The modern force feedback skips calls
+in which the game state did not change and normalises its per-frame thresholds to two vblanks, so it feels the same at either rate.
+
+## Multithreading
+
+Per-frame work (bench, race, 1x CPU): main CPU interpreter 1.29 ms, sound DSP 0.64 ms, GPU feed 0.08 ms, present 0.06 ms; the GPU
+itself runs asynchronously (two frames in flight). Already on their own threads before this change: audio output, force feedback
+(250 Hz), the GPU driver.
+
+| Area | Share | Parallel? | Verdict |
+|---|---|---|---|
+| main CPU (TMS320C31 interpreter) | ~60 % | no: one instruction stream, every memory access can depend on the last | stays serial |
+| sound DSP (ADSP-2105) | ~30 % | yes: the main CPU only writes command bytes and the reset line, it never reads the board back except "latch full" before a write | **worker thread** |
+| software rasteriser (CPU renderer only) | ~0.4 ms | only with deferred drawing; the game reads video RAM back | not worth it |
+| GPU feed / present | < 0.2 ms | already asynchronous | nothing to do |
+| texture export (PNG encoding) | several ms per new block, hitches | yes, fire and forget | **writer thread** |
+| replacement pack loading (PNG decode, resample) | startup, ~1.5 s for 60 x 1024 px | yes, per file | **parallel at startup** |
+| per-frame telemetry / FFB synthesis | microseconds | | not worth it |
+
+### 1. Sound DSP worker (`src/machine/dcs_worker.{h,cpp}`)
+
+`MidVUnit::sync_dcs` still computes the DSP's time slice after every main CPU slice exactly as before, but hands it to a persistent
+worker through a single-producer / single-consumer ring (atomic indices, no lock). Before anything that needs the board itself
+(command byte with its latch check, reset, end of frame) the main thread drains the ring and then uses the board directly. The DSP
+therefore sees the same operations in the same order: the sound output is bit-identical (same SHA-256 of a 6000-frame WAV with and
+without the worker). The worker spins briefly while slices are coming and sleeps on a condition variable between frames; its PCM output
+is buffered and handed to the audio callback on the main thread at the end of the frame (the same frame as before, so no added
+latency). `drain()` runs the remaining slices itself when the worker is not inside one, so a sleeping worker never holds up a frame.
+Switch: `[game] dsp_thread = -1/0/1` (auto = 4+ hardware threads), `--dcs-thread`.
+
+**Default: off.** In back-to-back runs it is a clear gain (below), and in a paced headless run (one frame per 17.27 ms) no frame is slow
+after start-up. In the app with VSync, however, single frames still take 15-18 ms of emulation every few seconds (one Windows scheduler
+quantum: max frame 33 ms instead of 22 ms, 1 % low ~30 fps instead of ~46 fps). Until that interaction with the app's other threads
+(audio output, force feedback, GPU driver) is understood, the inline path stays the default; the frame time at 57 Hz is far below the
+budget either way (~2-3 ms of 17.3 ms).
+
+| Measurement (i5-13600K) | Off | On |
+|---|---|---|
+| headless, wall time per frame | 2.19 ms | 1.63 ms |
+| app `--bench`, frame time | 2.20 ms (454 fps) | 2.01 ms (499 fps) |
+| app `--bench --smooth 1`, frame time | 3.35 ms (299 fps) | 2.77 ms (361 fps) |
+| 1 % low (bench) | 191 fps | 193 fps |
+
+### 2. Texture export writer
+
+`TexRepl::write_dump` converts the block on the emulation thread and posts it to one persistent writer thread (mutex + condition
+variable, only touched when a new block is exported). Same files as before (identical file names, no duplicates); the destructor
+waits until everything is written.
+
+### 3. Replacement pack loading
+
+Decoding and resampling are independent per file and run on up to 8 threads for the duration of the load (startup only, no threads
+per frame). 60 textures at 1024 px: 1497 ms on one core, 529 ms on four, 275 ms on all.
