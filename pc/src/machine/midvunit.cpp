@@ -407,6 +407,7 @@ void MidVUnit::bus_write(offs_t addr, uint32_t data)
 		m_videoram[addr - 0x900000] = uint16_t(data);
 		if (m_gpu)
 		{
+			m_cpu_page_writes[(addr - 0x900000) >> 18]++;
 			if (!m_gq.empty() || !m_gs.empty()) gpu_flush_quads();
 			uint32_t off = addr - 0x900000;
 			int pg = (off >> 18) & 1, row = (off >> 9) & 511;
@@ -1004,10 +1005,15 @@ bool MidVUnit::run_frame()
 			m_present_page = m_page_control & 1;
 			gpu_flush_quads();
 			gpu_sync_state();
-			// a CPU-drawn screen (boot text etc.): no stale 3D at the sides. A 3D scene can have single vblanks without any polygon
-			// (the game draws a frame over two vblanks), so only after a longer stretch without polygons.
-			m_vblanks_no_quads = quads_last_frame == 0 ? m_vblanks_no_quads + 1 : 0;
-			if (m_wide && m_vblanks_no_quads >= 12) m_gpu->clear_margins(m_present_page);
+			// The game clears a page either with a full-screen fill (stretched over the margins in gpu_add_quad) or, for boot and
+			// test screens, by writing the video RAM itself. Only the latter leaves stale 3D in the widescreen margins, so they are
+			// cleared when the CPU rewrote most of a page since the last vblank. (Not "no polygons this frame": the game also holds a
+			// finished 3D picture for many vblanks while it loads, and the margins must stay.)
+			for (int pg = 0; pg < 2; pg++)
+			{
+				if (m_wide && m_cpu_page_writes[pg] > 512u * 400u / 2) m_gpu->clear_margins(pg);
+				m_cpu_page_writes[pg] = 0;
+			}
 			m_gpu->latch(m_present_page, m_vis_h);
 		}
 		if (m_vpos == m_vis_h && texrepl.active()) texrepl.tick(m_textureram.data(), m_palette_rgb.data());

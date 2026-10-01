@@ -213,7 +213,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		S.video.renderer = (v == "vk" || v == "vulkan") ? Renderer::Vulkan : (v == "cpu" ? Renderer::Cpu : Renderer::OpenGL);
 	if (std::string v = arg_value(a, "--shadows"); !v.empty())
 		S.video.shadows = v == "off" ? ShadowMode::Off : v == "original" ? ShadowMode::Original : ShadowMode::Modern;
-	if (std::string v = arg_value(a, "--smooth"); !v.empty()) S.smooth_frames = v != "0";
+	if (std::string v = arg_value(a, "--frame-unlock"); !v.empty()) S.smooth_frames = v != "0";   // experimental, breaks the game's timing
 	if (std::string v = arg_value(a, "--draw-distance"); !v.empty()) S.video.draw_distance = std::clamp(std::atoi(v.c_str()), 10, 400);
 	if (std::string v = arg_value(a, "--aa"); !v.empty()) S.video.aa = std::clamp(std::atoi(v.c_str()), 0, 3);
 	if (std::string v = arg_value(a, "--aspect"); !v.empty()) S.video.aspect = v == "16:9" ? AspectMode::Wide169 : v == "21:9" ? AspectMode::Wide219 : AspectMode::Native43;
