@@ -40,6 +40,7 @@ void main()
 		hi = max(hi, P[i]);
 	}
 	vec2 pg = vec2(u_par.pa.y, 512.0);
+	if (u_par.pa.z > 0.5) { lo -= vec2(1.0); hi += vec2(1.0); }   // room for the half-pixel dilation (upscaled rendering)
 	lo = clamp(floor(lo), vec2(0.0), pg);
 	hi = clamp(ceil(hi), vec2(0.0), pg);
 	vec2 corner = vec2(float(VID & 1), float(VID >> 1));
@@ -117,7 +118,19 @@ void main()
 	// the page border strip (half an arcade pixel, only visible when upscaled) follows the first/last pixel row/column
 	vec2 vp = clamp(v_pos, vec2(0.5), vec2(u_par.pa.y - 0.5, 511.5));
 	float xl, xr; vec2 tl, tr;
-	if (!scan(P, T, vp.y, false, xl, xr, tl, tr)) discard;
+	// Upscaled: the hardware fills whole arcade pixels whose centre is inside, so two polygons that meet on a pixel boundary
+	// (one ends at row Y, the next starts at row Y+1) leave a gap between the pixel centres when rendered finer. The polygon is
+	// therefore grown by half an arcade pixel on every side, which closes such seams (neighbours overlap by up to one pixel).
+	bool dil = u_par.pa.z > 0.5;
+	if (dil)
+	{
+		float ymin = min(min(P[0].y, P[1].y), min(P[2].y, P[3].y));
+		float ymax = max(max(P[0].y, P[1].y), max(P[2].y, P[3].y));
+		if (vp.y < ymin - 0.5 || vp.y >= ymax + 0.5) discard;
+		if (!scan(P, T, vp.y, true, xl, xr, tl, tr)) discard;
+		xl -= 0.5; xr += 0.5;
+	}
+	else if (!scan(P, T, vp.y, false, xl, xr, tl, tr)) discard;
 	if (vp.x < xl || vp.x >= xr) discard;
 	vec2 uv = mix(tl, tr, (vp.x - xl) / max(xr - xl, 1e-6));
 

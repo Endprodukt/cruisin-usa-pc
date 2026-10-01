@@ -261,7 +261,7 @@ public:
 		glActiveTexture(GL_TEXTURE0 + 2);
 		glBindTexture(GL_TEXTURE_2D_ARRAY, m_tex_repl);
 		glActiveTexture(GL_TEXTURE0);
-		set_params({m_opt.filter_textures ? 1.0f : 0.0f, page_w_px(), 0, 0}, {0, 0, 0, 0});
+		set_params({m_opt.filter_textures ? 1.0f : 0.0f, page_w_px(), m_opt.scale > 1 ? 1.0f : 0.0f, 0}, {0, 0, 0, 0});
 		glBindVertexArray(m_vao_quad);
 		glBindBuffer(GL_ARRAY_BUFFER, m_vbo_inst);
 		for (int done = 0; done < count;)

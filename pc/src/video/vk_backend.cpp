@@ -289,7 +289,7 @@ public:
 			int n = int(std::min<size_t>(size_t(count - done), room));
 			std::memcpy(m_instbuf.map + m_instbuf_off, q + done, size_t(n) * stride);
 
-			Params p{{m_opt.filter_textures ? 1.0f : 0.0f, page_w_px(), 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
+			Params p{{m_opt.filter_textures ? 1.0f : 0.0f, page_w_px(), m_opt.scale > 1 ? 1.0f : 0.0f, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
 			uint32_t dyn = write_params(p);
 			begin_page_pass(page);
 			vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_quad);

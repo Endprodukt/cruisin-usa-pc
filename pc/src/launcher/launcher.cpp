@@ -241,27 +241,6 @@ void page_video(Launcher &L)
 	edited(L, ImGui::Checkbox("Integer scaling", &v.integer_scale));
 	edited(L, ImGui::Checkbox("VSync", &v.vsync));
 
-	ImGui::SeparatorText("Textures");
-	ImGui::BeginDisabled(!gpu);
-	edited(L, ImGui::Checkbox("Export textures while playing", &v.export_textures));
-	help("Writes every texture that gets drawn to textures/dump next to the program as a 256 x 256 PNG (tex_<hash>.png; textures that look the same share one file). "
-	     "Upscale them with any tool and keep the names. F11 toggles the export in game.");
-	edited(L, ImGui::Checkbox("Export every palette variant (car colours etc.)", &v.export_variants));
-	help("Off: one file (idx_<hash>.png) per distinct texture page, shown in the first colours seen; a replacement of it is used for all "
-	     "colour variants. On: one file (tex_<hash>.png) for every colour variant, which allows per-colour replacements but exports many more files.");
-	edited(L, ImGui::Checkbox("Use replacement textures", &v.replace_textures));
-	help("PNGs with the same names in textures/replace (square, 256 to 2048 px; all of them are brought to the largest size) are drawn instead "
-	     "of the original textures. Takes effect at the next start of the game.");
-	if (ImGui::Button("Open texture folder"))
-	{
-		std::string d = exe_relative("textures");
-		CreateDirectoryA(d.c_str(), nullptr);
-		CreateDirectoryA((d + "/dump").c_str(), nullptr);
-		CreateDirectoryA((d + "/replace").c_str(), nullptr);
-		ShellExecuteA(nullptr, "open", d.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-	}
-	ImGui::EndDisabled();
-
 	ImGui::SeparatorText("Shadows");
 	ImGui::BeginDisabled(!gpu);
 	static const char *const shadows[] = {"Original (dithered raster quads)", "Modern (soft shadows)", "Off"};
@@ -302,6 +281,36 @@ void page_video(Launcher &L)
 	ImGui::EndDisabled();
 	help("Where the race HUD sits on a wide picture: in the 4:3 centre, or spread towards the left and right edge (left items left, "
 	     "right items right, time and rank stay centred). Only has an effect with real widescreen. Takes effect at the next start.");
+
+	ImGui::SeparatorText("Textures");
+	ImGui::BeginDisabled(!gpu);
+	edited(L, ImGui::Checkbox("Export textures while playing", &v.export_textures));
+	help("Writes every texture that gets drawn to textures/dump next to the program as a 256 x 256 PNG (tex_<hash>.png; textures that look the same share one file). "
+	     "Upscale them with any tool and keep the names. F11 toggles the export in game.");
+	edited(L, ImGui::Checkbox("Export every palette variant (car colours etc.)", &v.export_variants));
+	help("Off: one file (idx_<hash>.png) per distinct texture page, shown in the first colours seen; a replacement of it is used for all "
+	     "colour variants. On: one file (tex_<hash>.png) for every colour variant, which allows per-colour replacements but exports many more files.");
+	edited(L, ImGui::Checkbox("Use replacement textures", &v.replace_textures));
+	help("PNGs with the same names in textures/replace (square, 256 to 2048 px; all of them are brought to the largest size) are drawn instead "
+	     "of the original textures. Takes effect at the next start of the game.");
+	if (ImGui::Button("Open texture folder"))
+	{
+		std::string d = exe_relative("textures");
+		CreateDirectoryA(d.c_str(), nullptr);
+		CreateDirectoryA((d + "/dump").c_str(), nullptr);
+		CreateDirectoryA((d + "/replace").c_str(), nullptr);
+		ShellExecuteA(nullptr, "open", d.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+	}
+	ImGui::EndDisabled();
+
+	ImGui::Spacing();
+	ImGui::Separator();
+	if (ImGui::Button("Save settings##video", ImVec2(180, 34)))
+	{
+		L.dirty = false;
+		L.status = L.s.save(L.ini_path) ? "Saved." : "Saving failed.";
+	}
+	if (!L.status.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", L.status.c_str()); }
 }
 
 void page_audio(Launcher &L)
@@ -1023,8 +1032,14 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 		ImGui::Separator();
 		for (int i = 0; i < P_COUNT; i++)
 			if (ImGui::Selectable(kPageNames[i], L.page == i, 0, ImVec2(0, 34 * scale))) L.page = Page(i);
-		ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 90 * scale);
+		ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 132 * scale);
 		ImGui::Separator();
+		if (ImGui::Button("Save", ImVec2(-1, 34 * scale)))
+		{
+			L.dirty = false;
+			nv_save(L);
+			L.status = L.s.save(L.ini_path) ? "Saved." : "Saving failed.";
+		}
 		if (ImGui::Button("Play", ImVec2(-1, 34 * scale))) L.play = true;
 		if (L.dirty) ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "unsaved changes");
 		ImGui::EndChild();
