@@ -27,7 +27,10 @@ struct Telemetry
 	int gear = 0;                // 0 = neutral, 1..4
 	float susp_yv[5] = {};       // vertical velocity of centre / RF / LF / LR / RR suspension points
 	float susp_dy[5] = {};       // height above the road at those points
-	int collided[5] = {};        // road object touched at those points
+	int road_poly[5] = {};       // road polygon under those points (SYS.EQU calls it "road object collided with")
+	uint32_t hits_light = 0;     // running counts of the player's car hitting bushes,
+	uint32_t hits_object = 0;    // signs / barrels / posts / cones,
+	uint32_t hits_wall = 0;      // and the edge of the world
 };
 
 double c3x_to_double(uint32_t w);   // TMS320C3x 32-bit short float

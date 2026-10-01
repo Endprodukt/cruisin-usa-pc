@@ -158,6 +158,7 @@ private:
 	int run_cpu(int cycles);
 	void setup_idle_hooks();
 	uint32_t m_idle_flag_addr = 0, m_idle_sync_addr = 0, m_dgroup_count_addr = 0, m_ofree_addr = 0;
+	uint32_t m_obj_hits[3] = {};   // player hits: bushes, small road objects, walls (counted at the game's sound calls)
 	bool m_zsort_first = true;
 	void sync_dcs();
 

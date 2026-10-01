@@ -1310,7 +1310,7 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->on_hook = nullptr;
 	const bool idle = idle_skip && !std::getenv("NOIDLESKIP");
 	const std::vector<uint32_t> &c = m_ram0;
-	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u;
+	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u;
 	m_ofree_addr = 0;
 	for (uint32_t i = 0; i + 8 < 0x20000; i++)
 	{
@@ -1340,20 +1340,40 @@ void MidVUnit::setup_idle_hooks()
 			dact_skip = i + 2 + (c[i + 1] & 0xffff);
 			m_dgroup_count_addr = c[i + 4] & 0xffff;
 		}
+		// (d) SNDFX, the start of a sound effect: ONESNDFX: LDI 255,R0 / SNDFX: PUSH R1 / PUSH R2 / PUSH R3 / PUSH AR0 / PUSH R0 /
+		//     LDI (_MODE),R1. The sound index in AR2 tells which object the player's car just hit (force feedback).
+		if (c[i] == 0x086000FFu && c[i + 1] == 0x0F210000u && c[i + 2] == 0x0F220000u && c[i + 3] == 0x0F230000u &&
+		    c[i + 4] == 0x0F280000u && c[i + 5] == 0x0F200000u && (c[i + 6] & 0xffff0000u) == 0x08210000u && snd_pc == ~0u)
+			snd_pc = i + 1;
 		// OBJ_FREE: PUSH R0 / LDI (OFREE),R0 / STI R0,*AR2 / STI AR2,(OFREE)  -> head of the free object list
 		if (c[i] == 0x0F200000u && (c[i + 1] & 0xffff0000u) == 0x08200000u && c[i + 2] == 0x1540C200u &&
 		    (c[i + 3] & 0xffff0000u) == 0x152A0000u && (c[i + 1] & 0xffff) == (c[i + 3] & 0xffff) && m_ofree_addr == 0)
 			m_ofree_addr = c[i + 1] & 0xffff;
 	}
-	if (sync_pc == ~0u && sort_top == ~0u && dact_pc == ~0u)
+	if (sync_pc == ~0u && sort_top == ~0u && dact_pc == ~0u && snd_pc == ~0u)
 		return;
 	m_cpu->hook_pc[0] = sync_pc;
 	m_cpu->hook_pc[1] = sort_entry;
 	m_cpu->hook_pc[2] = sort_top;
 	m_cpu->hook_pc[3] = dact_pc;
+	m_cpu->hook_pc[4] = snd_pc;
+	m_cpu->refresh_hooks();
 	m_zsort_first = true;
-	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip]() -> bool {
+	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc]() -> bool {
 		uint32_t pc = m_cpu->pc();
+		if (pc == snd_pc)
+		{
+			// sound indices (SNDTAB.EQU) that only the player's car triggers (the drones use DRONESND): COLLA.ASM RUNOVER / FLYCOLL
+			// and PLYR.ASM CURBCOLP
+			switch (m_cpu->reg(10))   // AR2
+			{
+			case 531: case 534: case 537: case 540: m_obj_hits[0]++; break;   // SAGESND..3: sage brush
+			case 507: case 522: case 525: case 528: m_obj_hits[1]++; break;   // DRUMSND, SIGNSND, LAMPSND, DONGSND: barrels, signs, posts
+			case 498: case 501: case 504: m_obj_hits[2]++; break;             // WALLHITA..C: the car is thrown back off the edge of the world
+			default: break;
+			}
+			return false;
+		}
 		if (pc == dact_pc)
 		{
 			// hold the next section back while the section table is nearly full or the object pool runs low

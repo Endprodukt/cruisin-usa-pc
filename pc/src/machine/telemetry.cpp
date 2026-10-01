@@ -45,7 +45,10 @@ bool MidVUnit::read_telemetry(Telemetry &t) const
 	{
 		t.susp_yv[i] = f(yv[i]);
 		t.susp_dy[i] = f(yv[i] - 1);
-		t.collided[i] = n(yv[i] + 1);
+		t.road_poly[i] = n(yv[i] + 1);
 	}
+	t.hits_light = m_obj_hits[0];
+	t.hits_object = m_obj_hits[1];
+	t.hits_wall = m_obj_hits[2];
 	return true;
 }

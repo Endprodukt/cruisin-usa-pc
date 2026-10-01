@@ -68,7 +68,16 @@ public:
 
 	// Execution hooks: when the program counter reaches one of hook_pc (before the instruction runs), on_hook() is called from the
 	// run loop. If it returns true the rest of the current time slice is skipped (used to fast-forward the game's idle loops).
-	uint32_t hook_pc[4] = {~0u, ~0u, ~0u, ~0u};
+	// After changing hook_pc call refresh_hooks(): the run loop first looks the low bits of the PC up in a small table, so the cost
+	// per instruction stays one byte load however many hooks there are.
+	static constexpr int kHooks = 6;
+	uint32_t hook_pc[kHooks] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+	uint8_t hook_filter[256] = {};
+	void refresh_hooks()
+	{
+		for (uint8_t &f : hook_filter) f = 0;
+		for (uint32_t h : hook_pc) if (h != ~0u) hook_filter[h & 255] = 1;
+	}
 	std::function<bool()> on_hook;
 	void skip_rest_of_slice() { m_icount = 0; }
 	void set_pc(uint32_t pc) { m_pc = pc; }

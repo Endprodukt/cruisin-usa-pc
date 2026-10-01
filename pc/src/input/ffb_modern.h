@@ -18,9 +18,9 @@ struct FfbModernConfig
 	float impact = 1.0f;      // directional kick when the car's heading or direction changes abruptly (collisions)
 	float surface = 1.0f;     // rumble strips / gravel / grass, scaled by speed
 	float kerb = 1.0f;        // sideways tug when a wheel drops off the road
-	float bump = 1.0f;        // bumps reported by the game
+	float bump = 1.0f;        // bumps reported by the game, and running over signs, barrels, posts, bushes
 	float collision = 1.0f;   // shake when the car loses speed suddenly
-	float spin = 1.0f;        // extra kick at the start of a spin-out
+	float spin = 1.0f;        // spin-out: the wheel is thrown to one side and held there while the car rotates
 	float landing = 1.0f;     // touching down after a jump
 	float engine = 0.25f;     // engine vibration
 	float skid = 1.0f;        // tyre rattle at the limit of grip
@@ -56,6 +56,10 @@ private:
 	float m_sat_target = 0, m_sat = 0;          // aligning torque
 	float m_slip = 0, m_prev_slip = 0;
 	float m_impact = 0, m_impact_decay = 12;     // directional kick (decays)
+	float m_spin_target = 0, m_spin_force = 0;   // held force during a spin-out
+	float m_spin_dir = 0;
+	float m_thud = 0;                            // short one-sided push when an object is hit
+	float m_wall_cool = 0;
 
 	// smoothed continuous effects
 	float m_surface_amp = 0, m_skid_amp = 0, m_engine_amp = 0, m_air = 0, m_light = 0, m_grip_loss = 0;

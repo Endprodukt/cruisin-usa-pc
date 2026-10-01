@@ -1,4 +1,4 @@
-// Headless test driver: runs N frames and writes a PNG screenshot.
+﻿// Headless test driver: runs N frames and writes a PNG screenshot.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -111,7 +111,23 @@ int main(int argc, char **argv)
 			if (f % atoi(getenv("FFBTEST")) == 0 && ok) { fprintf(stderr, "FFB f%d wheel=%d spd=%.0f slip=%.3f onroad=%X mean=%+.2f max=%.2f rms=%.3f vib=%.2f\n", f, m.inputs.wheel, t.speed, fx.slip(), t.onroad, sum1 / std::max(1, n), mx, std::sqrt(sum2 / std::max(1, n)), fx.vibration()); mx = 0; sum2 = 0; sum1 = 0; n = 0; }
 			(void)kicks;
 		}
-		if (const char *tl = getenv("TELEMLOG")) { Telemetry t; if (m.read_telemetry(t) && f % atoi(tl) == 0) fprintf(stderr, "T %d spd=%.2f skid=%.2f thr=%.2f brk=%.2f turn=%.3f trac=%.2f rpm=%.1f yv=%.3f xm=%.3f zm=%.3f xl=%.3f zl=%.3f d2c=%.1f road=%d onroad=%d bump=%d spin=%d air=%d/%d gear=%d yv0=%.2f dy0=%.2f col=%d\n", f, t.speed, t.skid, t.throttle, t.brake, t.turn, t.traction, t.rpm, t.y_vel, t.x_mom, t.z_mom, t.x_lean, t.z_lean, t.dist_to_center, (int)t.road_friction, t.onroad, t.bump, t.spin, t.air_front, t.air_rear, t.gear, t.susp_yv[0], t.susp_dy[0], t.collided[0]); }
+		if (getenv("COLLOG"))
+		{   // object hits and spins, with the modern force feedback's output over the frame
+			static Telemetry pt; static FfbModern fx; Telemetry t;
+			bool ok = m.read_telemetry(t);
+			fx.frame(ok ? t : Telemetry{}, 0.0f, (float(m.inputs.wheel) - 128.0f) / 112.0f);
+			float mn = 1, mx = -1;
+			for (int k = 0; k < 4; k++) { float o = fx.step(1.0 / 232.0); mn = std::min(mn, o); mx = std::max(mx, o); }
+			if (ok)
+			{
+				bool ch = t.spin != pt.spin || t.hits_light != pt.hits_light || t.hits_object != pt.hits_object || t.hits_wall != pt.hits_wall;
+				static int show = 0;
+				if (ch) show = 40;
+				if (show > 0) { show--; fprintf(stderr, "C %d spd=%.1f hits=%u/%u/%u spin=%d drot=%+.4f yrot=%+.3f vrot=%+.3f ffb=%+.2f..%+.2f%c", f, t.speed, t.hits_light, t.hits_object, t.hits_wall, t.spin, t.d_rot, t.y_rot, t.v_rot, mn, mx, 10); }
+				pt = t;
+			}
+		}
+		if (const char *tl = getenv("TELEMLOG")) { Telemetry t; if (m.read_telemetry(t) && f % atoi(tl) == 0) fprintf(stderr, "T %d spd=%.2f skid=%.2f thr=%.2f brk=%.2f turn=%.3f trac=%.2f rpm=%.1f yv=%.3f xm=%.3f zm=%.3f xl=%.3f zl=%.3f d2c=%.1f road=%d onroad=%d bump=%d spin=%d air=%d/%d gear=%d yv0=%.2f dy0=%.2f poly=%d\n", f, t.speed, t.skid, t.throttle, t.brake, t.turn, t.traction, t.rpm, t.y_vel, t.x_mom, t.z_mom, t.x_lean, t.z_lean, t.dist_to_center, (int)t.road_friction, t.onroad, t.bump, t.spin, t.air_front, t.air_rear, t.gear, t.susp_yv[0], t.susp_dy[0], t.road_poly[0]); }
 		if (f % 60 == 0) fprintf(stderr, "frame %d free=%d mode=%X pc=%06X quads=%llu vis=%dx%d\n", f, m.free_objects(), m.ram_word(0xC8F5) | (m.ram_word(0xE49C) << 16), m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
 	if (const uint64_t *h = m.cpu_hits()) { std::vector<std::pair<uint64_t, int>> v; uint64_t tot = 0; for (int i = 0; i < 2048; i++) { v.push_back({h[i], i}); tot += h[i]; } std::sort(v.rbegin(), v.rend()); fprintf(stderr, "OPS total %llu%c", (unsigned long long)tot, 10); for (int i = 0; i < 25; i++) fprintf(stderr, "OP %03X %llu (%.1f%%)%c", v[i].second, (unsigned long long)v[i].first, 100.0 * v[i].first / double(tot), 10); }
