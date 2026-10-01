@@ -77,6 +77,7 @@ void tms320c3x_device::illegal(uint32_t op)
 
 void tms320c3x_device::unimplemented(uint32_t op)
 {
+	if (trace_jumps) trace_dump(120);
 	fatalerror("Unimplemented op @ %06X: %08X (tbl=%03X)\n", m_pc - 1, op, op >> 21);
 }
 

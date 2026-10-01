@@ -485,7 +485,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			m.run_frame();
 			Telemetry tele;
 			const bool tele_ok = m.read_telemetry(tele);
-			controls.ffb_update(m.wheel_motor, tele_ok ? &tele : nullptr);
+			// no force while the attract mode runs: the game keeps its wheel servo on there, which is felt as a constant drag
+			controls.ffb_update(m.in_attract() ? uint8_t(0) : m.wheel_motor, tele_ok ? &tele : nullptr);
 			outputs.update(m.lamps, m.wheel_motor);
 			next_frame += 1.0 / m.refresh_hz();
 			ran = true;

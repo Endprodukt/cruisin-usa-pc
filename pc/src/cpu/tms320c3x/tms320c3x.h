@@ -65,14 +65,15 @@ public:
 	uint32_t pc() const { return m_pc; }
 	uint32_t reg(int r) const { return m_r[r].i32[0]; }
 	void set_reg(int r, uint32_t v) { m_r[r].i32[0] = v; }   // integer / address registers (hooks)
+	double reg_float(int r) const { return m_r[r].as_double(); }   // R0..R7 as a floating point value
 	bool idling() const { return m_is_idling; }
 
 	// Execution hooks: when the program counter reaches one of hook_pc (before the instruction runs), on_hook() is called from the
 	// run loop. If it returns true the rest of the current time slice is skipped (used to fast-forward the game's idle loops).
 	// After changing hook_pc call refresh_hooks(): the run loop first looks the low bits of the PC up in a small table, so the cost
 	// per instruction stays one byte load however many hooks there are.
-	static constexpr int kHooks = 8;
-	uint32_t hook_pc[kHooks] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+	static constexpr int kHooks = 12;
+	uint32_t hook_pc[kHooks] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
 	uint8_t hook_filter[256] = {};
 	void refresh_hooks()
 	{
@@ -80,6 +81,14 @@ public:
 		for (uint32_t h : hook_pc) if (h != ~0u) hook_filter[h & 255] = 1;
 	}
 	std::function<bool()> on_hook;
+	// Diagnostics (headless tool): with trace_jumps every change of the program flow is kept in a ring (from, to); trace_dump prints
+	// the last `n` of them, repeated loops collapsed. Used to see how the program got to a crash or a hang.
+	bool trace_jumps = false;
+	static constexpr uint32_t kTrace = 8192;
+	uint64_t trace_ring[kTrace] = {};
+	uint32_t trace_pos = 0, trace_last = 0;
+	std::function<void()> trace_step;   // optional: called before every instruction while trace_jumps is on
+	void trace_dump(int n) const;
 	void skip_rest_of_slice() { m_icount = 0; }
 	void set_pc(uint32_t pc) { m_pc = pc; }
 #ifdef C3X_PROFILE

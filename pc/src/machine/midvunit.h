@@ -55,6 +55,13 @@ public:
 
 	bool load_roms(const std::string &zip_path, const std::string &version, std::string &err);
 	void reset();
+	// diagnostics for the headless tool
+	tms320c3x_device &cpu_debug() { return *m_cpu; }
+	void ram_poke(uint32_t a, uint32_t v) { if (a < m_ram0.size()) m_ram0[a] = v; else if (a >= 0x400000 && a - 0x400000 < m_ram1.size()) m_ram1[a - 0x400000] = v; }
+	uint32_t ram_peek(uint32_t a) const { return (a >= 0x809000 && a < 0x80A000) ? m_iram_page[a - 0x809000] : a < m_ram0.size() ? m_ram0[a] : (a >= 0x400000 && a - 0x400000 < m_ram1.size()) ? m_ram1[a - 0x400000] : 0xDEADBEEFu; }
+	bool in_attract() const { return (m_ram0[0xC8F5] & 0xf) == 2; }   // _MODE == MATTR: the attract mode (nobody is playing)
+	uint64_t palette_queue_overflows = 0;  // times the palette transfer queue was full and was flushed by the host
+	uint64_t watchdog_resets = 0;          // times the game's watchdog fired (the main loop hung)
 	bool debug_routines = false;           // print the track's section routines as they are called (headless)
 	bool auto_overclock = true;            // raise the CPU clock while a longer draw distance needs it (see update_clock)
 	int cpu_overclock = 1;                 // 1..4: more main CPU instructions per emulated time (the game's heavy frames finish sooner)
@@ -162,6 +169,7 @@ private:
 	std::unique_ptr<Dcs1> m_dcs;
 	int run_cpu(int cycles);
 	void setup_idle_hooks();
+	bool m_finish_loaded = false;          // the section with this leg's finish line is active (see the section activation hook)
 	bool m_tower_armed = false;            // the bridge tower palette is still the first bridge's (see setup_idle_hooks, (f))
 	int m_oc_q4 = 4;                       // effective CPU clock factor in quarters (4 = original speed)
 	uint32_t m_framrate_addr = 0;          // FRAMRATE, the game's frame governor (minimum vblanks per frame - 1)

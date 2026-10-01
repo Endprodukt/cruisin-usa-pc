@@ -1402,7 +1402,7 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->on_hook = nullptr;
 	const bool idle = idle_skip && !std::getenv("NOIDLESKIP");
 	const std::vector<uint32_t> &c = m_ram0;
-	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0;
+	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0, wdog_pc = ~0u, palq_pc = ~0u, palq_free = 0, palq_active = 0;
 	m_ofree_addr = 0;
 	for (uint32_t i = 0; i + 8 < 0x20000; i++)
 	{
@@ -1467,6 +1467,26 @@ void MidVUnit::setup_idle_hooks()
 			routine_pc = i + 4;
 			routine_tab = c[c[i + 2] & 0xffff];
 		}
+		// PALXFER_GET (PALL.ASM): PUSH R0 / LDI 1,R0 / STI R0,(AVAILABLE) / LDI (PALXFER_FREE),AR0 / LDI *AR0,R0 / STI R0,(PALXFER_FREE) /
+		// LDI (PALXFER_ACTIVE),R0 / STI R0,*AR0 / STI AR0,(PALXFER_ACTIVE).
+		// Bug fix of the original: palette changes are queued (128 blocks) and the vblank interrupt carries out 12 per frame. With
+		// the queue full, PALXFER_FREE is 0 and the release build takes block 0 without a check (the debug build stops there):
+		// PAL_SET then writes its transfer over RAM words 0..3, the reset and interrupt vectors, and the next vblank interrupt
+		// jumps into data. Loading a leg's palettes queues many at once; whether the queue overflows depends on how fast the CPU
+		// queues compared to the vblank rate. When the queue is full the pending transfers are carried out at once (what the
+		// interrupt would do over the next frames) and their blocks freed.
+		if (c[i] == 0x0F200000u && c[i + 1] == 0x08600001u && (c[i + 2] & 0xffff0000u) == 0x15200000u && (c[i + 3] & 0xffff0000u) == 0x08280000u &&
+		    c[i + 4] == 0x08400000u && c[i + 5] == (0x15200000u | (c[i + 3] & 0xffff)) && (c[i + 6] & 0xffff0000u) == 0x08200000u &&
+		    c[i + 7] == 0x15400000u && c[i + 8] == (0x15280000u | (c[i + 6] & 0xffff)) && palq_pc == ~0u)
+		{
+			palq_pc = i + 3;
+			palq_free = c[i + 3] & 0xffff;
+			palq_active = c[i + 6] & 0xffff;
+		}
+		// the watchdog in the vblank interrupt: ... ADDI 1,R0 / CMPI 300,R0 / BLE ok / BU error. The main loop did not get to
+		// its process dispatch for 300 vblanks: it hangs. (Only counted and, with the jump trace on, reported.)
+		if (c[i] == 0x02600001u && c[i + 1] == 0x04E0012Cu && (c[i + 2] & 0xffff0000u) == 0x6A080000u && wdog_pc == ~0u)
+			wdog_pc = i + 3;
 		// DRONE_VS_DEBRIS / DRONE_VS_SIGN: LDI (ROAD_DEBRISI),AR1 / BU +1 / LDI (SIGN_LISTI),AR1 / LDI (CAR_LIST),R0 / LDI R0,AR0 / RETSEQ
 		if ((c[i] & 0xffff0000u) == 0x08290000u && c[i + 1] == 0x6A000001u && (c[i + 2] & 0xffff0000u) == 0x08290000u &&
 		    (c[i + 3] & 0xffff0000u) == 0x08200000u && c[i + 4] == 0x08080000u && c[i + 5] == 0x78850000u && debris_ptr == 0)
@@ -1486,10 +1506,51 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->hook_pc[4] = snd_pc;
 	m_cpu->hook_pc[5] = objinit_pc;
 	m_cpu->hook_pc[6] = routine_pc;
+	m_cpu->hook_pc[7] = wdog_pc;
+	m_cpu->hook_pc[8] = palq_pc;
 	m_cpu->refresh_hooks();
 	m_zsort_first = true;
-	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr, routine_pc, routine_tab]() -> bool {
+	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr, routine_pc, routine_tab, wdog_pc, palq_pc, palq_free, palq_active]() -> bool {
 		uint32_t pc = m_cpu->pc();
+		if (pc == palq_pc)
+		{
+			if (m_ram0[palq_free] != 0) return false;
+			palette_queue_overflows++;
+			auto rd = [&](uint32_t a) -> uint32_t {
+				if (a < m_ram0.size()) return m_ram0[a];
+				if (a >= 0x400000 && a - 0x400000 < m_ram1.size()) return m_ram1[a - 0x400000];
+				if (a >= 0xC00000 && a - 0xC00000 < m_rom.size()) return m_rom[a - 0xC00000];
+				if (a >= 0x809000 && a < 0x80A000) return m_iram_page[a - 0x809000];
+				return 0;
+			};
+			// like PAL_XFER, but all of the queue: newest block first; a negative count marks a packed palette (two colours per word)
+			uint32_t blk = m_ram0[palq_active];
+			for (int guard = 0; blk && blk < m_ram0.size() - 4 && guard < 200; guard++)
+			{
+				const uint32_t next = m_ram0[blk];
+				uint32_t src = m_ram0[blk + 1], dst = m_ram0[blk + 2];
+				const uint32_t count = m_ram0[blk + 3];
+				if (count & 0x80000000u)
+					for (uint32_t n = (count << 1) >> 2; n > 0 && n <= 256; n--) { const uint32_t w = rd(src++); bus_write(dst++, w); bus_write(dst++, w >> 16); }
+				else
+					for (uint32_t n = count; n > 0 && n <= 512; n--) bus_write(dst++, rd(src++));
+				m_ram0[blk] = m_ram0[palq_free];   // back onto the free list
+				m_ram0[palq_free] = blk;
+				blk = next;
+			}
+			m_ram0[palq_active] = 0;
+			return false;
+		}
+		if (pc == wdog_pc)
+		{
+			watchdog_resets++;
+			if (m_cpu->trace_jumps)
+			{
+				std::fprintf(stderr, "WATCHDOG at frame %llu, mode %X: the main loop hangs. Jumps before the reset:\n", (unsigned long long)m_frame_count, m_ram0[0xC8F5]);
+				m_cpu->trace_dump(400);
+			}
+			return false;
+		}
 		if (pc == routine_pc)
 		{
 			const uint32_t target = m_cpu->reg(8);   // AR0 = the routine about to be called
@@ -1518,6 +1579,7 @@ void MidVUnit::setup_idle_hooks()
 				else if (a < m_ram0.size()) m_ram0[a] = v;
 			};
 			if (debris_ptr) wr(m_ram0[debris_ptr], 0);   // ROAD_DEBRIS = empty: its objects no longer exist
+			m_finish_loaded = false;                       // a new scene: no section of it is active yet
 			if (rom_patches.draw_distance_pct <= 100) return false;
 			// AR0 = last object of the array; the next instruction ends the list at AR0. Link the extra objects behind it and
 			// let the game end the list at the last extra one instead.
@@ -1549,9 +1611,23 @@ void MidVUnit::setup_idle_hooks()
 		}
 		if (pc == dact_pc)
 		{
+			// R0 = distance to the next section to activate, AR0 = its entry in the track table (routine index in bits 16..23).
 			// hold the next section back while the section table is nearly full or the object pool runs low
 			// (a section brings up to a few hundred objects; running out makes the game reset)
 			bool hold = m_ram0[m_dgroup_count_addr] >= 16;
+			// The legs of the trip follow each other in the track table, each with its own set of palettes, which is loaded
+			// when the leg starts. Sections behind the finish line belong to the next leg: created before its palettes are
+			// loaded they stop the game (OBJ_GETE: "CALL PAL_FIND / BC $", then the watchdog resets the board). The original
+			// only gets 80000 units past the finish, where the data still uses the current leg's palettes, so behind the finish
+			// (routines 32..45 BONUS1..14 and 19 END_OF_GAME) the original activation distance applies.
+			{
+				const uint32_t entry = m_cpu->reg(8);
+				const uint32_t w = entry < m_ram0.size() ? m_ram0[entry] : (entry >= 0xC00000 && entry - 0xC00000 < m_rom.size()) ? m_rom[entry - 0xC00000] : 0;
+				const uint32_t routine = (w >> 16) & 0xff;
+				const double dist = m_cpu->reg_float(0);
+				if (m_finish_loaded && dist > 80000.0) hold = true;
+				else if (!hold && ((routine >= 32 && routine <= 45) || routine == 19)) m_finish_loaded = true;   // this section may load
+			}
 			if (!hold && m_ofree_addr)
 			{
 				int n = 0;

@@ -216,7 +216,8 @@ TexRepl::Entry &TexRepl::block_entry(uint32_t block, uint32_t pix, const uint8_t
 // keep their colour (merged mode: the first palette wins).
 void TexRepl::paint(Picture &pic, uint32_t block, int u0, int v0, int u1, int v1, uint32_t pix, int solid, bool keyed, const uint8_t *ram, const uint32_t *pal)
 {
-	if (pic.rgba.empty()) pic.rgba.assign(256 * 256 * 4, 0);
+	if (pic.rgba.empty()) { pic.rgba.assign(256 * 256 * 4, 0); pic.how.assign(256 * 256, 0); }
+	const uint32_t how = 1u | ((pix & 0x7fff) << 1) | (uint32_t(solid + 1) << 16) | (keyed ? 1u << 25 : 0u);
 	const uint32_t key = uint32_t(u0) | (uint32_t(v0) << 8) | (uint32_t(u1) << 16) | (uint32_t(v1) << 24);
 	pic.block = block; pic.pix = pix;
 	if (!pic.rects.insert(key).second) return;
@@ -225,7 +226,9 @@ void TexRepl::paint(Picture &pic, uint32_t block, int u0, int v0, int u1, int v1
 		for (int u = u0; u <= u1; u++)
 		{
 			uint8_t *d = &pic.rgba[(size_t(v) * 256 + size_t(u)) * 4];
-			if (d[3]) continue;
+			uint32_t &h = pic.how[size_t(v) * 256 + size_t(u)];
+			if (h) continue;
+			h = how;
 			const uint8_t t = p[v * 256 + u];
 			const uint32_t col = pal[(pix + uint32_t(solid >= 0 && t ? solid : t)) & 0x7fff];
 			d[0] = uint8_t(col >> 16); d[1] = uint8_t(col >> 8); d[2] = uint8_t(col);
@@ -234,6 +237,40 @@ void TexRepl::paint(Picture &pic, uint32_t block, int u0, int v0, int u1, int v1
 	pic.painted++;
 	pic.age = 0;
 	m_dirty = true;
+}
+
+// The export picture with the parts no polygon has drawn filled in: every such texel is coloured the way the nearest drawn texel
+// was (same palette, same transparency), found by spreading outwards from the drawn parts.
+std::vector<uint8_t> TexRepl::completed(const Picture &pic, const uint8_t *ram, const uint32_t *pal) const
+{
+	std::vector<uint8_t> out = pic.rgba;
+	std::vector<uint32_t> how = pic.how;
+	std::vector<uint32_t> queue;
+	queue.reserve(65536);
+	for (uint32_t i = 0; i < 65536; i++) if (how[i]) queue.push_back(i);
+	const uint8_t *p = ram + size_t(pic.block) * 65536;
+	for (size_t head = 0; head < queue.size(); head++)
+	{
+		const uint32_t i = queue[head], h = how[i];
+		const int x = int(i & 255), y = int(i >> 8);
+		const int nb[4][2] = {{x - 1, y}, {x + 1, y}, {x, y - 1}, {x, y + 1}};
+		for (const auto &n : nb)
+		{
+			if (n[0] < 0 || n[0] > 255 || n[1] < 0 || n[1] > 255) continue;
+			const uint32_t j = uint32_t(n[1]) * 256 + uint32_t(n[0]);
+			if (how[j]) continue;
+			how[j] = h;
+			queue.push_back(j);
+			const uint32_t pix = (h >> 1) & 0x7fff;
+			const int solid = int((h >> 16) & 0x1ff) - 1;
+			const uint8_t t = p[j];
+			const uint32_t col = pal[(pix + uint32_t(solid >= 0 && t ? solid : t)) & 0x7fff];
+			uint8_t *d = &out[size_t(j) * 4];
+			d[0] = uint8_t(col >> 16); d[1] = uint8_t(col >> 8); d[2] = uint8_t(col);
+			d[3] = ((h >> 25) & 1 && t == 0) ? 0 : 255;
+		}
+	}
+	return out;
 }
 
 void TexRepl::flush_pending(const uint8_t *ram, const uint32_t *pal, bool all)
@@ -257,7 +294,8 @@ void TexRepl::flush_pending(const uint8_t *ram, const uint32_t *pal, bool all)
 		char name[64];
 		std::snprintf(name, sizeof name, "%s_%016llX.png", m_c.variants ? "tex" : "idx", (unsigned long long)it->first);
 		if (!m_writer) m_writer = std::make_unique<DumpWriter>();
-		m_writer->post((fs::path(m_c.dump_dir) / name).string(), pic.rgba);   // a copy: the picture may still grow
+		// merged sheets are completed; a palette variant only shows what was drawn with that palette
+		m_writer->post((fs::path(m_c.dump_dir) / name).string(), m_c.variants ? pic.rgba : completed(pic, ram, pal));
 		if (pic.written == 0) m_written++;
 		pic.written = pic.painted;
 		++it;

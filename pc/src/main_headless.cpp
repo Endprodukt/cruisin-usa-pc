@@ -1,4 +1,4 @@
-﻿// Headless test driver: runs N frames and writes a PNG screenshot.
+// Headless test driver: runs N frames and writes a PNG screenshot.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -96,6 +96,90 @@ int main(int argc, char **argv)
 			if (hit(60) || hit(80) || hit(100)) m.inputs.in0 &= ~in0bit::COIN1;
 			if (hit(140) || hit(320) || hit(500) || hit(680) || hit(860) || hit(1040)) m.inputs.in0 &= ~in0bit::START;
 			if (af > 1300) m.inputs.accel = 255;
+		}
+		// TRACK=n: start race n (CHOSEN_RACE is forced until the car is rolling)
+		if (const char *tr = getenv("TRACK"))
+		{
+			static bool rolling = false;
+			Telemetry t;
+			if (!rolling)
+			{
+				m.ram_poke(0xE664, uint32_t(atoi(tr)));
+				if (getenv("USA")) m.ram_poke(0xE666, 1);   // RACE_MODE = RM_USA: the legs follow each other
+				if (m.read_telemetry(t) && t.speed > 30) rolling = true;
+			}
+		}
+		// AUTOPILOT=1 / -1 (steering sign): keeps the car near the middle of the road at full throttle, time limit frozen
+		if (const char *ap = getenv("AUTOPILOT"))
+		{
+			static float prev = 0, dfilt = 0; static int pilot_frames = 0;
+			Telemetry t;
+			if (m.read_telemetry(t))
+			{
+				const float d = t.dist_to_center - (getenv("AP_OFFSET") ? float(atof(getenv("AP_OFFSET"))) : 0.0f);   // lane offset
+				if (d != prev) { dfilt = dfilt * 0.6f + (d - prev) * 0.4f; prev = d; }
+				const float kp = getenv("AP_KP") ? float(atof(getenv("AP_KP"))) : 0.10f, kd = getenv("AP_KD") ? float(atof(getenv("AP_KD"))) : 1.2f;
+				const float u = std::clamp(kp * d + kd * dfilt, -100.0f, 100.0f) * float(atoi(ap));
+				m.inputs.wheel = uint8_t(std::clamp(128.0f + u, 16.0f, 240.0f));
+				const int thr = getenv("AP_THROTTLE") ? atoi(getenv("AP_THROTTLE")) : 255;
+				m.inputs.accel = uint8_t(std::fabs(d) > 700.0f ? std::min(120, thr) : thr);
+				if (m.ram_peek(0xE634) < 40) m.ram_poke(0xE634, 60);   // _countdown
+				if (getenv("AP_LOG") && ++pilot_frames % atoi(getenv("AP_LOG")) == 0)
+					fprintf(stderr, "AP f%d spd=%.0f dist=%.0f wheel=%d onroad=%X mode=%X race=%u%c", f, t.speed, d, m.inputs.wheel, t.onroad, m.ram_word(0xC8F5), m.ram_word(0xE664), 10);
+			}
+			else if (f > 2600 && (f / 6) % 30 == 0) m.inputs.in0 &= ~in0bit::START;   // between races: press start now and then to move on
+		}
+		if (getenv("PALLOG"))
+		{   // palettes being loaded / released (RAWLOCS: palette id -> slot, 0 = not loaded), with the frame
+			static std::vector<uint32_t> prev(512, 0);
+			const uint32_t tab = m.ram_word(0x9EA9);
+			std::string on, off;
+			char b[16];
+			for (uint32_t id = 1; id < 256 && tab; id++)
+			{
+				const uint32_t v = m.ram_peek(tab + id);
+				if ((v != 0) != (prev[id] != 0)) { std::snprintf(b, sizeof b, " %X", id); (v ? on : off) += b; }
+				prev[id] = v;
+			}
+			if (f > 2400 && (!on.empty() || !off.empty())) fprintf(stderr, "PAL f%d mode=%X +[%s] -[%s]%c", f, m.ram_word(0xC8F5), on.c_str(), off.c_str(), 10);
+		}
+		if (getenv("TRACE") && !m.cpu_debug().trace_jumps) m.cpu_debug().trace_jumps = true;
+		if (getenv("SPWATCH") && !m.cpu_debug().trace_step)
+		{   // report the instruction after which the stack pointer leaves the on-chip stack area
+			m.cpu_debug().trace_jumps = true;
+			tms320c3x_device *c = &m.cpu_debug();
+			MidVUnit *mp = &m;
+			m.cpu_debug().trace_step = [c, mp]() {
+				static bool done = false; static uint32_t lastsp = 0x809C00, lastpc = 0;
+				const uint32_t sp = c->reg(20);
+				if (!done && lastsp >= 0x809C00 && lastsp < 0x809E00 && (sp < 0x809C00 || sp >= 0x809E00) && mp->ram_word(0xC8F5) != 0xFFFFFFFFu && (mp->ram_word(0xC8F5) & 0xf) != 1)
+				{
+					done = true;
+					fprintf(stderr, "SPWATCH: SP %06X -> %06X by the instruction at %06X (mode %X)%c", lastsp, sp, lastpc, mp->ram_word(0xC8F5), 10);
+					c->trace_dump(80);
+				}
+				static bool done2 = false; static uint32_t vec[12] = {};
+				if (!done2 && (mp->ram_word(0xC8F5) & 0xf) != 1 && mp->ram_word(0xC8F5) != 0xFFFFFFFFu)
+					for (uint32_t k = 0; k < 12; k++)
+					{
+						const uint32_t v = mp->ram_word(k);
+						if (vec[k] && v != vec[k])
+						{
+							done2 = true;
+							fprintf(stderr, "VECWATCH: RAM[%X] %08X -> %08X by the instruction at %06X (frame mode %X)%c", k, vec[k], v, lastpc, mp->ram_word(0xC8F5), 10);
+							c->trace_dump(60);
+							break;
+						}
+						vec[k] = v;
+					}
+				lastsp = sp; lastpc = c->pc();
+			};
+		}
+		{
+			static uint64_t wd = 0;
+			if (m.watchdog_resets != wd) { wd = m.watchdog_resets; fprintf(stderr, "RESET: watchdog fired at frame %d (mode %X)%c", f, m.ram_word(0xC8F5), 10); }
+			static uint64_t pq = 0;
+			if (m.palette_queue_overflows != pq) { pq = m.palette_queue_overflows; fprintf(stderr, "PALQ: palette queue full, flushed (frame %d, mode %X)%c", f, m.ram_word(0xC8F5), 10); }
 		}
 		if (getenv("PACE"))
 		{   // like the app: one emulated frame per 17.27 ms; report frames whose emulation took long

@@ -11,7 +11,9 @@
 //             a file only contains what polygons really drew: every polygon paints the part of the block it uses (its texture
 //             rectangle) with its palette, the rest stays transparent.
 //               - merged (default): one file per block, idx_<hash of the bytes>.png; each part has the palette of the first polygon
-//                 that used it. A replacement is used for every palette.
+//                 that used it. Parts no polygon has drawn yet take the palette of the nearest part that was drawn (the rest of a
+//                 font once one letter was used, the unused corner of a picture), so the sheet is complete. A replacement is
+//                 used for every palette.
 //               - variants: one file per block and palette, tex_<hash of the colours>.png, with only the parts drawn with that
 //                 palette (cars in five colours, day / night versions ...).
 //             Files are written once nothing new was painted for a while and rewritten when more of the block comes into use.
@@ -83,12 +85,14 @@ private:
 	struct Picture
 	{
 		std::vector<uint8_t> rgba;                 // 256 x 256, alpha 0 = not drawn by any polygon (or the transparent index)
+		std::vector<uint32_t> how;                 // per texel how it was drawn: bit 0 drawn, 1..15 palette base, 16..24 single colour + 1, 25 keyed
 		std::unordered_set<uint32_t> rects;        // texture rectangles already painted
 		uint32_t block = 0, pix = 0;               // where it was last seen (to check that it is still there when it is written)
 		uint32_t painted = 0, written = 0;         // rectangles painted / painted when the file was last written
 		int age = 0;                               // frames since something was painted
 	};
 	std::unordered_map<uint64_t, Picture> m_pics;  // file name hash -> picture
+	std::vector<uint8_t> completed(const Picture &pic, const uint8_t *ram, const uint32_t *pal) const;
 	void paint(Picture &pic, uint32_t block, int u0, int v0, int u1, int v1, uint32_t pix, int solid, bool keyed, const uint8_t *ram, const uint32_t *pal);
 	bool m_dirty = false;
 	int m_written = 0;

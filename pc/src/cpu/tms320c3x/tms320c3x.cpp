@@ -328,9 +328,34 @@ int tms320c3x_device::run(int cycles)
 			if (hit && on_hook && on_hook()) continue;
 		}
 
+		if (trace_jumps)
+		{
+			if (m_pc != trace_last + 1) { trace_ring[trace_pos & (kTrace - 1)] = (uint64_t(trace_last) << 32) | m_pc; trace_pos++; }
+			trace_last = m_pc;
+			if (trace_step) trace_step();
+		}
 		execute_one();
 	}
 	return cycles - m_icount;
+}
+
+void tms320c3x_device::trace_dump(int n) const
+{
+	const uint32_t count = std::min<uint32_t>(std::min<uint32_t>(trace_pos, kTrace), uint32_t(n));
+	uint64_t prev[2] = {0, 0};
+	int rep = 0;
+	for (uint32_t k = trace_pos - count; k != trace_pos; k++)
+	{
+		const uint64_t e = trace_ring[k & (kTrace - 1)];
+		if (e == prev[0] || e == prev[1]) { rep++; continue; }   // a loop of one or two jumps
+		if (rep) { std::fprintf(stderr, "    ... %d more times\n", rep); rep = 0; }
+		std::fprintf(stderr, "  J %06X -> %06X\n", uint32_t(e >> 32), uint32_t(e));
+		prev[1] = prev[0]; prev[0] = e;
+	}
+	if (rep) std::fprintf(stderr, "    ... %d more times\n", rep);
+	std::fprintf(stderr, "  now at %06X  SP %06X  AR0-7 %06X %06X %06X %06X %06X %06X %06X %06X  R0-3 %08X %08X %08X %08X\n", m_pc, m_r[20].i32[0],
+	             m_r[8].i32[0], m_r[9].i32[0], m_r[10].i32[0], m_r[11].i32[0], m_r[12].i32[0], m_r[13].i32[0], m_r[14].i32[0], m_r[15].i32[0],
+	             m_r[0].i32[0], m_r[1].i32[0], m_r[2].i32[0], m_r[3].i32[0]);
 }
 
 void tms320c3x_device::primary_bus_control_w(uint32_t data, uint32_t mem_mask)

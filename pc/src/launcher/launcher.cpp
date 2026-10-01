@@ -672,7 +672,7 @@ void controls_ffb(Launcher &L)
 			fx("Self-aligning torque", f.fx_aligning, "The core of the model: the front tyres' force from the game's physics. Resists you in corners, "
 			                                       "gets light when the tyres give up, and throws the wheel into counter-steer in slides, spins and after hits.");
 			fx("Self-centring", f.fx_centering, "A light centring force that grows with speed (the aligning torque already centres the wheel while the car grips).");
-			fx("Menu effects", f.fx_menu, "Strength of the arcade's own force outside a race (attract mode, selection screens, results). In a race the force comes from the car state only.");
+			fx("Menu effects", f.fx_menu, "Strength of the arcade's own force outside a race (selection screens, results). In a race the force comes from the car state only; the attract mode has no force.");
 			fx("Impact kick", f.fx_impact, "Directional kick when the car's direction changes abruptly: a hit from the left jerks the wheel left, "
 			                                   "a car spinning right throws the wheel to the left.");
 			fx("Road surface", f.fx_surface, "Rumble strips, gravel and grass; stronger and faster with speed.");
