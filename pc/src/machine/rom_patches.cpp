@@ -84,7 +84,10 @@ void draw_distance(std::vector<uint32_t> &ram, int pct, int &applied, std::strin
 		long a2 = find_seq(ram, act, 2, scan);
 		if (a2 >= 0)
 		{
-			const double ka = std::min(k, 1.5);   // the active object window: more than 1.5x made the game lock up (too many live objects)
+			// the active object window. With the original 1100 objects more than 1.5x locked the game up (the pool ran dry); the host now
+			// adds objects to the pool (MidVUnit::setup_idle_hooks), ACTIVEHI_MAX can be overridden for tests.
+			double ka = k;
+			if (const char *e = std::getenv("ACTIVEHI_MAX")) ka = std::min(k, std::atof(e));
 			ram[size_t(a2)] = uint32_t(75000 * ka);
 			ram[size_t(a2) + 1] = uint32_t(80000 * ka);
 			applied++;
@@ -237,11 +240,53 @@ void smooth_frames(std::vector<uint32_t> &ram, int &applied, std::string &log)
 	log += "  frame governor -> 0 (" + std::to_string(n) + " sites)\n";
 }
 
+// Bug fix in the original program: a routine that unlinks an object from a list (link at +20h)
+//   PUSH AR1 / LDI (list),R0 / SUBI 20h,R0 / loop: LDI R0,AR1 / LDI *+AR1(20h),R0 / RETSEQ / CMPI R0,AR4 / BNE loop / ... / POP AR1 / RETSU
+// returns with RETSEQ when the object is not in the list, leaving AR1 on the stack: the return goes to AR1's value (a data
+// address) and the CPU runs into data. Rare in the original; with the long draw distance it happens (crash or watchdog reset).
+// The RETSEQ becomes "BEQ to the POP AR1 / RETSU" at the routine's end.
+void fix_unlink_return(std::vector<uint32_t> &ram, int &applied, std::string &log)
+{
+	const size_t scan = 0x20000;
+	for (size_t i = 0; i + 24 < scan; i++)
+	{
+		if (!(ram[i] == 0x0F290000u && (ram[i + 1] & 0xffff0000u) == 0x08200000u && ram[i + 2] == 0x18600020u && ram[i + 3] == 0x08090000u &&
+		      ram[i + 4] == 0x08400120u && ram[i + 5] == 0x78850000u && ram[i + 6] == 0x048C0000u && ram[i + 7] == 0x6A06FFFBu))
+			continue;
+		for (size_t e = i + 8; e < i + 24; e++)
+			if (ram[e] == 0x0E290000u && ram[e + 1] == 0x78800000u)
+			{
+				ram[i + 5] = 0x6A050000u | uint32_t(e - (i + 6));   // BEQ e (displacement from the next instruction)
+				applied++;
+				log += "  list unlink: RETSEQ with AR1 still pushed fixed\n";
+				return;
+			}
+	}
+}
+
+// DEBRIS_SORT (ROADBLCK.ASM) looks for the road piece nearest to every debris object (knocked-over barrels, barriers) and links the
+// object behind it in the object list. The search starts with MAXDIST = 9999999999.0 as "nearest so far", but compares squared
+// distances, so it only finds road pieces within 100000 units. The original never has anything active further away than 80000. With
+// a longer draw distance debris stays active while its road section is already deleted: nothing is found, the pointer of the last
+// search (a road piece that has been freed) is used, and linking behind a free object corrupts the free list and the object lists
+// (the game hangs in a list scan and the watchdog resets it). MAXDIST becomes 1e30.
+void fix_debris_maxdist(std::vector<uint32_t> &ram, int &applied, std::string &log)
+{
+	const uint32_t maxdist = c3x_float(9999999999.0);
+	int n = 0;
+	for (size_t i = 0; i < 0x20000; i++)
+		if (ram[i] == maxdist) { ram[i] = c3x_float(1e30); n++; }
+	if (n == 1) { applied++; log += "  debris sort: search distance limit raised\n"; }
+	else if (n > 1) log += "  debris sort: MAXDIST matched " + std::to_string(n) + " words\n";
+}
+
 } // namespace
 
 int apply_rom_patches(std::vector<uint32_t> &ram, const RomPatchOptions &opt, std::string &log)
 {
 	int applied = 0;
+	fix_unlink_return(ram, applied, log);
+	fix_debris_maxdist(ram, applied, log);
 	draw_distance(ram, opt.draw_distance_pct, applied, log);
 	rubberband(ram, opt.rubberband_pct, applied, log);
 	widescreen(ram, opt.wide_margin, applied, log);

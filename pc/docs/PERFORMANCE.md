@@ -20,7 +20,12 @@ Measured: emulation 7-9 ms -> ~2.5 ms per frame in the same race; Vulkan with VS
 Whole-program optimisation (/GL /LTCG) was tried and gave nothing.
 The game logic is tied to the arcade's 57.9 Hz frame clock (time step based on the vblank count); it was not changed.
 
-## Smooth frames (optional, `[game] smooth_frames`, `--smooth 1`)
+## Smooth frames (withdrawn; experimental `--smooth 1` only)
+
+**Not usable as it is:** the process dispatcher (MPROC.ASM `NEXTPRC`) counts every `SLEEP n` down by one per game frame, not by
+the vblanks that passed, and ~290 SLEEP calls plus other per-frame counters time the game's sequences. With a frame per vblank
+they all run twice as fast (race start countdown, text, attract sequences). A correct 57 fps display needs the game to keep running at
+its own rate and the host to interpolate between game frames. The option was removed from the launcher and the ini file.
 
 The main loop (CUSA.ASM `MAINLOOP`) waits until `INFRAMES >= FRAMRATE` before it requests the page swap, and the swap itself waits for
 the next vblank, so FRAMRATE is "minimum vblanks per frame - 1". Races (`INIT_GAMELEG`) and the head-to-head logo set it to 2, the

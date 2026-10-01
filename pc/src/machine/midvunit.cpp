@@ -101,7 +101,9 @@ MidVUnit::MidVUnit()
 	m_bus->slow_write = &MidVUnit::write_thunk;
 
 	m_ram0.assign(0x20000, 0);
-	m_ram1.assign(0x20000, 0);
+	// RAM1 is 128K words at 0x400000; the 128K words after it (0x420000) are not used by the game. They are mapped as extra RAM
+	// for the enlarged object pool of the long draw distance (see setup_idle_hooks).
+	m_ram1.assign(0x40000, 0);
 	m_rom.assign(0x400000, 0);
 	m_nvram.assign(0x2000, 0xffffffffu);   // NVRAM default: all ones
 	m_paletteram.assign(0x8000, 0);
@@ -117,6 +119,9 @@ MidVUnit::MidVUnit()
 	{
 		m_bus->rpage[p] = &m_ram0[p * tms320c3x_device::PAGE_WORDS];
 		m_bus->wpage[p] = &m_ram0[p * tms320c3x_device::PAGE_WORDS];
+	}
+	for (int p = 0; p < int(m_ram1.size()) / tms320c3x_device::PAGE_WORDS; p++)
+	{
 		int q = (0x400000 >> tms320c3x_device::PAGE_SHIFT) + p;
 		m_bus->rpage[q] = &m_ram1[p * tms320c3x_device::PAGE_WORDS];
 		m_bus->wpage[q] = &m_ram1[p * tms320c3x_device::PAGE_WORDS];
@@ -999,7 +1004,10 @@ bool MidVUnit::run_frame()
 			m_present_page = m_page_control & 1;
 			gpu_flush_quads();
 			gpu_sync_state();
-			if (m_wide && quads_last_frame == 0) m_gpu->clear_margins(m_present_page);   // a CPU-drawn screen: no stale 3D at the sides
+			// a CPU-drawn screen (boot text etc.): no stale 3D at the sides. A 3D scene can have single vblanks without any polygon
+			// (the game draws a frame over two vblanks), so only after a longer stretch without polygons.
+			m_vblanks_no_quads = quads_last_frame == 0 ? m_vblanks_no_quads + 1 : 0;
+			if (m_wide && m_vblanks_no_quads >= 12) m_gpu->clear_margins(m_present_page);
 			m_gpu->latch(m_present_page, m_vis_h);
 		}
 		if (m_vpos == m_vis_h && texrepl.active()) texrepl.tick(m_textureram.data(), m_palette_rgb.data());
@@ -1357,7 +1365,7 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->on_hook = nullptr;
 	const bool idle = idle_skip && !std::getenv("NOIDLESKIP");
 	const std::vector<uint32_t> &c = m_ram0;
-	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u;
+	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0;
 	m_ofree_addr = 0;
 	for (uint32_t i = 0; i + 8 < 0x20000; i++)
 	{
@@ -1392,22 +1400,64 @@ void MidVUnit::setup_idle_hooks()
 		if (c[i] == 0x086000FFu && c[i + 1] == 0x0F210000u && c[i + 2] == 0x0F220000u && c[i + 3] == 0x0F230000u &&
 		    c[i + 4] == 0x0F280000u && c[i + 5] == 0x0F200000u && (c[i + 6] & 0xffff0000u) == 0x08210000u && snd_pc == ~0u)
 			snd_pc = i + 1;
+		// (e) end of OBJ_INIT: LDI 1099,RC / RPTB / STI AR1,*AR0 / LDI AR1,AR0 / ADDI OBJSIZ,AR1 / LDI 0,R0 / STI R0,*AR0.
+		//     * Bug fix of the original: OBJ_INIT empties every object list except ROAD_DEBRIS, and several screen changes call it
+		//       without INIT_RDDEBRIS. Debris objects (barrels, barriers) that were active then stay in that list although they are
+		//       free; once they are handed out again the collision scan over the list never ends (watchdog reset). The list is
+		//       emptied here as well.
+		//     * With a longer draw distance the 1100 objects run out (scenery sections are held back, or the game locks up), so more
+		//       objects in the unused RAM at 0x420000 are linked onto the end of the free list.
+		if (c[i] == 0x087B044Bu && (c[i + 1] & 0xffff0000u) == 0x64000000u && c[i + 2] == 0x1549C000u &&
+		    c[i + 3] == 0x08080009u && c[i + 4] == 0x02690022u && c[i + 5] == 0x08600000u && c[i + 6] == 0x1540C000u && objinit_pc == ~0u)
+		{
+			objinit_pc = i + 5;
+			for (uint32_t j = i; j > 8 && j + 30 > i; j--)   // OFREECNT: LDI 1100,R0 / STI R0,(OFREECNT) at the start of OBJ_INIT
+				if (c[j] == 0x0860044Cu && (c[j + 1] & 0xffff0000u) == 0x15200000u) { ofreecnt = c[j + 1] & 0xffff; break; }
+		}
+		// DRONE_VS_DEBRIS / DRONE_VS_SIGN: LDI (ROAD_DEBRISI),AR1 / BU +1 / LDI (SIGN_LISTI),AR1 / LDI (CAR_LIST),R0 / LDI R0,AR0 / RETSEQ
+		if ((c[i] & 0xffff0000u) == 0x08290000u && c[i + 1] == 0x6A000001u && (c[i + 2] & 0xffff0000u) == 0x08290000u &&
+		    (c[i + 3] & 0xffff0000u) == 0x08200000u && c[i + 4] == 0x08080000u && c[i + 5] == 0x78850000u && debris_ptr == 0)
+			debris_ptr = c[i] & 0xffff;
 		// OBJ_FREE: PUSH R0 / LDI (OFREE),R0 / STI R0,*AR2 / STI AR2,(OFREE)  -> head of the free object list
 		if (c[i] == 0x0F200000u && (c[i + 1] & 0xffff0000u) == 0x08200000u && c[i + 2] == 0x1540C200u &&
 		    (c[i + 3] & 0xffff0000u) == 0x152A0000u && (c[i + 1] & 0xffff) == (c[i + 3] & 0xffff) && m_ofree_addr == 0)
 			m_ofree_addr = c[i + 1] & 0xffff;
 	}
-	if (sync_pc == ~0u && sort_top == ~0u && dact_pc == ~0u && snd_pc == ~0u)
+	if (sync_pc == ~0u && sort_top == ~0u && dact_pc == ~0u && snd_pc == ~0u && objinit_pc == ~0u)
 		return;
 	m_cpu->hook_pc[0] = sync_pc;
 	m_cpu->hook_pc[1] = sort_entry;
 	m_cpu->hook_pc[2] = sort_top;
 	m_cpu->hook_pc[3] = dact_pc;
 	m_cpu->hook_pc[4] = snd_pc;
+	m_cpu->hook_pc[5] = objinit_pc;
 	m_cpu->refresh_hooks();
 	m_zsort_first = true;
-	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc]() -> bool {
+	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr]() -> bool {
 		uint32_t pc = m_cpu->pc();
+		if (pc == objinit_pc)
+		{
+			auto wr = [&](uint32_t a, uint32_t v) {
+				if (a >= 0x400000 && a - 0x400000 < m_ram1.size()) m_ram1[a - 0x400000] = v;
+				else if (a < m_ram0.size()) m_ram0[a] = v;
+			};
+			if (debris_ptr) wr(m_ram0[debris_ptr], 0);   // ROAD_DEBRIS = empty: its objects no longer exist
+			if (rom_patches.draw_distance_pct <= 100) return false;
+			// AR0 = last object of the array; the next instruction ends the list at AR0. Link the extra objects behind it and
+			// let the game end the list at the last extra one instead.
+			constexpr uint32_t OBJSIZ = 0x22, BASE = 0x420000;
+			const uint32_t n = uint32_t(m_ram1.size() - 0x20000) / OBJSIZ;
+			uint32_t last = m_cpu->reg(8);
+			for (uint32_t k = 0; k < n; k++)
+			{
+				const uint32_t a = BASE + k * OBJSIZ;
+				wr(last, a);
+				last = a;
+			}
+			m_cpu->set_reg(8, last);
+			if (ofreecnt) m_ram0[ofreecnt] += n;
+			return false;
+		}
 		if (pc == snd_pc)
 		{
 			// sound indices (SNDTAB.EQU) that only the player's car triggers (the drones use DRONESND): COLLA.ASM RUNOVER / FLYCOLL

@@ -750,12 +750,6 @@ void page_game(Launcher &L)
 		help("The game gives the opponents more engine power when they are behind you (at least +20 %, up to +40 %, more the longer you lead) and "
 		     "less when they are ahead. This scales that boost; the random power surges and the driving AI stay as they are. Takes effect at the next start.");
 	}
-	ImGui::SeparatorText("Frame rate");
-	ImGui::Checkbox("Smooth frames (up to 57 fps)", &L.s.smooth_frames);
-	help("The original runs its races at 28.5 frames per second (a frame governor) and the car / track selection even slower, because the "
-	     "arcade CPU needs longer than one screen refresh per frame. This lifts the governor and lets the emulated CPU run twice as fast, so "
-	     "a new frame is computed for every refresh. The game moves everything by the time that has passed, so speeds, timers and the race "
-	     "itself stay the same, only in finer steps. Costs about 1 ms more CPU time per frame. Takes effect at the next start.");
 	ImGui::SeparatorText("Operator adjustments");
 	ImGui::TextWrapped("The operator adjustments the game's service menu offers, edited directly in the save file so you never need the "
 	                   "service menu. They take effect at the next start. The control calibration is fixed and not listed.");

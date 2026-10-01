@@ -112,7 +112,7 @@ struct Settings
 	std::string nvram = "cruisn_usa.nv";
 	bool show_launcher = true;
 	bool fast_boot = true;
-	bool smooth_frames = false; // up to 57 game frames per second instead of 28.5 (frame governor off, CPU clock x2)
+	bool smooth_frames = false; // experimental, command line only (--smooth 1): frame governor off, breaks the game's timing
 	int rubberband = 100;      // opponents' catch-up boost in percent of the original (0 = none)
 	int dsp_thread = 0;        // sound DSP on its own thread: -1 auto (4+ hardware threads), 0 off (default, see PERFORMANCE.md), 1 on
 

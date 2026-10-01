@@ -11,8 +11,10 @@ struct RomPatchOptions
 {
 	int draw_distance_pct = 100;   // 100 = original; <100 culls far objects, >100 pushes level-of-detail switches and traffic further out
 	int rubberband_pct = 100;      // strength of the opponents' catch-up boost relative to the original (0 = none)
-	int wide_margin = 0;
-	bool smooth_frames = false;   // lift the race frame governor (FRAMRATE 2 -> 1): up to 57 game frames per second           // extra arcade pixels of 3D view on each side of the 512 px wide image (widescreen)
+	int wide_margin = 0;           // extra arcade pixels of 3D view on each side of the 512 px wide image (widescreen)
+	// EXPERIMENTAL, not offered in the launcher: frame governor off (a game frame per vblank). Breaks the game's timing: ~290
+	// SLEEP calls and other counters run per game frame, not per vblank (race start countdown twice as fast). See PERFORMANCE.md.
+	bool smooth_frames = false;
 };
 
 // patches `ram` (the first words of the program, as copied to RAM at boot); returns the number of patches applied

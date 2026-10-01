@@ -185,7 +185,6 @@ bool Settings::load(const std::string &path)
 	r.boolean("game", "show_launcher", show_launcher);
 	r.boolean("game", "fast_boot", fast_boot);
 	r.integer("game", "rubberband", rubberband, 0, 300);
-	r.boolean("game", "smooth_frames", smooth_frames);
 	r.integer("game", "dsp_thread", dsp_thread, -1, 1);
 
 	r.choice("video", "renderer", video.renderer, kRenderer);
@@ -277,9 +276,7 @@ bool Settings::save(const std::string &path) const
 	auto b = [](bool v) { return v ? "true" : "false"; };
 	o << "; Cruis'n USA PC -- written by the launcher. Every key is optional; defaults apply.\n\n";
 	o << "[game]\nrom = " << rom << "\nversion = " << version << "\nnvram = " << nvram
-	  << "\nshow_launcher = " << b(show_launcher) << "\nfast_boot = " << b(fast_boot) << "\n; opponents' rubber band (catch-up boost) in percent of the original: 100 original, 50 reduced, 0 none\nrubberband = " << rubberband
-	  << "\n; up to 57 game frames per second instead of 28.5 (races, selection screens); needs twice the emulated CPU speed\nsmooth_frames = " << b(smooth_frames)
-	  << "\n; sound DSP emulated on its own thread (same sound, less time per frame): -1 auto (4+ CPU threads), 0 off, 1 on\ndsp_thread = " << dsp_thread << "\n\n";
+	  << "\nshow_launcher = " << b(show_launcher) << "\nfast_boot = " << b(fast_boot) << "\n; opponents' rubber band (catch-up boost) in percent of the original: 100 original, 50 reduced, 0 none\nrubberband = " << rubberband	  << "\n; sound DSP emulated on its own thread (same sound, less time per frame): -1 auto (4+ CPU threads), 0 off, 1 on\ndsp_thread = " << dsp_thread << "\n\n";
 
 	o << "[video]\n; renderer: cpu | opengl | vulkan      window_mode: window | borderless | fullscreen\n"
 	  << "renderer = " << to_string(video.renderer) << "\nwindow_mode = " << to_string(video.window_mode)

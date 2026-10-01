@@ -64,6 +64,7 @@ public:
 	int  icount() const { return m_icount; }
 	uint32_t pc() const { return m_pc; }
 	uint32_t reg(int r) const { return m_r[r].i32[0]; }
+	void set_reg(int r, uint32_t v) { m_r[r].i32[0] = v; }   // integer / address registers (hooks)
 	bool idling() const { return m_is_idling; }
 
 	// Execution hooks: when the program counter reaches one of hook_pc (before the instruction runs), on_hook() is called from the

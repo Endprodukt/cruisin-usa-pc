@@ -176,6 +176,7 @@ private:
 	uint64_t m_tex_gen = 1;                 // bumped on every texture RAM write
 	bool m_repl_pending = false;
 	int m_wide = 0;                        // widescreen: extra page pixels on each side (quads are shifted by this)
+	int m_vblanks_no_quads = 0;            // consecutive vblanks without any polygon (CPU-drawn screen)
 	int m_shadow_mode = 0;                 // 0 original, 1 modern, 2 off
 	int m_gq_page = 0;
 	int m_present_page = 0;
