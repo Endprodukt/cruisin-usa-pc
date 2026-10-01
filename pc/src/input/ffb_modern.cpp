@@ -5,6 +5,7 @@
 
 namespace {
 constexpr double TWO_PI = 6.283185307179586;
+constexpr float PI_F = 3.14159265f;
 constexpr float TOP_SPEED = 290.0f;          // CARSPEED at full speed (measured)
 constexpr int ROAD = 0x300, SHOULDER = 0x310;
 
@@ -12,6 +13,13 @@ float smooth(float cur, float target, float dt, float tau)
 {
 	float k = 1.0f - std::exp(-dt / tau);
 	return cur + (target - cur) * k;
+}
+
+float wrap(float a)   // to -pi..pi
+{
+	while (a > PI_F) a -= 2.0f * PI_F;
+	while (a < -PI_F) a += 2.0f * PI_F;
+	return a;
 }
 }
 
@@ -26,29 +34,61 @@ void FfbModern::add_jolt(float amp, float hz, float decay)
 	j.phase = 0;
 }
 
-void FfbModern::frame(const Telemetry &t, float vanilla)
+void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 {
-	m_vanilla = vanilla;
+	m_arcade = arcade;
+	m_steer = steer;
 	if (!t.valid)
 	{
 		m_have_prev = false;
 		m_t = Telemetry{};
 		m_speed_n = 0;
+		m_sat_target = 0;
+		m_slip = m_prev_slip = 0;
 		return;
 	}
 	m_t = t;
 	m_speed_n = std::clamp(t.speed / TOP_SPEED, 0.0f, 1.2f);
 	const float v = m_speed_n;
 
+	// ---- front tyre slip angle ----------------------------------------------------------------------------------
+	// The game's angles grow to the left. The front wheels point at (heading + wheel angle); the car travels along vrot.
+	// The tyres' angle to the travel direction is the slip; the aligning torque tries to reduce it, so it is
+	// "slip positive to the right -> push the wheel to the left".
+	float slip_left = wrap((t.y_rot + t.turn) - t.v_rot);
+	float slip_right = -slip_left;                       // positive = tyres point more right than the car moves
+	if (t.speed < 4.0f) slip_right = 0;                  // hardly moving: no meaningful direction of travel
+	m_slip = slip_right;
+
+	// peak-and-fall-off: the force grows with slip up to the grip limit, then drops (understeer feels light)
+	float grip = 1.0f - std::clamp((t.skid - 0.35f) / 0.65f, 0.0f, 1.0f) * 0.55f * m_c.understeer;
+	float peak = 0.22f;                                   // slip (rad) at the force maximum
+	float mag = std::tanh(std::fabs(slip_right) / peak);
+	float fall = std::fabs(slip_right) > 0.5f ? std::max(0.55f, 1.0f - (std::fabs(slip_right) - 0.5f) * 0.5f) : 1.0f;
+	float speed_scale = 0.12f + 0.88f * std::clamp(t.speed / 170.0f, 0.0f, 1.0f);
+	float sat_right = -(slip_right >= 0 ? 1.0f : -1.0f) * mag * fall * grip * speed_scale * 0.60f;   // resists the slip
+	m_sat_target = sat_right * m_c.aligning;
+
 	if (m_have_prev)
 	{
 		const Telemetry &p = m_prev;
+
+		// abrupt change of the slip angle between two frames = something hit the car: a kick that pulls the same way
+		// the aligning torque will pull (towards the direction the car now travels relative to the wheels)
+		float dslip = m_slip - m_prev_slip;
+		if (std::fabs(dslip) > 0.06f && t.speed > 15.0f)
+		{
+			float amp = std::min(0.9f, (std::fabs(dslip) - 0.04f) * 3.0f) * (0.4f + 0.6f * v) * m_c.impact;
+			m_impact = (dslip > 0 ? -1.0f : 1.0f) * amp;   // slip grew to the right -> wheel jerked left
+			m_impact_decay = 8.0f;
+		}
 
 		// leaving the road: a tug towards the side the wheel dropped off
 		bool was_road = p.onroad == ROAD, now_road = t.onroad == ROAD;
 		if (was_road && !now_road && t.onroad != 0)
 		{
-			float side = t.dist_to_center >= 0 ? 1.0f : -1.0f;
+			// dist_to_center is positive to the left of the road centre in the game's convention (like its angles)
+			float side = t.dist_to_center >= 0 ? -1.0f : 1.0f;
 			m_kick = side * m_c.kerb * (0.10f + 0.22f * v);
 			m_kick_decay = 9.0f;
 		}
@@ -70,12 +110,16 @@ void FfbModern::frame(const Telemetry &t, float vanilla)
 		if (dv > 5.0f && (t.bump > 0 || t.spin || dv > 10.0f))
 			add_jolt(m_c.collision * std::min(0.7f, 0.2f + dv / 50.0f), 22.0f, 6.0f);
 
-		// spin-out kick
+		// spin-out: the first jerk goes the way the car starts to turn (the wheel is thrown against the rotation)
 		if (t.spin && !p.spin)
 		{
-			add_jolt(m_c.spin * 0.8f, 16.0f, 4.0f);
-			m_kick = (m_vanilla >= 0 ? 1.0f : -1.0f) * m_c.spin * 0.6f;
-			m_kick_decay = 5.0f;
+			add_jolt(m_c.spin * 0.6f, 16.0f, 4.0f);
+			float rot_right = -t.d_rot;   // spin rate, positive = turning right
+			if (std::fabs(rot_right) > 0.002f)
+			{
+				m_impact = (rot_right > 0 ? -1.0f : 1.0f) * std::min(0.9f, 0.5f + std::fabs(rot_right) * 8.0f) * m_c.spin;
+				m_impact_decay = 5.0f;
+			}
 		}
 
 		// touching down
@@ -83,6 +127,7 @@ void FfbModern::frame(const Telemetry &t, float vanilla)
 		if (was_air && !now_air) add_jolt(m_c.landing * (0.35f + 0.5f * v), 20.0f, 7.0f);
 	}
 	m_prev = t;
+	m_prev_slip = m_slip;
 	m_have_prev = true;
 	m_bump_cool -= 1.0f / 58.0f;
 }
@@ -91,14 +136,28 @@ float FfbModern::step(double dt)
 {
 	const float fdt = float(dt);
 	const Telemetry &t = m_t;
-	float out = m_vanilla;
+	float out = m_c.arcade * m_arcade;
 	float vib = 0;
 
 	if (t.valid)
 	{
 		const float v = m_speed_n;
 
-		// continuous targets
+		// aligning torque and centring, smoothed a little so that single frames do not click
+		m_sat = smooth(m_sat, m_sat_target, fdt, 0.012f);
+		float centre = -m_steer * (0.04f + 0.30f * std::clamp(t.speed / 170.0f, 0.0f, 1.0f)) * m_c.centering;
+		bool air_all = t.air_front && t.air_rear;
+		bool air_front = t.air_front != 0;
+		m_air = smooth(m_air, (air_all || air_front) ? 1.0f : 0.0f, fdt, (air_all || air_front) ? 0.08f : 0.03f);
+		float airs = 1.0f - std::min(0.9f, m_air * std::min(1.0f, m_c.air));
+		out += (m_sat + centre) * airs;
+
+		// directional kick from impacts and spins
+		m_impact *= std::exp(-m_impact_decay * fdt);
+		if (std::fabs(m_impact) < 0.002f) m_impact = 0;
+		out += m_c.master * std::clamp(m_impact, -0.9f, 0.9f);
+
+		// continuous vibration targets
 		float surf = 0, hz = 20.0f + 70.0f * v;
 		if (t.onroad == SHOULDER) surf = 0.05f + 0.07f * v;
 		else if (t.onroad != ROAD && t.onroad != 0) surf = 0.12f + 0.16f * v;
@@ -110,18 +169,9 @@ float FfbModern::step(double dt)
 		if (v < 0.05f) skid = 0;
 		m_skid_amp = smooth(m_skid_amp, skid, fdt, 0.05f);
 
-		float eng = (0.012f + 0.05f * std::clamp(t.rpm / 50.0f, 0.0f, 1.0f)) * m_c.engine;
+		float eng = (0.008f + 0.04f * std::clamp(t.rpm / 50.0f, 0.0f, 1.0f)) * m_c.engine;
 		m_engine_amp = smooth(m_engine_amp, eng, fdt, 0.15f);
 
-		bool air = t.air_front || t.air_rear;
-		m_air = smooth(m_air, air ? 1.0f : 0.0f, fdt, air ? 0.08f : 0.03f);
-		m_light = smooth(m_light, t.skid > 0.4f ? t.skid : 0.0f, fdt, 0.10f);
-
-		// the game's force, made lighter in the air and when the tyres slide
-		float scale = 1.0f - std::min(0.85f, 0.85f * m_air * std::min(1.0f, m_c.air)) - std::min(0.6f, 0.45f * m_light * m_c.understeer);
-		out = m_vanilla * std::max(0.0f, scale);
-
-		// oscillating effects
 		m_ph_surface += TWO_PI * m_surface_hz * dt;
 		m_ph_skid += TWO_PI * 37.0 * dt;
 		m_ph_engine += TWO_PI * (22.0 + 1.6 * t.rpm) * dt;
@@ -131,11 +181,11 @@ float FfbModern::step(double dt)
 		out += m_c.master * (s + k + e);
 		vib += m_c.master * (std::fabs(m_surface_amp) + m_skid_amp + m_engine_amp);
 
-		// directional kick
+		// kerb tug
 		m_kick *= std::exp(-m_kick_decay * fdt);
 		if (std::fabs(m_kick) < 0.002f) m_kick = 0;
 		out += m_c.master * std::clamp(m_kick, -0.45f, 0.45f);
-		vib += std::fabs(m_kick) * 0.5f;
+		vib += std::fabs(m_kick) * 0.5f + std::fabs(m_impact) * 0.5f;
 
 		// jolts (summed and limited so that several at once do not slam the wheel)
 		float jolt_sum = 0;
@@ -151,12 +201,13 @@ float FfbModern::step(double dt)
 	}
 	else
 	{
-		m_surface_amp = m_skid_amp = m_engine_amp = m_air = m_light = 0;
-		m_kick = 0;
+		m_sat = m_surface_amp = m_skid_amp = m_engine_amp = m_air = m_light = 0;
+		m_kick = m_impact = 0;
 		for (Jolt &j : m_jolts) j.amp = 0;
+		out = m_arcade;   // menus: the arcade's own force (attract, track select, results)
 	}
 
-	m_fx = out - m_vanilla;
+	m_fx = out - m_arcade;
 	m_vib_level = std::clamp(vib, 0.0f, 1.0f);
 	return std::clamp(out, -1.0f, 1.0f);
 }

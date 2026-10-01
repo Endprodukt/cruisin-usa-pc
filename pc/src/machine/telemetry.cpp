@@ -37,6 +37,7 @@ bool MidVUnit::read_telemetry(Telemetry &t) const
 	t.valid = true;
 	t.speed = f(38); t.skid = f(37); t.throttle = f(36); t.brake = f(43); t.turn = f(33); t.traction = f(34);
 	t.rpm = f(57); t.y_vel = f(41); t.x_mom = f(40); t.z_mom = f(42); t.x_lean = f(66); t.z_lean = f(67);
+	t.y_rot = f(44); t.v_rot = f(45); t.d_rot = f(46); t.over_rot = f(47);
 	t.dist_to_center = f(70); t.road_friction = f(68); t.offroad_friction = f(69);
 	t.onroad = n(30); t.bump = n(51); t.spin = n(49); t.air_front = n(31); t.air_rear = n(32); t.gear = n(56);
 	const int yv[5] = {4, 10, 16, 22, 28};

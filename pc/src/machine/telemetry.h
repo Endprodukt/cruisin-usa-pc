@@ -17,6 +17,7 @@ struct Telemetry
 	float y_vel = 0;             // car body angular momentum about Y (yaw rate)
 	float x_mom = 0, z_mom = 0;  // pitch / roll momentum
 	float x_lean = 0, z_lean = 0;
+	float y_rot = 0, v_rot = 0, d_rot = 0, over_rot = 0;   // body heading, travel direction, spin rate per frame, over-rotation (radians)
 	float dist_to_center = 0;    // distance to the road's centre line
 	float road_friction = 0, offroad_friction = 0;
 	int onroad = 0;              // 0 nothing, 300 road, 310 shoulder, other = off road

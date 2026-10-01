@@ -629,7 +629,13 @@ void controls_ffb(Launcher &L)
 				edited(L, ImGui::SliderInt(label, &v, 0, 200, "%d%%"));
 				help(tip);
 			};
-			fx("All effects", f.fx_master, "Overall strength of everything below (not the game's own force - that is 'Strength' above).");
+			fx("Self-aligning torque", f.fx_aligning, "The core of the model: the front tyres' force from the game's physics. Resists you in corners, "
+			                                       "gets light when the tyres give up, and throws the wheel into counter-steer in slides, spins and after hits.");
+			fx("Self-centring", f.fx_centering, "A light centring force that grows with speed (the aligning torque already centres the wheel while the car grips).");
+			fx("Arcade force share", f.fx_arcade, "How much of the arcade's own position-servo force is mixed in (kerb jerks, off-road jitter, menus use all of it).");
+			fx("Impact kick", f.fx_impact, "Directional kick when the car's direction changes abruptly: a hit from the left jerks the wheel left, "
+			                                   "a car spinning right throws the wheel to the left.");
+			fx("All effects", f.fx_master, "Overall strength of the effects below (vibrations, kicks); the aligning torque has its own slider.");
 			fx("Road surface", f.fx_surface, "Rumble strips, gravel and grass; stronger and faster with speed.");
 			fx("Kerb tug", f.fx_kerb, "A sideways tug when a wheel drops off the edge of the road.");
 			fx("Bumps", f.fx_bump, "Bumps and road seams.");
@@ -643,7 +649,7 @@ void controls_ffb(Launcher &L)
 			if (ImGui::Button("Reset effect strengths"))
 			{
 				f.fx_master = 100; f.fx_surface = 100; f.fx_kerb = 70; f.fx_bump = 100; f.fx_collision = 100; f.fx_spin = 100;
-				f.fx_landing = 100; f.fx_engine = 40; f.fx_skid = 100; f.fx_air = 100; f.fx_understeer = 100; L.dirty = true;
+				f.fx_landing = 100; f.fx_engine = 25; f.fx_aligning = 100; f.fx_centering = 35; f.fx_arcade = 25; f.fx_impact = 100; f.fx_skid = 100; f.fx_air = 100; f.fx_understeer = 100; L.dirty = true;
 			}
 		}
 	}

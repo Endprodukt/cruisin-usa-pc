@@ -547,13 +547,14 @@ void Controls::ffb_update(uint8_t motor, const Telemetry *telemetry)
 		const FfbSettings &c = m_s.ffb;
 		FfbModernConfig cfg;
 		auto p = [](int v) { return float(v) / 100.0f; };
+		cfg.aligning = p(c.fx_aligning); cfg.centering = p(c.fx_centering); cfg.arcade = p(c.fx_arcade); cfg.impact = p(c.fx_impact);
 		cfg.master = p(c.fx_master); cfg.surface = p(c.fx_surface); cfg.kerb = p(c.fx_kerb); cfg.bump = p(c.fx_bump);
 		cfg.collision = p(c.fx_collision); cfg.spin = p(c.fx_spin); cfg.landing = p(c.fx_landing); cfg.engine = p(c.fx_engine);
 		cfg.skid = p(c.fx_skid); cfg.air = p(c.fx_air); cfg.understeer = p(c.fx_understeer);
 		std::lock_guard<std::mutex> lk(m_fx->mtx);
 		m_fx->invert = c.invert ? -1.0f : 1.0f;
 		m_fx->synth.configure(cfg);
-		m_fx->synth.frame(telemetry ? *telemetry : Telemetry{}, f);
+		m_fx->synth.frame(telemetry ? *telemetry : Telemetry{}, f, m_steer_out);
 		extra = m_fx->vibration;
 	}
 	else

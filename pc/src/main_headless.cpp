@@ -96,13 +96,14 @@ int main(int argc, char **argv)
 		}
 		{ static bool once = false; if (!once && m.quads_last_frame > 50) { once = true; fprintf(stderr, "first 3D frame: %d\n", f); } }
 		if (getenv("VSTAT") && f % 500 == 0) { fprintf(stderr, "f%d vram r/w %llu/%llu pal %llu tex %llu quads %llu\n", f, (unsigned long long)m.stat_vram_reads, (unsigned long long)m.stat_vram_writes, (unsigned long long)m.stat_pal_writes, (unsigned long long)m.stat_tex_writes, (unsigned long long)m.quads_last_frame); }
+		if (getenv("ROTLOG")) { Telemetry t; if (m.read_telemetry(t) && f >= atoi(getenv("ROTLOG"))) fprintf(stderr, "R %d wheel=%d spd=%.1f turn=%.3f yrot=%.4f vrot=%.4f drot=%.4f rot=%.4f xl=%.3f zl=%.3f\n", f, m.inputs.wheel, t.speed, t.turn, t.y_rot, t.v_rot, t.d_rot, t.over_rot, t.x_lean, t.z_lean); }
 		if (getenv("FFBTEST"))
 		{
-			static FfbModern fx; static float mx = 0, sum2 = 0; static int n = 0, kicks = 0;
+			static FfbModern fx; static float mx = 0, sum2 = 0, sum1 = 0; static int n = 0, kicks = 0;
 			Telemetry t; bool ok = m.read_telemetry(t);
-			fx.frame(ok ? t : Telemetry{}, 0.0f);
-			for (int k = 0; k < 4; k++) { float o = fx.step(1.0 / 232.0); mx = std::max(mx, std::fabs(o)); sum2 += o * o; n++; }
-			if (f % 120 == 0 && ok) { fprintf(stderr, "FFB f%d spd=%.0f onroad=%X max=%.2f rms=%.3f vib=%.2f\n", f, t.speed, t.onroad, mx, std::sqrt(sum2 / std::max(1, n)), fx.vibration()); mx = 0; sum2 = 0; n = 0; }
+			fx.frame(ok ? t : Telemetry{}, 0.0f, (float(m.inputs.wheel) - 128.0f) / 112.0f);
+			for (int k = 0; k < 4; k++) { float o = fx.step(1.0 / 232.0); mx = std::max(mx, std::fabs(o)); sum2 += o * o; sum1 += o; n++; }
+			if (f % atoi(getenv("FFBTEST")) == 0 && ok) { fprintf(stderr, "FFB f%d wheel=%d spd=%.0f slip=%.3f onroad=%X mean=%+.2f max=%.2f rms=%.3f vib=%.2f\n", f, m.inputs.wheel, t.speed, fx.slip(), t.onroad, sum1 / std::max(1, n), mx, std::sqrt(sum2 / std::max(1, n)), fx.vibration()); mx = 0; sum2 = 0; sum1 = 0; n = 0; }
 			(void)kicks;
 		}
 		if (const char *tl = getenv("TELEMLOG")) { Telemetry t; if (m.read_telemetry(t) && f % atoi(tl) == 0) fprintf(stderr, "T %d spd=%.2f skid=%.2f thr=%.2f brk=%.2f turn=%.3f trac=%.2f rpm=%.1f yv=%.3f xm=%.3f zm=%.3f xl=%.3f zl=%.3f d2c=%.1f road=%d onroad=%d bump=%d spin=%d air=%d/%d gear=%d yv0=%.2f dy0=%.2f col=%d\n", f, t.speed, t.skid, t.throttle, t.brake, t.turn, t.traction, t.rpm, t.y_vel, t.x_mom, t.z_mom, t.x_lean, t.z_lean, t.dist_to_center, (int)t.road_friction, t.onroad, t.bump, t.spin, t.air_front, t.air_rear, t.gear, t.susp_yv[0], t.susp_dy[0], t.collided[0]); }

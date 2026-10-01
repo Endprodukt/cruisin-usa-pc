@@ -90,7 +90,8 @@ struct FfbSettings
 	FfbMode mode = FfbMode::Modern;   // vanilla: only the force the game computes; modern: plus effects from the game's car state
 	// modern effect strengths, percent of their default (0 = off)
 	int fx_master = 100, fx_surface = 100, fx_kerb = 70, fx_bump = 100, fx_collision = 100, fx_spin = 100;
-	int fx_landing = 100, fx_engine = 40, fx_skid = 100, fx_air = 100, fx_understeer = 100;
+	int fx_landing = 100, fx_engine = 25, fx_skid = 100, fx_air = 100, fx_understeer = 100;
+	int fx_aligning = 100, fx_centering = 35, fx_arcade = 25, fx_impact = 100;
 };
 
 struct OutputSettings

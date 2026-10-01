@@ -240,6 +240,10 @@ bool Settings::load(const std::string &path)
 	r.integer("ffb", "rumble_strength", ffb.rumble_strength, 0, 200);
 	r.choice("ffb", "mode", ffb.mode, kFfbMode);
 	r.integer("ffb_modern", "master", ffb.fx_master, 0, 200);
+	r.integer("ffb_modern", "aligning", ffb.fx_aligning, 0, 200);
+	r.integer("ffb_modern", "centering", ffb.fx_centering, 0, 200);
+	r.integer("ffb_modern", "arcade", ffb.fx_arcade, 0, 200);
+	r.integer("ffb_modern", "impact", ffb.fx_impact, 0, 200);
 	r.integer("ffb_modern", "surface", ffb.fx_surface, 0, 200);
 	r.integer("ffb_modern", "kerb", ffb.fx_kerb, 0, 200);
 	r.integer("ffb_modern", "bump", ffb.fx_bump, 0, 200);
@@ -314,7 +318,7 @@ bool Settings::save(const std::string &path) const
 	  << "\nrumble_strength = " << ffb.rumble_strength
 	  << "\n; mode: vanilla (the game's own force only) | modern (adds effects from the game's car state, see [ffb_modern])"
 	  << "\nmode = " << to_string(ffb.mode) << "\n\n"
-	  << "[ffb_modern]\n; strength of each effect in percent of its default, 0 = off\nmaster = " << ffb.fx_master << "\nsurface = " << ffb.fx_surface
+	  << "[ffb_modern]\n; strength of each effect in percent of its default, 0 = off\nmaster = " << ffb.fx_master << "\naligning = " << ffb.fx_aligning << "\ncentering = " << ffb.fx_centering << "\narcade = " << ffb.fx_arcade << "\nimpact = " << ffb.fx_impact << "\nsurface = " << ffb.fx_surface
 	  << "\nkerb = " << ffb.fx_kerb << "\nbump = " << ffb.fx_bump << "\ncollision = " << ffb.fx_collision << "\nspin = " << ffb.fx_spin
 	  << "\nlanding = " << ffb.fx_landing << "\nengine = " << ffb.fx_engine << "\nskid = " << ffb.fx_skid << "\nair = " << ffb.fx_air
 	  << "\nundersteer = " << ffb.fx_understeer << "\n\n";
