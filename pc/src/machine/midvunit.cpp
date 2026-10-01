@@ -1021,6 +1021,21 @@ bool MidVUnit::run_frame()
 {
 	quads_last_frame = 0;
 	update_clock();
+	// the garage of the car selection: mode MINTRO with the selectable cars (object ids 0x481..0x484, INTRO.ASM ROUNDER)
+	// on one of the object lists
+	m_garage = false;
+	if (m_wide && (m_ram0[0xC8F5] & 0xf) == 3)
+		for (uint32_t list = 0x40; list <= 0x41 && !m_garage; list++)
+		{
+			uint32_t o = ram_peek(m_ram0[list]);
+			for (int n = 0; o && n < 3000; n++)
+			{
+				const uint32_t *w = o + 0xF < m_ram0.size() ? &m_ram0[o] : (o >= 0x400000 && o - 0x400000 + 0xF < m_ram1.size()) ? &m_ram1[o - 0x400000] : nullptr;
+				if (!w) break;
+				if (w[0xF] >= 0x481 && w[0xF] <= 0x484) { m_garage = true; break; }
+				o = w[0];
+			}
+		}
 	m_video_changed = false;
 	m_partial_next_row = 0;
 

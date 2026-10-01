@@ -509,6 +509,17 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 				if (hit(60) || hit(80) || hit(100)) m.inputs.in0 &= ~in0bit::COIN1;
 				if (hit(140) || hit(320) || hit(500) || hit(680) || hit(860) || hit(1040)) m.inputs.in0 &= ~in0bit::START;
 				if (af > 1300) m.inputs.accel = 255;
+				// --menu-wheel n: wheel position (0..255) held in the selection screens, to test the other choices
+				// (a list "a,b,c" steps through the positions, 60 frames each, and leaves the car selection to its timer)
+				static const std::vector<int> menu_wheel = [&] {
+					std::vector<int> w; std::string v = arg_value(a, "--menu-wheel");
+					for (size_t p = 0; p < v.size();) { w.push_back(std::atoi(v.c_str() + p)); p = v.find(',', p); if (p == std::string::npos) break; p++; }
+					return w; }();
+				if (!menu_wheel.empty() && af > 520 && af < 1300)
+				{
+					m.inputs.wheel = uint8_t(menu_wheel[std::min(menu_wheel.size() - 1, size_t(std::max(0, af - 560) / 60))]);
+					if (menu_wheel.size() > 1) m.inputs.in0 |= in0bit::START;
+				}
 				if (autopilot)
 				{
 					static float prev = 0, dfilt = 0;

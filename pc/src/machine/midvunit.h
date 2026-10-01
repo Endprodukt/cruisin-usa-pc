@@ -60,9 +60,11 @@ public:
 	void ram_poke(uint32_t a, uint32_t v) { if (a < m_ram0.size()) m_ram0[a] = v; else if (a >= 0x400000 && a - 0x400000 < m_ram1.size()) m_ram1[a - 0x400000] = v; }
 	uint32_t ram_peek(uint32_t a) const { return (a >= 0x809000 && a < 0x80A000) ? m_iram_page[a - 0x809000] : a < m_ram0.size() ? m_ram0[a] : (a >= 0x400000 && a - 0x400000 < m_ram1.size()) ? m_ram1[a - 0x400000] : 0xDEADBEEFu; }
 	bool in_attract() const { return (m_ram0[0xC8F5] & 0xf) == 2; }
-	// The 3D world fills the picture: a race, its finish (bonus) or the attract mode's demo race. Everything else is a menu
-	// or a 2D screen made for the arcade's 4:3 picture (boot, selection screens, initials, continue, high scores, logos).
-	bool world_shown() const { const uint32_t m = m_ram0[0xC8F5]; return (m & 0xf) == 4 || (m & 0xf) == 5 || ((m & 0xf) == 2 && (m & 0x200)); }   // _MODE == MATTR: the attract mode (nobody is playing)
+	// The 3D world fills the picture: a race, its finish (bonus), the attract mode's demo race, or the garage of the car
+	// selection (a 3D room: the car on the outer lift reaches past the 4:3 picture). Everything else is a menu or a 2D screen
+	// made for the arcade's 4:3 picture (boot, race and transmission selection, initials, continue, high scores, logos).
+	bool world_shown() const { const uint32_t m = m_ram0[0xC8F5]; return (m & 0xf) == 4 || (m & 0xf) == 5 || ((m & 0xf) == 2 && (m & 0x200)) || m_garage; }
+	bool m_garage = false;                 // the car selection is on screen (updated once per frame)   // _MODE == MATTR: the attract mode (nobody is playing)
 	uint64_t palette_queue_overflows = 0;  // times the palette transfer queue was full and was flushed by the host
 	uint32_t rom_word(uint32_t i) const { return i < m_rom.size() ? m_rom[i] : 0; }
 	uint64_t watchdog_resets = 0;          // times the game's watchdog fired (the main loop hung)
