@@ -313,9 +313,10 @@ public:
 		glDisable(GL_SCISSOR_TEST);
 	}
 
-	void latch(int page) override
+	void latch(int page, int visible_rows) override
 	{
-		glCopyImageSubData(m_page_tex[page & 1], GL_TEXTURE_2D, 0, 0, 0, 0, m_disp_tex, GL_TEXTURE_2D, 0, 0, 0, 0, page_w(), page_h(), 1);
+		int rows = std::clamp(visible_rows, 1, 512) * m_opt.scale;
+		glCopyImageSubData(m_page_tex[page & 1], GL_TEXTURE_2D, 0, 0, 0, 0, m_disp_tex, GL_TEXTURE_2D, 0, 0, 0, 0, page_w(), rows, 1);
 	}
 
 	void present(int vis_w, int vis_h) override

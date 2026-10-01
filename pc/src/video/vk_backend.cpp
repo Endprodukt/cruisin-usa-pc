@@ -103,15 +103,22 @@ public:
 		cpi.queueFamilyIndex = m_qfam;
 		VKCHECK(vkCreateCommandPool(m_dev, &cpi, nullptr, &m_pool), "vkCreateCommandPool");
 		VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-		cai.commandPool = m_pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
-		VKCHECK(vkAllocateCommandBuffers(m_dev, &cai, &m_cb), "vkAllocateCommandBuffers");
+		cai.commandPool = m_pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 2;
+		VKCHECK(vkAllocateCommandBuffers(m_dev, &cai, m_cbs), "vkAllocateCommandBuffers");
 		VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-		VKCHECK(vkCreateFence(m_dev, &fi, nullptr, &m_fence), "vkCreateFence");
+		VKCHECK(vkCreateFence(m_dev, &fi, nullptr, &m_fences[0]), "vkCreateFence");
+		VKCHECK(vkCreateFence(m_dev, &fi, nullptr, &m_fences[1]), "vkCreateFence");
 		VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 		VKCHECK(vkCreateSemaphore(m_dev, &si, nullptr, &m_sem_acq), "semaphore");
 		VKCHECK(vkCreateSemaphore(m_dev, &si, nullptr, &m_sem_rel), "semaphore");
 
 		if (!create_buffers(err)) return false;
+		{
+			VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+			qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = 4;
+			if (m_limits.timestampComputeAndGraphics && vkCreateQueryPool(m_dev, &qi, nullptr, &m_qpool) != VK_SUCCESS) m_qpool = VK_NULL_HANDLE;
+		}
+		select_slot(0);
 		if (!create_static_images(err)) return false;
 		if (!create_samplers(err)) return false;
 		if (!create_render_passes(err)) return false;
@@ -148,7 +155,9 @@ public:
 		vkDestroyRenderPass(m_dev, m_rp_swap, nullptr);
 		vkDestroySemaphore(m_dev, m_sem_acq, nullptr);
 		vkDestroySemaphore(m_dev, m_sem_rel, nullptr);
-		vkDestroyFence(m_dev, m_fence, nullptr);
+		if (m_qpool) vkDestroyQueryPool(m_dev, m_qpool, nullptr);
+		vkDestroyFence(m_dev, m_fences[0], nullptr);
+		vkDestroyFence(m_dev, m_fences[1], nullptr);
 		vkDestroyCommandPool(m_dev, m_pool, nullptr);
 		vkDestroyDevice(m_dev, nullptr);
 		vkDestroySurfaceKHR(m_inst, m_surf, nullptr);
@@ -210,7 +219,7 @@ public:
 		if (m_repl_res <= 0) return;
 		const size_t bytes = size_t(m_repl_res) * size_t(m_repl_res) * 4;
 		begin_cb();
-		if (m_stage_off + bytes > m_stage.size) { submit_wait(); begin_cb(); }
+		if (m_stage_off + bytes > m_stage_end) { submit_wait(); begin_cb(); }
 		std::memcpy(m_stage.map + m_stage_off, rgba, bytes);
 		VkImageSubresourceRange rg{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, uint32_t(layer), 1};
 		VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -259,7 +268,7 @@ public:
 		const size_t stride = sizeof(GpuQuad);
 		for (int done = 0; done < count;)
 		{
-			size_t room = (m_instbuf.size - m_instbuf_off) / stride;
+			size_t room = (m_inst_end - m_instbuf_off) / stride;
 			if (room < 256) { submit_wait(); begin_cb(); continue; }
 			int n = int(std::min<size_t>(size_t(count - done), room));
 			std::memcpy(m_instbuf.map + m_instbuf_off, q + done, size_t(n) * stride);
@@ -300,7 +309,7 @@ public:
 		for (int done = 0; done < count;)
 		{
 			// 1. hard coverage into the mask (cleared per batch; the blur pass follows right away)
-			size_t room = (m_instbuf.size - m_instbuf_off) / stride;
+			size_t room = (m_inst_end - m_instbuf_off) / stride;
 			if (room < 256) { submit_wait(); begin_cb(); continue; }
 			int n = int(std::min<size_t>(size_t(count - done), room));
 			std::memcpy(m_instbuf.map + m_instbuf_off, q + done, size_t(n) * stride);
@@ -311,11 +320,11 @@ public:
 				VkClearValue clear{};
 				VkRenderPassBeginInfo rb{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
 				rb.renderPass = m_rp_mask; rb.framebuffer = m_mask_fb;
-				rb.renderArea = {{0, 0}, {uint32_t(pw), uint32_t(sz)}};
+				rb.renderArea = {{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};   // only the part the blur reads is cleared and drawn
 				rb.clearValueCount = 1; rb.pClearValues = &clear;
 				vkCmdBeginRenderPass(m_cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
 				VkViewport vp{0, 0, float(pw), float(sz), 0, 1};
-				VkRect2D scr{{0, 0}, {uint32_t(pw), uint32_t(sz)}};
+				VkRect2D scr{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
 				vkCmdSetViewport(m_cb, 0, 1, &vp);
 				vkCmdSetScissor(m_cb, 0, 1, &scr);
 				vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_smask);
@@ -341,10 +350,10 @@ public:
 		}
 	}
 
-	void latch(int page) override
+	void latch(int page, int visible_rows) override
 	{
 		begin_cb();
-		int sz = page_h(), pw = page_w();
+		int sz = std::clamp(visible_rows, 1, 512) * m_opt.scale, pw = page_w();
 		Img &src = m_page[page & 1];
 		barrier(src.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -408,26 +417,28 @@ public:
 		vkCmdBindDescriptorSets(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pl, 0, 1, &m_set_present[page & 1], 1, &dyn);
 		vkCmdDraw(m_cb, 4, 1, 0, 0);
 		vkCmdEndRenderPass(m_cb);
+		if (m_qpool) { vkCmdWriteTimestamp(m_cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_qpool, uint32_t(m_slot) * 2 + 1); m_ts_valid[m_slot] = true; }
 		vkEndCommandBuffer(m_cb);
 
 		VkPipelineStageFlags wait = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		VkSubmitInfo sub{VK_STRUCTURE_TYPE_SUBMIT_INFO};
 		sub.waitSemaphoreCount = 1; sub.pWaitSemaphores = &m_sem_acq; sub.pWaitDstStageMask = &wait;
 		sub.commandBufferCount = 1; sub.pCommandBuffers = &m_cb;
-		sub.signalSemaphoreCount = 1; sub.pSignalSemaphores = &m_sem_rel;
+		sub.signalSemaphoreCount = 1; sub.pSignalSemaphores = &m_sem_rel_img[idx];
 		vkQueueSubmit(m_q, 1, &sub, m_fence);
 
 		VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-		pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &m_sem_rel;
+		pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &m_sem_rel_img[idx];
 		pi.swapchainCount = 1; pi.pSwapchains = &m_sc; pi.pImageIndices = &idx;
 		VkResult pr = vkQueuePresentKHR(m_q, &pi);
 		if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) m_sc_dirty = true;
 
-		vkWaitForFences(m_dev, 1, &m_fence, VK_TRUE, UINT64_MAX);
-		vkResetFences(m_dev, 1, &m_fence);
 		m_recording = false;
-		m_instbuf_off = m_stage_off = m_ubo_off = 0;
+		m_inflight[m_slot] = true;
+		select_slot(m_slot ^ 1);
 	}
+
+	double last_gpu_ms() const override { return m_gpu_ms; }
 
 	bool read_display(std::vector<uint32_t> &out, int &w, int &h) override
 	{
@@ -535,14 +546,52 @@ private:
 	}
 
 	// ---- command buffer management ---------------------------------------------------------------
+	// The frame's last submission is not waited for at present time: the CPU goes on emulating the next frame while the GPU renders
+	// this one. Before anything is recorded or written into the per-frame buffers again, the previous submission must be done.
+	// Two frames can be in flight: each has its own command buffer, fence and half of the per-frame buffers.
+	void select_slot(int i)
+	{
+		m_slot = i;
+		m_cb = m_cbs[i];
+		m_fence = m_fences[i];
+		m_inst_base = size_t(i) * INST_BYTES; m_inst_end = m_inst_base + INST_BYTES;
+		m_stage_base = size_t(i) * STAGE_BYTES; m_stage_end = m_stage_base + STAGE_BYTES;
+		m_ubo_base = size_t(i) * UBO_BYTES; m_ubo_end = m_ubo_base + UBO_BYTES;
+		m_instbuf_off = m_inst_base; m_stage_off = m_stage_base; m_ubo_off = m_ubo_base;
+	}
+
+	void reset_offsets() { m_instbuf_off = m_inst_base; m_stage_off = m_stage_base; m_ubo_off = m_ubo_base; }
+
+	void wait_inflight()
+	{
+		if (!m_inflight[m_slot]) return;
+		vkWaitForFences(m_dev, 1, &m_fence, VK_TRUE, UINT64_MAX);
+		if (m_qpool && m_ts_valid[m_slot])
+		{
+			uint64_t t[2];
+			if (vkGetQueryPoolResults(m_dev, m_qpool, uint32_t(m_slot) * 2, 2, sizeof t, t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+				m_gpu_ms = double(t[1] - t[0]) * double(m_limits.timestampPeriod) * 1e-6;
+			m_ts_valid[m_slot] = false;
+		}
+		vkResetFences(m_dev, 1, &m_fence);
+		m_inflight[m_slot] = false;
+		reset_offsets();
+	}
+
 	void begin_cb()
 	{
 		if (m_recording) return;
+		wait_inflight();
 		vkResetCommandBuffer(m_cb, 0);
 		VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 		bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 		vkBeginCommandBuffer(m_cb, &bi);
 		m_recording = true;
+		if (m_qpool)
+		{
+			vkCmdResetQueryPool(m_cb, m_qpool, uint32_t(m_slot) * 2, 2);
+			vkCmdWriteTimestamp(m_cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_qpool, uint32_t(m_slot) * 2);
+		}
 	}
 
 	void submit_wait()
@@ -555,13 +604,13 @@ private:
 		vkWaitForFences(m_dev, 1, &m_fence, VK_TRUE, UINT64_MAX);
 		vkResetFences(m_dev, 1, &m_fence);
 		m_recording = false;
-		m_instbuf_off = m_stage_off = m_ubo_off = 0;
+		reset_offsets();
 	}
 
 	uint32_t write_params(const Params &p)
 	{
 		size_t align = std::max<size_t>(m_limits.minUniformBufferOffsetAlignment, 64);
-		if (m_ubo_off + align > m_ubo.size) { submit_wait(); begin_cb(); }
+		if (m_ubo_off + align > m_ubo_end) { submit_wait(); begin_cb(); }
 		std::memcpy(m_ubo.map + m_ubo_off, &p, sizeof(p));
 		uint32_t off = uint32_t(m_ubo_off);
 		m_ubo_off += align;
@@ -572,7 +621,7 @@ private:
 	{
 		size_t bytes = row_bytes * size_t(rows);
 		begin_cb();
-		if (m_stage_off + bytes > m_stage.size) { submit_wait(); begin_cb(); }
+		if (m_stage_off + bytes > m_stage_end) { submit_wait(); begin_cb(); }
 		std::memcpy(m_stage.map + m_stage_off, src, bytes);
 		barrier(im.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 		        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -614,9 +663,9 @@ private:
 	// ---- resource creation -------------------------------------------------------------------------
 	bool create_buffers(std::string &err)
 	{
-		return make_buffer(m_instbuf, INST_BYTES, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true, err) &&
-		       make_buffer(m_stage, STAGE_BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, err) &&
-		       make_buffer(m_ubo, UBO_BYTES, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true, err);
+		return make_buffer(m_instbuf, INST_BYTES * 2, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true, err) &&
+		       make_buffer(m_stage, STAGE_BYTES * 2, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, err) &&
+		       make_buffer(m_ubo, UBO_BYTES * 2, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true, err);
 	}
 
 	bool make_array_image(Img &im, int w, int h, int layers, std::string &err)
@@ -963,6 +1012,12 @@ private:
 		uint32_t n = 0;
 		vkGetSwapchainImagesKHR(m_dev, m_sc, &n, nullptr);
 		m_sc_img.resize(n);
+		m_sem_rel_img.resize(n);
+		for (uint32_t i = 0; i < n; i++)
+		{
+			VkSemaphoreCreateInfo semi{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+			VKCHECK(vkCreateSemaphore(m_dev, &semi, nullptr, &m_sem_rel_img[i]), "semaphore");
+		}
 		vkGetSwapchainImagesKHR(m_dev, m_sc, &n, m_sc_img.data());
 		m_sc_view.resize(n); m_sc_fb.resize(n);
 		for (uint32_t i = 0; i < n; i++)
@@ -982,6 +1037,8 @@ private:
 
 	void destroy_swapchain()
 	{
+		for (VkSemaphore sm : m_sem_rel_img) vkDestroySemaphore(m_dev, sm, nullptr);
+		m_sem_rel_img.clear();
 		for (auto f : m_sc_fb) vkDestroyFramebuffer(m_dev, f, nullptr);
 		for (auto v : m_sc_view) vkDestroyImageView(m_dev, v, nullptr);
 		m_sc_fb.clear(); m_sc_view.clear(); m_sc_img.clear();
@@ -1007,7 +1064,15 @@ private:
 	VkCommandBuffer m_cb = VK_NULL_HANDLE;
 	VkFence m_fence = VK_NULL_HANDLE;
 	VkSemaphore m_sem_acq = VK_NULL_HANDLE, m_sem_rel = VK_NULL_HANDLE;
-	bool m_recording = false;
+	bool m_recording = false, m_inflight[2] = {false, false};
+	VkCommandBuffer m_cbs[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+	VkFence m_fences[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+	int m_slot = 0;
+	VkQueryPool m_qpool = VK_NULL_HANDLE;
+	bool m_ts_valid[2] = {false, false};
+	double m_gpu_ms = -1.0;
+	size_t m_inst_base = 0, m_inst_end = 0, m_stage_base = 0, m_stage_end = 0, m_ubo_base = 0, m_ubo_end = 0;
+	std::vector<VkSemaphore> m_sem_rel_img;   // one per swapchain image (the presentation engine may still hold the previous one)
 
 	Buf m_instbuf, m_stage, m_ubo;
 	size_t m_instbuf_off = 0, m_stage_off = 0, m_ubo_off = 0;

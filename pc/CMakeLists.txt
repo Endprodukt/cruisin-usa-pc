@@ -8,6 +8,14 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 if(MSVC)
   add_compile_options(/utf-8 /permissive- /W3 /wd4244 /wd4267 /wd4146 /wd4018)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
+  # symbols for the development profiler (no runtime cost); whole-program optimisation was measured and gave nothing
+  add_compile_options($<$<CONFIG:Release>:/Oi> $<$<CONFIG:Release>:/Zi>)
+  add_link_options($<$<CONFIG:Release>:/DEBUG> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
+endif()
+
+option(C3X_PROFILE "count executed opcodes (development)" OFF)
+if(C3X_PROFILE)
+  add_compile_definitions(C3X_PROFILE)
 endif()
 
 add_library(cpu_c3x STATIC src/cpu/tms320c3x/tms320c3x.cpp)

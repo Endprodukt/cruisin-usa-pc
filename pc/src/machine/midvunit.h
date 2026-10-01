@@ -54,12 +54,15 @@ public:
 
 	bool load_roms(const std::string &zip_path, const std::string &version, std::string &err);
 	void reset();
+	bool skip_raster = false;              // benchmarking: do not rasterise quads on the CPU
+	bool idle_skip = true;                 // fast-forward the game's wait loops (see setup_idle_hooks)
 	void debug_ram_usage() const;
+	// performance counters (read and cleared by the front end)
+	double perf_cpu_ms = 0, perf_dcs_ms = 0;   // main CPU interpreter / sound DSP time
+	double perf_feed_ms = 0;               // time spent handing quads / state to the video backend
+	uint64_t perf_draws = 0, perf_quads = 0;
+	const uint64_t *cpu_hits() const;
 	bool m_pchist_on = false;
-	bool m_qhist_on = false;
-	bool m_qpc_on = false;
-	uint64_t m_qpc_from = 0;
-	uint64_t m_qhist[20] = {};
 	std::map<uint32_t, uint32_t> m_pchist;
 	bool read_telemetry(struct Telemetry &t) const;   // player car state for motion / force feedback
 	RomPatchOptions rom_patches;           // applied to the RAM copy at reset
@@ -149,6 +152,9 @@ private:
 	std::unique_ptr<tms320c3x_device> m_cpu;
 	std::unique_ptr<Dcs1> m_dcs;
 	int run_cpu(int cycles);
+	void setup_idle_hooks();
+	uint32_t m_idle_flag_addr = 0, m_idle_sync_addr = 0;
+	bool m_zsort_first = true;
 	void sync_dcs();
 
 	// GPU feed
@@ -185,7 +191,8 @@ private:
 	std::vector<uint16_t> m_videoram;       // 0x80000 entries, two 512x512 pages
 	std::vector<uint8_t>  m_textureram;     // 4 MB
 	std::vector<uint32_t> m_palette_rgb;    // 32768 entries, 0x00RRGGBB
-	uint32_t m_iram[0x800] = {};            // TMS320C31 internal RAM at 0x809800
+	uint32_t m_iram_page[0x1000] = {};      // page 0x809000: the TMS320C31 internal RAM sits in its upper half (mapped as a fast page)
+	uint32_t *const m_iram = m_iram_page + 0x800;   // 0x809800
 	uint32_t m_ctrl[0x80] = {};             // TMS320C31 peripheral registers at 0x808000
 
 public:

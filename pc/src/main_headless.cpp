@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include "profiler.h"
 #include "machine/midvunit.h"
 #include "machine/telemetry.h"
 #include "input/ffb_modern.h"
@@ -59,12 +60,13 @@ int main(int argc, char **argv)
 	if (const char *dd = getenv("DD")) m.rom_patches.draw_distance_pct = atoi(dd);
 	if (getenv("PCHIST")) m.m_pchist_on = true;
 	if (const char *wm = getenv("WM")) m.rom_patches.wide_margin = atoi(wm);
-	if (getenv("QHIST")) m.m_qhist_on = true;
-	if (const char *qp = getenv("QPC")) { m.m_qpc_on = true; m.m_qpc_from = strtoull(qp, nullptr, 10); }
+	if (getenv("NORASTER")) m.skip_raster = true;
 	m.reset();
 	if (getenv("DEFAULT_NV")) m.load_default_nvram();
 	if (const char *adj = getenv("ADJ")) { int idx, val, n = 0; const char *q = adj; while (sscanf(q, "%d=%d%n", &idx, &val, &n) == 2) { cmos::set(m.nvram(), idx, uint32_t(val)); q += n; if (*q == ',') q++; } }
 	if (!makenv.empty()) { run_auto_setup(m); m.save_nvram(makenv); fprintf(stderr, "saved %s\n", makenv.c_str()); return 0; }
+	SampleProfiler prof;
+	if (getenv("PROFILE")) prof.start();
 	for (int f = 0; f < frames; f++)
 	{
 		for (auto &a : axes) if (a.at == f) { if (a.which == 'w') m.inputs.wheel = a.val; else if (a.which == 'a') m.inputs.accel = a.val; else m.inputs.brake = a.val; }
@@ -109,7 +111,9 @@ int main(int argc, char **argv)
 		if (const char *tl = getenv("TELEMLOG")) { Telemetry t; if (m.read_telemetry(t) && f % atoi(tl) == 0) fprintf(stderr, "T %d spd=%.2f skid=%.2f thr=%.2f brk=%.2f turn=%.3f trac=%.2f rpm=%.1f yv=%.3f xm=%.3f zm=%.3f xl=%.3f zl=%.3f d2c=%.1f road=%d onroad=%d bump=%d spin=%d air=%d/%d gear=%d yv0=%.2f dy0=%.2f col=%d\n", f, t.speed, t.skid, t.throttle, t.brake, t.turn, t.traction, t.rpm, t.y_vel, t.x_mom, t.z_mom, t.x_lean, t.z_lean, t.dist_to_center, (int)t.road_friction, t.onroad, t.bump, t.spin, t.air_front, t.air_rear, t.gear, t.susp_yv[0], t.susp_dy[0], t.collided[0]); }
 		if (f % 60 == 0) fprintf(stderr, "frame %d pc=%06X quads=%llu vis=%dx%d\n", f, m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
-	if (getenv("QHIST")) { for (int i = 0; i < 20; i++) fprintf(stderr, "%llu ", (unsigned long long)m.m_qhist[i]); fprintf(stderr, "<- quad centres per 64 px from x=-256\n"); }
+	if (const uint64_t *h = m.cpu_hits()) { std::vector<std::pair<uint64_t, int>> v; uint64_t tot = 0; for (int i = 0; i < 2048; i++) { v.push_back({h[i], i}); tot += h[i]; } std::sort(v.rbegin(), v.rend()); fprintf(stderr, "OPS total %llu%c", (unsigned long long)tot, 10); for (int i = 0; i < 25; i++) fprintf(stderr, "OP %03X %llu (%.1f%%)%c", v[i].second, (unsigned long long)v[i].first, 100.0 * v[i].first / double(tot), 10); }
+	if (getenv("PROFILE")) prof.stop_and_report();
+	if (getenv("CPUTIME")) fprintf(stderr, "CPUTIME main cpu %.1f ms, dsp %.1f ms over %d frames (%.3f ms/frame)%c", m.perf_cpu_ms, m.perf_dcs_ms, frames, m.perf_cpu_ms / frames, 10);
 	if (getenv("RAMUSE")) m.debug_ram_usage();
 	if (const char *tr = getenv("TEXRAW")) { FILE *tf = fopen(tr, "wb"); fwrite(m.texture_ram(), 1, 0x400000, tf); fclose(tf); }
 	if (const char *td = getenv("TEXDUMP"))

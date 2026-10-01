@@ -66,6 +66,15 @@ public:
 	uint32_t reg(int r) const { return m_r[r].i32[0]; }
 	bool idling() const { return m_is_idling; }
 
+	// Execution hooks: when the program counter reaches one of hook_pc (before the instruction runs), on_hook() is called from the
+	// run loop. If it returns true the rest of the current time slice is skipped (used to fast-forward the game's idle loops).
+	uint32_t hook_pc[3] = {~0u, ~0u, ~0u};
+	std::function<bool()> on_hook;
+	void skip_rest_of_slice() { m_icount = 0; }
+#ifdef C3X_PROFILE
+	uint64_t m_hits[2048] = {};
+#endif
+
 	std::function<void(int)> on_xf0;
 	std::function<void(int)> on_xf1;
 

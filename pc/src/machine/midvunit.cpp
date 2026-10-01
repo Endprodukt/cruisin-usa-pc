@@ -11,6 +11,21 @@
 #include "../../third_party/miniz/miniz.h"
 #include "default_nvram.h"
 
+#include <windows.h>
+namespace {
+struct PerfTimer
+{
+	double &acc;
+	LARGE_INTEGER t0;
+	explicit PerfTimer(double &a) : acc(a) { QueryPerformanceCounter(&t0); }
+	~PerfTimer()
+	{
+		static LARGE_INTEGER f = [] { LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x; }();
+		LARGE_INTEGER t1; QueryPerformanceCounter(&t1);
+		acc += double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(f.QuadPart);
+	}
+};
+}
 namespace {
 
 constexpr uint64_t CPU_HZ = 25000000;          // 50 MHz / 2 clocks per instruction cycle
@@ -106,6 +121,9 @@ MidVUnit::MidVUnit()
 		m_bus->rpage[q] = &m_ram1[p * tms320c3x_device::PAGE_WORDS];
 		m_bus->wpage[q] = &m_ram1[p * tms320c3x_device::PAGE_WORDS];
 	}
+	// internal RAM (game code runs from it): fast page instead of the slow bus path
+	m_bus->rpage[0x809000 >> tms320c3x_device::PAGE_SHIFT] = m_iram_page;
+	m_bus->wpage[0x809000 >> tms320c3x_device::PAGE_SHIFT] = m_iram_page;
 	for (int p = 0; p < 0x400000 / tms320c3x_device::PAGE_WORDS; p++)
 		m_bus->rpage[(0xc00000 >> tms320c3x_device::PAGE_SHIFT) + p] = &m_rom[p * tms320c3x_device::PAGE_WORDS];
 
@@ -215,6 +233,7 @@ void MidVUnit::reset()
 	}
 	// boot: the first 128K words of the ROM are copied to RAM at 0
 	std::copy(m_rom.begin(), m_rom.begin() + 0x20000, m_ram0.begin());
+	setup_idle_hooks();
 
 	m_control_data = 0;
 	m_cmos_protected = 0;
@@ -239,8 +258,12 @@ void MidVUnit::reset()
 
 int MidVUnit::run_cpu(int cycles)
 {
-	int used = m_cpu->run(cycles);
-	if (m_pchist_on) m_pchist[m_cpu->pc() >> 8]++;
+	int used;
+	{
+		PerfTimer pt(perf_cpu_ms);
+		used = m_cpu->run(cycles);
+	}
+	if (m_pchist_on) m_pchist[m_cpu->pc() >> 2]++;
 	sync_dcs();
 	return used;
 }
@@ -258,7 +281,10 @@ void MidVUnit::sync_dcs()
 	double use = std::max(0.0, delta - m_dcs_ahead);
 	m_dcs_ahead = std::max(0.0, m_dcs_ahead - delta);
 	if (use > 0)
+	{
+		PerfTimer pt(perf_dcs_ms);
 		m_dcs->advance(use);
+	}
 }
 
 // host -> DCS command byte: make sure the previous byte was consumed first (real hardware
@@ -596,30 +622,6 @@ void MidVUnit::dma_trigger()
 	VQuad q;
 	std::memcpy(q.dma, m_dma_data, sizeof(q.dma));
 	q.page = (m_page_control & 4) ? 1 : 0;
-	if (const char *sk = std::getenv("SKIPQ")) { unsigned v = unsigned(std::strtoul(sk, nullptr, 16)); if (q.dma[0] == v) { m_dma_data_index = 0; return; } }
-	if (m_qpc_on && m_frame_count >= m_qpc_from && m_frame_count < m_qpc_from + 1)
-	{
-		int xs[4], ys[4]; for (int i = 0; i < 4; i++) { xs[i] = int(int16_t(q.dma[2 + i * 2])); ys[i] = int(int16_t(q.dma[3 + i * 2])); }
-		std::fprintf(stderr, "QPC pc=%06X flags=%04X x=%d..%d y=%d..%d\n", m_cpu->pc(), q.dma[0], std::min(std::min(xs[0], xs[1]), std::min(xs[2], xs[3])), std::max(std::max(xs[0], xs[1]), std::max(xs[2], xs[3])),
-		             std::min(std::min(ys[0], ys[1]), std::min(ys[2], ys[3])), std::max(std::max(ys[0], ys[1]), std::max(ys[2], ys[3])));
-		if (std::getenv("QPCFULL")) { for (int i = 0; i < 16; i++) std::fprintf(stderr, "%04X ", q.dma[i]); std::fprintf(stderr, "%c", 10); }
-	}
-	if (m_qhist_on && (q.dma[0] & 0x2000) == 0)
-	{
-		int xs[4]; for (int i = 0; i < 4; i++) xs[i] = int(int16_t(q.dma[2 + i * 2]));
-		int cx = (std::min(std::min(xs[0], xs[1]), std::min(xs[2], xs[3])) + std::max(std::max(xs[0], xs[1]), std::max(xs[2], xs[3]))) / 2;
-		int b = (cx + 256) >> 6;
-		if (b >= 0 && b < 20) m_qhist[b]++;
-	}
-	if (std::getenv("QBIG") && q.dma[0] != 0x0100 && m_gpu)
-	{ int w = int(int16_t(q.dma[4])) - int(int16_t(q.dma[2])); if (w > 300 || w < -300) { std::fprintf(stderr, "BIG f%llu ", (unsigned long long)m_frame_count); for (int i = 0; i < 16; i++) std::fprintf(stderr, "%04X ", q.dma[i]); std::fprintf(stderr, "\n"); } }
-	if (const char *qd = std::getenv("QDUMP"))
-		if (m_gpu && m_frame_count == uint64_t(std::atoi(qd)))
-		{
-			for (int i = 0; i < 16; i++)
-				std::fprintf(stderr, "%04X ", q.dma[i]);
-			std::fprintf(stderr, "\n");
-		}
 	if (m_gpu)
 	{
 		gpu_add_quad(q);
@@ -627,14 +629,8 @@ void MidVUnit::dma_trigger()
 		m_dma_data_index = 0;
 		return;
 	}
-	if (const char *qd = std::getenv("QDUMP"))
-		if (m_frame_count == uint64_t(std::atoi(qd)))
-		{
-			for (int i = 0; i < 16; i++)
-				std::fprintf(stderr, "%04X ", q.dma[i]);
-			std::fprintf(stderr, "\n");
-		}
-	draw_quad(q);
+	if (!skip_raster)
+		draw_quad(q);
 	quads_last_frame++;
 	m_dma_data_index = 0;
 }
@@ -954,7 +950,7 @@ bool MidVUnit::run_frame()
 			m_present_page = m_page_control & 1;
 			gpu_flush_quads();
 			gpu_sync_state();
-			m_gpu->latch(m_present_page);
+			m_gpu->latch(m_present_page, m_vis_h);
 		}
 		if (m_vpos == m_vis_h && !m_gpu)
 		{
@@ -1120,7 +1116,7 @@ void MidVUnit::gpu_sync_state()
 		if (m_ovl_hi[pg] < 0)
 			continue;
 		uint16_t *layer = m_cpu_layer.data() + size_t(pg) * 0x40000;
-		if (!std::getenv("NOOVL")) m_gpu->upload_overlay(pg, layer, m_ovl_lo[pg], m_ovl_hi[pg]);
+		m_gpu->upload_overlay(pg, layer, m_ovl_lo[pg], m_ovl_hi[pg]);
 		// pixels are consumed: clear the valid bits of the uploaded rows
 		for (int y = m_ovl_lo[pg]; y <= m_ovl_hi[pg]; y++)
 			for (int x = 0; x < 512; x++)
@@ -1133,6 +1129,8 @@ void MidVUnit::gpu_flush_shadows()
 {
 	if (!m_gpu || m_gs.empty())
 		return;
+	PerfTimer pt(perf_feed_ms);
+	perf_draws++;
 	gpu_sync_state();
 	m_gpu->draw_shadows(m_gq_page, m_gs.data(), int(m_gs.size()));
 	m_gs.clear();
@@ -1145,6 +1143,9 @@ void MidVUnit::gpu_flush_quads()
 	gpu_flush_shadows();
 	if (m_gq.empty())
 		return;
+	PerfTimer pt(perf_feed_ms);
+	perf_draws++;
+	perf_quads += m_gq.size();
 	gpu_sync_state();
 	m_gpu->draw(m_gq_page, m_gq.data(), int(m_gq.size()));
 	m_gq.clear();
@@ -1198,18 +1199,6 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 			if (rmask & (1 << eff)) g.p[vn * 2] += 0.001f;
 			if (bmask & (1 << eff)) g.p[vn * 2 + 1] += 0.001f;
 		}
-	if (std::getenv("QSTAT"))
-	{
-		static uint64_t nright = 0, nleft = 0, ntotal = 0;
-		float mn = std::min(std::min(vx[0], vx[1]), std::min(vx[2], vx[3])), mx = std::max(std::max(vx[0], vx[1]), std::max(vx[2], vx[3]));
-		ntotal++;
-		static uint64_t hist[20] = {};
-		{ int bkt = int(std::floor((mn + mx) * 0.5f / 64.0f)) + 4; if (bkt >= 0 && bkt < 20) hist[bkt]++; }
-		if (ntotal % 400000 == 0) { for (int i = 0; i < 20; i++) std::fprintf(stderr, "%llu ", (unsigned long long)hist[i]); std::fprintf(stderr, "<- quad centres per 64 px bucket from x=-256\n"); }
-		if (mn >= 512) nright++;
-		if (mx < 0) nleft++;
-		if (ntotal % 200000 == 0) std::fprintf(stderr, "QSTAT total %llu right-only %llu left-only %llu\n", (unsigned long long)ntotal, (unsigned long long)nright, (unsigned long long)nleft);
-	}
 	if (m_wide)
 	{
 		// the page is wider than the arcade's 512 px: game x 0 sits m_wide pixels in. A flat full-screen fill (the per-frame clear)
@@ -1249,6 +1238,7 @@ void MidVUnit::present_gpu()
 {
 	if (!m_gpu)
 		return;
+	PerfTimer pt(perf_feed_ms);
 	m_gpu->present(m_vis_w, m_vis_h);
 }
 
@@ -1298,3 +1288,83 @@ bool MidVUnit::writer_is_2d()
 	m_pc2d[pc] = found ? 1 : 0;
 	return found;
 }
+
+// ---------------------------------------------------------------------------------------
+// Idle loop fast-forward.
+//
+// The game finishes its frame early and then spins until the video interrupt arrives:
+//  (a) a plain wait on a frame counter:   LDI (X),R0 / CMPI (X),R0 / BEQ -2 / RETS
+//  (b) ZSORTWT (OBJ.ASM): bubble-sorts the object list again and again until CLEARRDY is cleared by the interrupt.
+// Once the list is sorted a pass changes nothing, so spinning on until the next time slice has no effect on the game state; the
+// interpreter spent about 40% of its time there. Both loops are recognised by their instruction patterns, so a ROM version
+// that does not contain them simply runs unchanged. Interrupts are only raised between time slices, which is where the skip ends.
+// ---------------------------------------------------------------------------------------
+void MidVUnit::setup_idle_hooks()
+{
+	m_cpu->hook_pc[0] = m_cpu->hook_pc[1] = m_cpu->hook_pc[2] = ~0u;
+	m_cpu->on_hook = nullptr;
+	if (!idle_skip || std::getenv("NOIDLESKIP"))
+		return;
+	const std::vector<uint32_t> &c = m_ram0;
+	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u;
+	for (uint32_t i = 0; i + 8 < 0x20000; i++)
+	{
+		// (a)
+		if ((c[i] & 0xffff0000u) == 0x08200000u && (c[i + 1] & 0xffff0000u) == 0x04A00000u && (c[i] & 0xffff) == (c[i + 1] & 0xffff) &&
+		    c[i + 2] == 0x6A05FFFEu && c[i + 3] == 0x78800000u && sync_pc == ~0u)
+		{
+			sync_pc = i + 1;
+			m_idle_sync_addr = c[i] & 0xffff;
+		}
+		// (b)  LDI 1,R0 / STI R0,(CLEARRDY) / SUBI R6,R6 / LDI (OACTIVEI),AR0 / LDI *AR0,AR1
+		if (c[i] == 0x08600001u && (c[i + 1] & 0xffff0000u) == 0x15200000u && c[i + 2] == 0x18060006u &&
+		    (c[i + 3] & 0xffff0000u) == 0x08280000u && c[i + 4] == 0x0849C000u && sort_entry == ~0u)
+		{
+			sort_entry = i;
+			sort_top = i + 2;
+			m_idle_flag_addr = c[i + 1] & 0xffff;
+		}
+	}
+	if (sync_pc == ~0u && sort_top == ~0u)
+		return;
+	m_cpu->hook_pc[0] = sync_pc;
+	m_cpu->hook_pc[1] = sort_entry;
+	m_cpu->hook_pc[2] = sort_top;
+	m_zsort_first = true;
+	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top]() -> bool {
+		uint32_t pc = m_cpu->pc();
+		if (pc == sync_pc)
+		{
+			// R0 still equals the polled word: nothing changes until the next interrupt
+			if (m_ram0[m_idle_sync_addr] == m_cpu->reg(0))
+			{
+				m_cpu->skip_rest_of_slice();
+				return true;
+			}
+			return false;
+		}
+		if (pc == sort_entry)
+		{
+			m_zsort_first = true;   // a new wait begins: the first pass must really run
+			return false;
+		}
+		// loop top of the sorting wait: R6 is the "something was swapped" flag of the pass that just finished
+		if (m_zsort_first)
+		{
+			m_zsort_first = false;
+			return false;
+		}
+		if (m_cpu->reg(6) == 0 && m_ram0[m_idle_flag_addr] != 0)
+		{
+			m_cpu->skip_rest_of_slice();
+			return true;
+		}
+		return false;
+	};
+}
+
+#ifdef C3X_PROFILE
+const uint64_t *MidVUnit::cpu_hits() const { return m_cpu->m_hits; }
+#else
+const uint64_t *MidVUnit::cpu_hits() const { return nullptr; }
+#endif

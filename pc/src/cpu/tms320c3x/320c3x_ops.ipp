@@ -86,7 +86,7 @@ inline void tms320c3x_device::execute_one()
 	uint32_t op = ROPCODE(m_pc);
 	burn_cycle(1);
 	m_pc++;
-#if (TMS320C3X_LOG_OPCODE_USAGE)
+#ifdef C3X_PROFILE
 	m_hits[op >> 21]++;
 #endif
 	(this->*s_tms320c3x_ops[op >> 21])(op);

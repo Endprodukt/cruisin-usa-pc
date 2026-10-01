@@ -15,6 +15,7 @@
 #include "input/controls.h"
 #include "input/devices.h"
 #include "launcher/launcher.h"
+#include "perf.h"
 #include "machine/midvunit.h"
 #include "machine/telemetry.h"
 #include "outputs/outputs.h"
@@ -202,6 +203,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	if (std::string v = arg_value(a, "--shot-frames"); !v.empty()) shot_frames = std::atoi(v.c_str());
 	if (std::string v = arg_value(a, "--shot-seq"); !v.empty()) shot_seq = std::max(1, std::atoi(v.c_str()));
 	bool autoplay = a.find("--autoplay") != std::string::npos;
+	PerfStats perf;
+	const bool bench = a.find("--bench") != std::string::npos;
+	if (a.find("--perf") != std::string::npos) { perf.on = true; perf.log_path = exe_relative("perf.log"); }
 	if (std::string v = arg_value(a, "--rom"); !v.empty()) S.rom = v;
 	if (std::string v = arg_value(a, "--version"); !v.empty()) S.version = v;
 	if (std::string v = arg_value(a, "--nvram"); !v.empty()) S.nvram = v;
@@ -421,7 +425,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 		// emulation runs on its own clock (the machine's 57.9 Hz), independent of the display refresh
 		bool ran = false;
-		for (int guard = 0; t >= next_frame && guard < 3; guard++)
+		const double perf_t0 = perf.on ? perf_now_ms() : 0.0;
+		const double feed0 = m.perf_feed_ms, cpu0 = m.perf_cpu_ms, dcs0 = m.perf_dcs_ms; const uint64_t draws0 = m.perf_draws, quads0 = m.perf_quads;
+		for (int guard = 0; t >= next_frame && guard < (bench ? 1 : 3); guard++)
 		{
 			bool focused = GetForegroundWindow() == hwnd;
 			controls.update(m.inputs, focused);
@@ -443,10 +449,15 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			ran = true;
 		}
 		if (t - next_frame > 0.25) next_frame = t;
+		if (bench) next_frame = 0;   // --bench: run frames back to back (no pacing) to measure throughput
 
+		if (perf.on && ran) perf.emulated(perf_now_ms() - perf_t0, m.perf_feed_ms - feed0, m.perf_draws - draws0, m.perf_quads - quads0, m.perf_cpu_ms - cpu0, m.perf_dcs_ms - dcs0);
 		bool vsync = video ? S.video.vsync : false;
 		if (!ran && !vsync) { Sleep(1); continue; }
+		const double perf_p0 = perf.on ? perf_now_ms() : 0.0;
 		present();
+		if (perf.on && video) perf.gpu(video->last_gpu_ms());
+		if (perf.on) { perf.presented(perf_now_ms() - perf_p0); if (!perf.summary().empty()) SetWindowTextA(hwnd, ("Cruis'n USA (PC) - " + perf.summary()).c_str()); }
 
 		if (ran && !shot.empty() && ++shot_count >= shot_frames)
 		{

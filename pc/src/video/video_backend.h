@@ -70,10 +70,11 @@ public:
 	virtual void draw_shadows(int page, const GpuQuad *quads, int count) = 0;
 	// freeze the given page as the displayed image (what the monitor shows at vblank); draws recorded
 	// afterwards (the game already renders the next frame) must not show up
-	virtual void latch(int page) = 0;
+	virtual void latch(int page, int visible_rows) = 0;   // freeze the picture of a page (only the rows the monitor shows are copied)
 	virtual void present(int vis_w, int vis_h) = 0;      // draw the latched image to the window
 
 	// grab the latched (displayed) image at internal resolution (RGBA8, top-down)
+	virtual double last_gpu_ms() const { return -1.0; }   // GPU time of the last finished frame (-1 = not measured)
 	virtual bool read_display(std::vector<uint32_t> &out, int &w, int &h) = 0;
 };
 
