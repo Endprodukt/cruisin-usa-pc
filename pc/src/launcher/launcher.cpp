@@ -1,6 +1,7 @@
 #include "launcher.h"
 
 #include <windows.h>
+#include <shellapi.h>
 #include <GL/gl.h>
 
 #include <algorithm>
@@ -239,6 +240,24 @@ void page_video(Launcher &L)
 	edited(L, ImGui::Checkbox("Smooth scaling to the window", &v.smooth_output));
 	edited(L, ImGui::Checkbox("Integer scaling", &v.integer_scale));
 	edited(L, ImGui::Checkbox("VSync", &v.vsync));
+
+	ImGui::SeparatorText("Textures");
+	ImGui::BeginDisabled(!gpu);
+	edited(L, ImGui::Checkbox("Export textures while playing", &v.export_textures));
+	help("Writes every texture that gets drawn to textures/dump next to the program as a 256 x 256 PNG (tex_<page>_<palette>_<hash>.png). "
+	     "Upscale them with any tool and keep the names. F11 toggles the export in game.");
+	edited(L, ImGui::Checkbox("Use replacement textures", &v.replace_textures));
+	help("PNGs with the same names in textures/replace (square, 256 to 2048 px; all of them are brought to the largest size) are drawn instead "
+	     "of the original textures. Takes effect at the next start of the game.");
+	if (ImGui::Button("Open texture folder"))
+	{
+		std::string d = exe_relative("textures");
+		CreateDirectoryA(d.c_str(), nullptr);
+		CreateDirectoryA((d + "/dump").c_str(), nullptr);
+		CreateDirectoryA((d + "/replace").c_str(), nullptr);
+		ShellExecuteA(nullptr, "open", d.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+	}
+	ImGui::EndDisabled();
 
 	ImGui::SeparatorText("Shadows");
 	ImGui::BeginDisabled(!gpu);

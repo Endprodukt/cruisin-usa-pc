@@ -213,6 +213,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	if (std::string v = arg_value(a, "--aa"); !v.empty()) S.video.aa = std::clamp(std::atoi(v.c_str()), 0, 3);
 	if (std::string v = arg_value(a, "--aspect"); !v.empty()) S.video.aspect = v == "16:9" ? AspectMode::Wide169 : v == "21:9" ? AspectMode::Wide219 : AspectMode::Native43;
 	if (std::string v = arg_value(a, "--hud"); !v.empty()) S.video.hud = v == "edges" ? HudPlacement::Edges : v == "25" ? HudPlacement::Quarter25 : v == "50" ? HudPlacement::Half50 : v == "75" ? HudPlacement::Quarter75 : HudPlacement::Centre;
+	if (a.find("--export-textures") != std::string::npos) S.video.export_textures = true;
+	if (std::string v = arg_value(a, "--replace-textures"); !v.empty()) S.video.replace_textures = v != "0";
 	if (std::string v = arg_value(a, "--scale"); !v.empty()) S.video.internal_scale = std::clamp(std::atoi(v.c_str()), 1, 8);
 	if (std::string v = arg_value(a, "--vsync"); !v.empty()) S.video.vsync = v != "0";
 	if (std::string v = arg_value(a, "--filter"); !v.empty()) S.video.texture_filter = v != "0";
@@ -311,6 +313,17 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		}
 		RECT cr; GetClientRect(hwnd, &cr);
 		video->resize(cr.right, cr.bottom);
+		{
+			TexRepl::Config tc;
+			tc.dump = S.video.export_textures;
+			tc.replace = S.video.replace_textures;
+			tc.dump_dir = exe_relative("textures/dump");
+			tc.repl_dir = exe_relative("textures/replace");
+			m.texrepl.configure(tc);
+			std::string tlog;
+			m.texrepl.load(tlog);
+			if (!tlog.empty()) OutputDebugStringA(("textures: " + tlog).c_str());
+		}
 		m.attach_video_backend(video.get());
 		m.set_shadow_mode(int(S.video.shadows));
 	}
@@ -392,6 +405,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 		// hotkeys: F5/F6 internal resolution, F7 texture filter, F8 vsync, F9 output smoothing
 		bool vchanged = false;
+		if (g_pressed[VK_F11] && video) { S.video.export_textures = !S.video.export_textures; TexRepl::Config tc; tc.dump = S.video.export_textures; tc.replace = S.video.replace_textures; tc.dump_dir = exe_relative("textures/dump"); tc.repl_dir = exe_relative("textures/replace"); m.texrepl.configure(tc); }
 		if (g_pressed[VK_F3]) { S.video.aa = (S.video.aa + 1) % 4; vchanged = true; }
 		if (g_pressed[VK_F4]) { S.video.shadows = ShadowMode((int(S.video.shadows) + 1) % 3); m.set_shadow_mode(int(S.video.shadows)); vchanged = true; }
 		if (g_pressed[VK_F5]) { S.video.internal_scale = std::max(1, S.video.internal_scale - 1); vchanged = true; }

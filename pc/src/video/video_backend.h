@@ -55,6 +55,9 @@ public:
 
 	// state uploads (inclusive first/last indices)
 	virtual void upload_palette(const uint32_t *argb32768, int first, int last) = 0;
+	// optional texture replacement pack: `layers` RGBA8 pages of res x res, selected per polygon by GpuQuad::edge (layer + 1)
+	virtual bool init_replacements(int res, int layers) = 0;
+	virtual void upload_replacement(int layer, const uint8_t *rgba) = 0;
 	virtual void upload_texture_rows(const uint8_t *ram4mb, int first_row, int last_row) = 0;   // 256-byte rows
 	// CPU-drawn pixels (index | 0x8000 marks a valid pixel) composited into a page
 	// where the CPU-drawn layer (HUD text and gauges) is placed on the wide page, as extra pixels from the page's left edge for the

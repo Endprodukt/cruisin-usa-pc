@@ -352,6 +352,7 @@ void MidVUnit::bus_write(offs_t addr, uint32_t data)
 		}
 		m_textureram[o] = uint8_t(data);
 		m_textureram[o + 1] = uint8_t(data >> 8);
+		m_tex_gen++;
 		return;
 	}
 	if (addr >= 0x9c0000 && addr < 0x9c2000)
@@ -601,6 +602,7 @@ void MidVUnit::dma_trigger()
 		int xs[4], ys[4]; for (int i = 0; i < 4; i++) { xs[i] = int(int16_t(q.dma[2 + i * 2])); ys[i] = int(int16_t(q.dma[3 + i * 2])); }
 		std::fprintf(stderr, "QPC pc=%06X flags=%04X x=%d..%d y=%d..%d\n", m_cpu->pc(), q.dma[0], std::min(std::min(xs[0], xs[1]), std::min(xs[2], xs[3])), std::max(std::max(xs[0], xs[1]), std::max(xs[2], xs[3])),
 		             std::min(std::min(ys[0], ys[1]), std::min(ys[2], ys[3])), std::max(std::max(ys[0], ys[1]), std::max(ys[2], ys[3])));
+		if (std::getenv("QPCFULL")) { for (int i = 0; i < 16; i++) std::fprintf(stderr, "%04X ", q.dma[i]); std::fprintf(stderr, "%c", 10); }
 	}
 	if (m_qhist_on && (q.dma[0] & 0x2000) == 0)
 	{
@@ -1073,6 +1075,7 @@ void MidVUnit::attach_video_backend(IVideoBackend *gpu)
 	// everything the GPU knows is stale: push full palette / texture state on the next sync
 	m_pal_lo = 0; m_pal_hi = 0x7fff;
 	m_tex_lo = 0; m_tex_hi = 16383;
+	m_repl_pending = texrepl.layers() > 0;
 	for (int pg = 0; pg < 2; pg++)
 	{
 		m_ovl_lo[pg] = 0; m_ovl_hi[pg] = 511;
@@ -1086,6 +1089,12 @@ void MidVUnit::gpu_sync_state()
 {
 	if (!m_gpu)
 		return;
+	if (m_repl_pending)
+	{
+		m_repl_pending = false;
+		if (m_gpu->init_replacements(texrepl.resolution(), texrepl.layers()))
+			for (int i = 0; i < texrepl.layers(); i++) m_gpu->upload_replacement(i, texrepl.layer_rgba(i).data());
+	}
 	if (m_pal_hi >= 0)
 	{
 		m_gpu->upload_palette(m_palette_rgb.data(), m_pal_lo, m_pal_hi);
@@ -1111,7 +1120,7 @@ void MidVUnit::gpu_sync_state()
 		if (m_ovl_hi[pg] < 0)
 			continue;
 		uint16_t *layer = m_cpu_layer.data() + size_t(pg) * 0x40000;
-		m_gpu->upload_overlay(pg, layer, m_ovl_lo[pg], m_ovl_hi[pg]);
+		if (!std::getenv("NOOVL")) m_gpu->upload_overlay(pg, layer, m_ovl_lo[pg], m_ovl_hi[pg]);
 		// pixels are consumed: clear the valid bits of the uploaded rows
 		for (int y = m_ovl_lo[pg]; y <= m_ovl_hi[pg]; y++)
 			for (int x = 0; x < 512; x++)
@@ -1225,6 +1234,8 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 		}
 	}
 	g.edge = 0;
+	if (texrepl.active() && (d[0] & 0x300) == 0x100 && (d[0] & 0xc00) != 0x400)
+		g.edge = uint32_t(texrepl.lookup(d[14], d[1], d[0] & 0xc00, m_textureram.data(), m_palette_rgb.data(), m_tex_gen));
 	g.flags = d[0];
 	g.pixdata = d[1];
 	g.texbase = d[14];

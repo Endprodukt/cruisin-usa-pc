@@ -197,6 +197,8 @@ bool Settings::load(const std::string &path)
 	r.boolean("video", "texture_filter", video.texture_filter);
 	r.boolean("video", "smooth_output", video.smooth_output);
 	r.integer("video", "aa", video.aa, 0, 3);
+	r.boolean("video", "export_textures", video.export_textures);
+	r.boolean("video", "replace_textures", video.replace_textures);
 	r.boolean("video", "widescreen_hack", video.widescreen_hack);
 	r.choice("video", "hud", video.hud, kHud);
 	r.integer("video", "draw_distance", video.draw_distance, 25, 400);
@@ -279,7 +281,8 @@ bool Settings::save(const std::string &path) const
 	  << "\n; internal_scale 1..8 x the arcade's 512x400\ninternal_scale = " << video.internal_scale
 	  << "\n; aspect: 4:3 | 16:9 | 21:9 | stretch\naspect = " << to_string(video.aspect)
 	  << "\ninteger_scale = " << b(video.integer_scale) << "\nvsync = " << b(video.vsync)
-	  << "\n; aa: 0 off | 1..3 FXAA light/normal/strong (post filter; internal_scale above 1 is supersampling)\naa = " << video.aa << "\ntexture_filter = " << b(video.texture_filter) << "\nsmooth_output = " << b(video.smooth_output)
+	  << "\n; aa: 0 off | 1..3 FXAA light/normal/strong (post filter; internal_scale above 1 is supersampling)\naa = " << video.aa << "\n; textures: export_textures writes every drawn texture to textures/dump (tex_BBBB_PPPP_HHHHHHHH.png); files with the same\n; name in textures/replace are drawn instead (any square size up to 2048)\nexport_textures = " << b(video.export_textures) << "\nreplace_textures = " << b(video.replace_textures)
+	  << "\ntexture_filter = " << b(video.texture_filter) << "\nsmooth_output = " << b(video.smooth_output)
 	  << "\n; reserved for the widescreen / rendering stage\nwidescreen_hack = " << b(video.widescreen_hack)
 	  << "\nhud = " << to_string(video.hud) << "\ndraw_distance = " << video.draw_distance
 	  << "\n; shadows: original (the arcade's dithered quads) | modern (soft blended) | off\nshadows = " << to_string(video.shadows)

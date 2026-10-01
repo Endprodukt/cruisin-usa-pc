@@ -130,9 +130,10 @@ public:
 		vkDeviceWaitIdle(m_dev);
 		destroy_swapchain();
 		destroy_pages();
-		for (Img *i : {&m_tex_ram, &m_tex_pal, &m_tex_ovl}) destroy_img(*i);
+		for (Img *i : {&m_tex_ram, &m_tex_pal, &m_tex_ovl, &m_repl}) destroy_img(*i);
 		for (Buf *b : {&m_instbuf, &m_stage, &m_ubo}) destroy_buf(*b);
 		vkDestroySampler(m_dev, m_samp_nearest, nullptr);
+		vkDestroySampler(m_dev, m_samp_rep, nullptr);
 		vkDestroySampler(m_dev, m_samp_linear, nullptr);
 		vkDestroyPipeline(m_dev, m_pipe_quad, nullptr);
 		vkDestroyPipeline(m_dev, m_pipe_present, nullptr);
@@ -180,6 +181,53 @@ public:
 	{
 		int r0 = first >> 8, r1 = last >> 8;
 		copy_rows_to_image(m_tex_pal, argb + r0 * 256, 256 * 4, 256, r0, r1 - r0 + 1);
+	}
+
+	bool init_replacements(int res, int layers) override
+	{
+		submit_wait();
+		vkDeviceWaitIdle(m_dev);
+		destroy_img(m_repl);
+		std::string err;
+		if (!make_array_image(m_repl, res, res, layers, err)) { make_array_image(m_repl, 1, 1, 1, err); m_repl_res = 0; }
+		else m_repl_res = res;
+		begin_cb();
+		{
+			VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+			b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.image = m_repl.img; b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, uint32_t(m_repl_res ? layers : 1)};
+			vkCmdPipelineBarrier(m_cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+		}
+		submit_wait();
+		rewrite_sets();
+		return m_repl_res > 0;
+	}
+
+	void upload_replacement(int layer, const uint8_t *rgba) override
+	{
+		if (m_repl_res <= 0) return;
+		const size_t bytes = size_t(m_repl_res) * size_t(m_repl_res) * 4;
+		begin_cb();
+		if (m_stage_off + bytes > m_stage.size) { submit_wait(); begin_cb(); }
+		std::memcpy(m_stage.map + m_stage_off, rgba, bytes);
+		VkImageSubresourceRange rg{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, uint32_t(layer), 1};
+		VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+		b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.image = m_repl.img; b.subresourceRange = rg;
+		b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		vkCmdPipelineBarrier(m_cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+		VkBufferImageCopy c{};
+		c.bufferOffset = m_stage_off;
+		c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, uint32_t(layer), 1};
+		c.imageExtent = {uint32_t(m_repl_res), uint32_t(m_repl_res), 1};
+		vkCmdCopyBufferToImage(m_cb, m_stage.buf, m_repl.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+		b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		vkCmdPipelineBarrier(m_cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+		m_stage_off += (bytes + 255) & ~size_t(255);
 	}
 
 	void upload_texture_rows(const uint8_t *ram, int first, int last) override
@@ -571,14 +619,36 @@ private:
 		       make_buffer(m_ubo, UBO_BYTES, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true, err);
 	}
 
+	bool make_array_image(Img &im, int w, int h, int layers, std::string &err)
+	{
+		VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+		ii.imageType = VK_IMAGE_TYPE_2D; ii.format = VK_FORMAT_R8G8B8A8_UNORM; ii.extent = {uint32_t(w), uint32_t(h), 1};
+		ii.mipLevels = 1; ii.arrayLayers = uint32_t(layers); ii.samples = VK_SAMPLE_COUNT_1_BIT;
+		ii.tiling = VK_IMAGE_TILING_OPTIMAL; ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT; ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VKCHECK(vkCreateImage(m_dev, &ii, nullptr, &im.img), "vkCreateImage(array)");
+		VkMemoryRequirements mr;
+		vkGetImageMemoryRequirements(m_dev, im.img, &mr);
+		VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+		ai.allocationSize = mr.size;
+		ai.memoryTypeIndex = find_mem(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VKCHECK(vkAllocateMemory(m_dev, &ai, nullptr, &im.mem), "vkAllocateMemory(array)");
+		vkBindImageMemory(m_dev, im.img, im.mem, 0);
+		VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+		vi.image = im.img; vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY; vi.format = ii.format;
+		vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, uint32_t(layers)};
+		VKCHECK(vkCreateImageView(m_dev, &vi, nullptr, &im.view), "vkCreateImageView(array)");
+		return true;
+	}
+
 	bool create_static_images(std::string &err)
 	{
 		const VkImageUsageFlags u = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		if (!make_image(m_tex_ram, 256, 16384, VK_FORMAT_R8_UINT, u, err)) return false;
 		if (!make_image(m_tex_pal, 256, 128, VK_FORMAT_B8G8R8A8_UNORM, u, err)) return false;
 		if (!make_image(m_tex_ovl, 512, 512, VK_FORMAT_R16_UINT, u, err)) return false;
+		if (!make_array_image(m_repl, 1, 1, 1, err)) return false;   // placeholder until a replacement pack is loaded
 		begin_cb();
-		for (Img *im : {&m_tex_ram, &m_tex_pal, &m_tex_ovl})
+		for (Img *im : {&m_tex_ram, &m_tex_pal, &m_tex_ovl, &m_repl})
 			barrier(im->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_ACCESS_SHADER_READ_BIT);
 		submit_wait();
@@ -594,6 +664,8 @@ private:
 		VKCHECK(vkCreateSampler(m_dev, &si, nullptr, &m_samp_nearest), "sampler");
 		si.magFilter = si.minFilter = VK_FILTER_LINEAR;
 		VKCHECK(vkCreateSampler(m_dev, &si, nullptr, &m_samp_linear), "sampler");
+		si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		VKCHECK(vkCreateSampler(m_dev, &si, nullptr, &m_samp_rep), "sampler");
 		return true;
 	}
 
@@ -666,18 +738,19 @@ private:
 
 	bool create_descriptors(std::string &err)
 	{
-		VkDescriptorSetLayoutBinding b[3]{};
+		VkDescriptorSetLayoutBinding b[4]{};
 		b[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 		b[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 		b[2] = {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+		b[3] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 		VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-		li.bindingCount = 3; li.pBindings = b;
+		li.bindingCount = 4; li.pBindings = b;
 		VKCHECK(vkCreateDescriptorSetLayout(m_dev, &li, nullptr, &m_dsl), "descriptor set layout");
 		VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 		pli.setLayoutCount = 1; pli.pSetLayouts = &m_dsl;
 		VKCHECK(vkCreatePipelineLayout(m_dev, &pli, nullptr, &m_pl), "pipeline layout");
 
-		VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 5}};
+		VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 5}};
 		VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
 		pi.maxSets = 5; pi.poolSizeCount = 2; pi.pPoolSizes = ps;
 		VKCHECK(vkCreateDescriptorPool(m_dev, &pi, nullptr, &m_dpool), "descriptor pool");
@@ -698,12 +771,21 @@ private:
 		VkDescriptorImageInfo i0{s0, v0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 		VkDescriptorImageInfo i1{s1, v1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 		VkDescriptorBufferInfo bi{m_ubo.buf, 0, sizeof(Params)};
-		VkWriteDescriptorSet w[3]{};
-		for (int i = 0; i < 3; i++) { w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[i].dstSet = set; w[i].descriptorCount = 1; }
+		VkDescriptorImageInfo i2{m_samp_rep, m_repl.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+		VkWriteDescriptorSet w[4]{};
+		for (int i = 0; i < 4; i++) { w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[i].dstSet = set; w[i].descriptorCount = 1; }
 		w[0].dstBinding = 0; w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &i0;
 		w[1].dstBinding = 1; w[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[1].pImageInfo = &i1;
 		w[2].dstBinding = 3; w[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; w[2].pBufferInfo = &bi;
-		vkUpdateDescriptorSets(m_dev, 3, w, 0, nullptr);
+		w[3].dstBinding = 2; w[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[3].pImageInfo = &i2;
+		vkUpdateDescriptorSets(m_dev, 4, w, 0, nullptr);
+	}
+
+	void rewrite_sets()
+	{
+		write_set(m_set_quad, m_tex_ram.view, m_samp_nearest, m_tex_pal.view, m_samp_nearest);
+		write_set(m_set_ovl, m_tex_ovl.view, m_samp_nearest, m_tex_pal.view, m_samp_nearest);
+		write_present_sets();
 	}
 
 	void write_present_sets()
@@ -929,7 +1011,9 @@ private:
 
 	Buf m_instbuf, m_stage, m_ubo;
 	size_t m_instbuf_off = 0, m_stage_off = 0, m_ubo_off = 0;
-	Img m_tex_ram, m_tex_pal, m_tex_ovl;
+	Img m_tex_ram, m_tex_pal, m_tex_ovl, m_repl;
+	VkSampler m_samp_rep = VK_NULL_HANDLE;
+	int m_repl_res = 0;
 	Img m_page[2], m_disp;
 	VkFramebuffer m_page_fb[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 	VkSampler m_samp_nearest = VK_NULL_HANDLE, m_samp_linear = VK_NULL_HANDLE;

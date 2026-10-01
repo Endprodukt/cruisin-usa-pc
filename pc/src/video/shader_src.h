@@ -60,6 +60,7 @@ layout(location = 5) flat in uvec4 f_misc;
 
 layout(BIND(0)) uniform usampler2D u_tex;    // 256 x 16384, R8UI texture RAM
 layout(BIND(1)) uniform sampler2D u_pal;     // 256 x 128, RGBA8 palette (32768 entries)
+layout(BIND(2)) uniform sampler2DArray u_repl; // replacement textures (f_misc.w = layer + 1)
 layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; vec4 pc; } u_par;
 
 layout(location = 0) out vec4 o_color;
@@ -131,6 +132,14 @@ void main()
 	if (!textured || mode == 0x400u)
 	{
 		o_color = vec4(palette(pix + (flags & 0xffu)), 1.0);
+		return;
+	}
+
+	if (f_misc.w != 0u)
+	{
+		vec4 rc = texture(u_repl, vec3(uv * (1.0 / 256.0), float(f_misc.w - 1u)));
+		if (mode != 0u && rc.a < 0.5) discard;
+		o_color = vec4(rc.rgb, 1.0);
 		return;
 	}
 

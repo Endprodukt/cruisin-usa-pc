@@ -41,6 +41,7 @@ using GLchar_ = char;
 #define GL_TRIANGLE_STRIP 0x0005
 #define GL_MAX_TEXTURE_SIZE_ 0x0D33
 #define GL_R8 0x8229
+#define GL_TEXTURE_2D_ARRAY 0x8C1A
 
 #define WGL_CONTEXT_MAJOR_VERSION_ARB 0x2091
 #define WGL_CONTEXT_MINOR_VERSION_ARB 0x2092
@@ -78,6 +79,8 @@ using GLchar_ = char;
 	X(GLenum, glCheckFramebufferStatus, (GLenum))                                                       \
 	X(void, glActiveTexture, (GLenum))                                                                  \
 	X(void, glTexStorage2D, (GLenum, GLsizei, GLenum, GLsizei, GLsizei))                                \
+	X(void, glTexStorage3D, (GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLsizei))                       \
+	X(void, glTexSubImage3D, (GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void *)) \
 	X(void, glCopyImageSubData, (GLuint, GLenum, GLint, GLint, GLint, GLint, GLuint, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei))
 
 #define X(ret, name, args) using PFN_##name = ret(APIENTRY *) args;
@@ -174,6 +177,30 @@ public:
 		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, r0, 256, r1 - r0 + 1, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, argb + r0 * 256);
 	}
 
+	bool init_replacements(int res, int layers) override
+	{
+		if (m_tex_repl) glDeleteTextures(1, &m_tex_repl);
+		m_tex_repl = 0;
+		glGenTextures(1, &m_tex_repl);
+		glBindTexture(GL_TEXTURE_2D_ARRAY, m_tex_repl);
+		glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA8, res, res, layers);
+		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+		m_repl_res = res;
+		return glGetError() == 0;
+	}
+
+	void upload_replacement(int layer, const uint8_t *rgba) override
+	{
+		if (!m_tex_repl || m_repl_res <= 0) return;
+		glActiveTexture(GL_TEXTURE0 + 2);
+		glBindTexture(GL_TEXTURE_2D_ARRAY, m_tex_repl);
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+		glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, m_repl_res, m_repl_res, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+	}
+
 	void upload_texture_rows(const uint8_t *ram, int first, int last) override
 	{
 		glActiveTexture(GL_TEXTURE0);
@@ -217,6 +244,9 @@ public:
 		glBindTexture(GL_TEXTURE_2D, m_tex_ram);
 		glActiveTexture(GL_TEXTURE0 + 1);
 		glBindTexture(GL_TEXTURE_2D, m_tex_pal);
+		glActiveTexture(GL_TEXTURE0 + 2);
+		glBindTexture(GL_TEXTURE_2D_ARRAY, m_tex_repl);
+		glActiveTexture(GL_TEXTURE0);
 		set_params({m_opt.filter_textures ? 1.0f : 0.0f, page_w_px(), 0, 0}, {0, 0, 0, 0});
 		glBindVertexArray(m_vao_quad);
 		glBindBuffer(GL_ARRAY_BUFFER, m_vbo_inst);
@@ -406,6 +436,14 @@ private:
 		new_tex(m_tex_ram, GL_R8UI, 256, 16384);
 		new_tex(m_tex_pal, GL_RGBA8, 256, 128);
 		new_tex(m_tex_ovl, GL_R16UI, 512, 512);
+		{
+			// a one-layer placeholder so that the array sampler is always backed by a texture
+			glGenTextures(1, &m_tex_repl);
+			glBindTexture(GL_TEXTURE_2D_ARRAY, m_tex_repl);
+			glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA8, 1, 1, 1);
+			glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		}
 
 		glGenVertexArrays(1, &m_vao_empty);
 		glGenVertexArrays(1, &m_vao_quad);
@@ -485,6 +523,8 @@ private:
 	}
 
 	int m_ovl_off[3] = {0, 0, 0};
+	GLuint m_tex_repl = 0;
+	int m_repl_res = 0;
 	int page_w() const { return (512 + 2 * m_opt.wide_margin) * m_opt.scale; }
 	int page_h() const { return 512 * m_opt.scale; }
 	float page_w_px() const { return float(512 + 2 * m_opt.wide_margin); }

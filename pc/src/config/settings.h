@@ -28,6 +28,8 @@ struct VideoSettings
 	bool integer_scale = false;
 	bool vsync = true;
 	bool texture_filter = false;              // bilinear texture filtering on the GPU
+	bool export_textures = false;             // write every drawn texture to textures/dump
+	bool replace_textures = true;             // draw textures from textures/replace when a matching file exists
 	int aa = 0;                               // 0 off, 1..3 FXAA light/normal/strong
 	bool smooth_output = true;                // linear scaling of the final image
 

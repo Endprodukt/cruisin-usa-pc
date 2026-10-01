@@ -5,6 +5,7 @@
 #include <map>
 #include <unordered_map>
 #include "rom_patches.h"
+#include "../video/texrepl.h"
 
 #include <cstdint>
 #include <functional>
@@ -80,6 +81,7 @@ public:
 	void attach_video_backend(IVideoBackend *gpu);
 	void set_shadow_mode(int m) { m_shadow_mode = m; }
 	void set_wide_margin(int m) { m_wide = m; }
+	TexRepl texrepl;                         // texture export / replacement (configure + load before attach_video_backend)
 	void set_hud_spread(float f) { m_hud_spread = f; }   // 0 = HUD in the 4:3 centre, 1 = pushed to the screen edges
 	void present_gpu();                       // flush pending draws and present the display page
 	int  display_page() const { return m_present_page; }
@@ -157,6 +159,8 @@ private:
 	std::unordered_map<uint32_t, uint8_t> m_pc2d;   // writer PC -> is the 2D (rdma) routine
 	bool writer_is_2d();
 	bool in_race() const;
+	uint64_t m_tex_gen = 1;                 // bumped on every texture RAM write
+	bool m_repl_pending = false;
 	int m_wide = 0;                        // widescreen: extra page pixels on each side (quads are shifted by this)
 	int m_shadow_mode = 0;                 // 0 original, 1 modern, 2 off
 	int m_gq_page = 0;
