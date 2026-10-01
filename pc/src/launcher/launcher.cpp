@@ -674,7 +674,7 @@ void controls_ffb(Launcher &L)
 			                                   "a car spinning right throws the wheel to the left.");
 			fx("Off-road surface", f.fx_offroad, "Grass, dirt and gravel beside the road: a coarse rumble that gets stronger and faster with speed.");
 			fx("Roadside objects", f.fx_object, "Running into signs, posts, lamps, bushes, barrels, barriers, cones and animals: a knock and a push from the side the object stood on.");
-			fx("Standstill resistance", f.fx_standstill, "Weight of the wheel while the car stands or crawls (the tyres scrub on the spot). Fades out by about 20 mph.");
+			fx("Standstill resistance", f.fx_standstill, "Weight of the wheel while the car stands or crawls: a smooth resistance against turning (the wheel's own damper effect) and a soft pull to the centre. Fades out by about 20 mph.");
 			fx("Kerb tug", f.fx_kerb, "A sideways tug when a wheel drops off the edge of the road.");
 			fx("Bumps", f.fx_bump, "Bumps, road seams and rails.");
 			fx("Collisions", f.fx_collision, "Other cars hitting the car from any side (also from behind), walls, trees and poles.");

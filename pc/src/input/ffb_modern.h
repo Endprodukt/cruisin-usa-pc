@@ -44,6 +44,8 @@ public:
 	// the front tyre slip angle used last (radians, positive = the tyres point more to the right than the car travels)
 	float slip() const { return m_slip; }
 	float effects() const { return m_fx; }
+	// 0..1 resistance against turning, for the wheel's own damper effect (standing / crawling car)
+	float damper() const { return m_damper; }
 
 private:
 	struct Jolt { float amp = 0, hz = 25, phase = 0, decay = 8; };   // decaying oscillation
@@ -65,7 +67,8 @@ private:
 	float m_thud = 0;                            // short one-sided push when an object is hit
 	float m_wall_cool = 0, m_car_cool = 0;
 	float m_wreck_force = 0; double m_wreck_ph = 0;   // somersault: the wheel is torn from side to side
-	float m_steer_last = 0, m_steer_vel = 0;     // wheel speed (for the resistance at a standstill)
+	float m_steer_s = 0;                         // wheel position, smoothed between the frames' samples
+	float m_damper = 0;
 	bool m_off_road = false;
 
 	// smoothed continuous effects

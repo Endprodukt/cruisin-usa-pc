@@ -175,6 +175,8 @@ struct InputHub::Impl
 	// force feedback
 	int ffb_dev = -1;
 	IDirectInputEffect *effect = nullptr;
+	IDirectInputEffect *damper = nullptr;
+	float last_damper = -1.0f;
 	DWORD ffb_axis_offset = 0;
 	float last_force = 2.0f;
 	// test pulse
@@ -461,7 +463,46 @@ bool InputHub::ffb_begin(int device, const std::string &steer_axis, int gain_pct
 	}
 	m_impl->ffb_dev = device;
 	m_impl->last_force = 2.0f;
+
+	// optional second effect: a damper (resistance proportional to the wheel's speed), started at zero
+	{
+		DICONDITION cond{};
+		DIEFFECT de{};
+		de.dwSize = sizeof(de);
+		de.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
+		de.dwDuration = INFINITE;
+		de.dwGain = DI_FFNOMINALMAX;
+		de.dwTriggerButton = DIEB_NOTRIGGER;
+		de.cAxes = 1;
+		de.rgdwAxes = &m_impl->ffb_axis_offset;
+		de.rglDirection = &dir;
+		de.cbTypeSpecificParams = sizeof(cond);
+		de.lpvTypeSpecificParams = &cond;
+		m_impl->damper = nullptr;
+		m_impl->last_damper = -1.0f;
+		if (FAILED(dev->CreateEffect(GUID_Damper, &de, &m_impl->damper, nullptr)) || !m_impl->damper || FAILED(m_impl->damper->Start(1, 0)))
+		{
+			if (m_impl->damper) m_impl->damper->Release();
+			m_impl->damper = nullptr;
+		}
+	}
 	return true;
+}
+
+void InputHub::ffb_set_damper(float amount)
+{
+	if (!m_impl->damper) return;
+	amount = std::clamp(amount, 0.0f, 1.0f);
+	if (std::fabs(amount - m_impl->last_damper) < 0.02f && !(amount == 0.0f && m_impl->last_damper != 0.0f)) return;
+	m_impl->last_damper = amount;
+	DICONDITION cond{};
+	cond.lPositiveCoefficient = cond.lNegativeCoefficient = LONG(amount * 10000.0f);
+	cond.dwPositiveSaturation = cond.dwNegativeSaturation = 10000;
+	DIEFFECT eff{};
+	eff.dwSize = sizeof(eff);
+	eff.cbTypeSpecificParams = sizeof(cond);
+	eff.lpvTypeSpecificParams = &cond;
+	m_impl->damper->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS);
 }
 
 void InputHub::ffb_set(float force)
@@ -481,6 +522,12 @@ void InputHub::ffb_set(float force)
 
 void InputHub::ffb_end()
 {
+	if (m_impl->damper)
+	{
+		m_impl->damper->Stop();
+		m_impl->damper->Release();
+		m_impl->damper = nullptr;
+	}
 	if (m_impl->effect)
 	{
 		DICONSTANTFORCE cf{};

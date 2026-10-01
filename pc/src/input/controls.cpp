@@ -510,12 +510,14 @@ void Controls::fx_thread_start()
 			QueryPerformanceCounter(&t1);
 			double dt = std::min(0.05, double(t1.QuadPart - t0.QuadPart) / double(f.QuadPart));
 			t0 = t1;
-			float out;
+			float out, damp;
 			{
 				std::lock_guard<std::mutex> lk(m_fx->mtx);
 				out = m_fx->synth.step(dt);
+				damp = m_fx->synth.damper();
 				m_fx->vibration = m_fx->synth.vibration();
 			}
+			if (m_s.ffb.enabled && m_hub.ffb_active()) m_hub.ffb_set_damper(damp * std::min(1.0f, float(m_s.ffb.strength) / 100.0f));
 			if (m_s.ffb.enabled && m_hub.ffb_active()) m_hub.ffb_set(std::clamp(out * m_fx->invert * float(m_s.ffb.strength) / 100.0f, -1.0f, 1.0f));
 			Sleep(4);
 		}

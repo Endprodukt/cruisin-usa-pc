@@ -226,12 +226,16 @@ float FfbModern::step(double dt)
 		m_sat = smooth(m_sat, m_sat_target, fdt, 0.012f);
 		float centre = -m_steer * (0.04f + 0.30f * std::clamp(t.speed / 170.0f, 0.0f, 1.0f)) * m_c.centering;
 		// Standing or crawling, a real wheel is heavy: the tyres scrub on the spot. The physics above give nothing there (no
-		// speed, no slip), so the wheel was limp. A spring towards the centre plus a drag against the wheel's own movement,
-		// both fading out by 40 speed units (about 20 mph) where the aligning torque has taken over.
+		// speed, no slip), so the wheel was limp. Two parts, both fading out by 40 speed units (about 20 mph) where the
+		// aligning torque has taken over:
+		//  * a soft spring towards the centre, from the wheel position smoothed between the frames' samples;
+		//  * resistance against turning. That one must not be computed here: the position arrives 60 times a second in
+		//    coarse steps, and a force made from its differences is grainy ("sand in the gears"). The wheel's own damper
+		//    effect does it from the real wheel speed; here only its amount is set.
 		const float still = 1.0f - std::clamp(t.speed / 40.0f, 0.0f, 1.0f);
-		m_steer_vel = smooth(m_steer_vel, (m_steer - m_steer_last) / std::max(fdt, 1e-4f), fdt, 0.03f);
-		m_steer_last = m_steer;
-		centre += (-m_steer * 0.20f - std::clamp(m_steer_vel * 0.09f, -0.22f, 0.22f)) * still * m_c.standstill;
+		m_steer_s = smooth(m_steer_s, m_steer, fdt, 0.03f);
+		centre += -m_steer_s * 0.16f * still * m_c.standstill;
+		m_damper = std::clamp(0.55f * still * m_c.standstill, 0.0f, 1.0f);
 		bool air_all = t.air_front && t.air_rear;
 		bool air_front = t.air_front != 0;
 		m_air = smooth(m_air, (air_all || air_front) ? 1.0f : 0.0f, fdt, (air_all || air_front) ? 0.08f : 0.03f);
@@ -308,8 +312,8 @@ float FfbModern::step(double dt)
 	else
 	{
 		m_sat = m_surface_amp = m_skid_amp = m_engine_amp = m_air = m_light = 0;
-		m_kick = m_impact = m_thud = m_wreck_force = m_steer_vel = 0;
-		m_steer_last = m_steer;
+		m_kick = m_impact = m_thud = m_wreck_force = m_damper = 0;
+		m_steer_s = m_steer;
 		m_spin_force = m_spin_target = m_spin_dir = 0;
 		for (Jolt &j : m_jolts) j.amp = 0;
 		out = m_c.menu * m_arcade;   // menus: the arcade's own force (attract, track select, results)

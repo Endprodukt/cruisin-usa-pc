@@ -55,6 +55,9 @@ public:
 	// ---- force feedback (DirectInput constant force) and rumble (XInput) ---------------------------
 	bool ffb_begin(int device, const std::string &steer_axis, int device_gain_pct, HWND game_window, std::string &err);
 	void ffb_set(float force);        // -1..+1, call every frame
+	// resistance against turning the wheel, 0..1: a damper effect that the wheel's own electronics compute from the wheel's
+	// speed (smooth at any speed, unlike a force computed here from 60 position samples a second). No-op if unsupported.
+	void ffb_set_damper(float amount);
 	void ffb_end();
 	bool ffb_active() const;
 	int  ffb_device() const;
