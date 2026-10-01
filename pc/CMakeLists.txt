@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(cruisn_pc LANGUAGES C CXX)
+project(cruisn_pc LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,8 +46,19 @@ add_executable(cruisn_usa WIN32
   src/config/settings.cpp
   src/input/devices.cpp src/input/controls.cpp src/input/ffb_modern.cpp
   src/outputs/outputs.cpp
-  src/launcher/launcher.cpp)
+  src/launcher/launcher.cpp
+  assets/cruisn.rc)
+target_include_directories(cruisn_usa PRIVATE assets)
 target_link_libraries(cruisn_usa PRIVATE machine volk imgui)
+
+# Every build puts the program into two places: bin/<config>/ (with the development tools, symbols and whatever the tests
+# leave there) and bin/<config>/RELEASE CLEAN/, which holds only what is handed out: the program and its documents.
+set(RELEASE_CLEAN "$<TARGET_FILE_DIR:cruisn_usa>/RELEASE CLEAN")
+add_custom_command(TARGET cruisn_usa POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${RELEASE_CLEAN}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:cruisn_usa>" "${RELEASE_CLEAN}/"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/docs/release/README.txt" "${CMAKE_SOURCE_DIR}/docs/release/LICENSES.txt" "${RELEASE_CLEAN}/"
+  VERBATIM)
 
 add_library(cpu_adsp STATIC src/cpu/adsp2100/adsp2100.cpp)
 target_include_directories(cpu_adsp PUBLIC src)

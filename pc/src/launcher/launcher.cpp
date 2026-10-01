@@ -14,6 +14,7 @@
 #include "../machine/cmos.h"
 #include "../machine/default_nvram.h"
 #include "../outputs/outputs.h"
+#include "../video/png_io.h"
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_win32.h"
@@ -25,7 +26,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 namespace {
 
 enum Page { P_HOME, P_VIDEO, P_AUDIO, P_CONTROLS, P_GAME, P_DIP, P_OUTPUTS, P_NETWORK, P_ABOUT, P_COUNT };
-const char *const kPageNames[P_COUNT] = {"Home", "Video", "Audio", "Controls", "Game settings", "DIP Switches", "Outputs", "Network", "About"};
+const char *const kPageNames[P_COUNT] = {"Home", "Video", "Audio", "Controls", "Game settings", "DIP Switches", "Outputs", "Network (NOT IMPLEMENTED YET)", "About"};
 
 struct Launcher
 {
@@ -148,19 +149,6 @@ void page_home(Launcher &L)
 	edited(L, ImGui::Checkbox("Show this launcher at startup", &L.s.show_launcher));
 	help("Turn off to start the game directly. Hold Shift while starting, or pass --launcher, to open it again.");
 
-	ImGui::Spacing();
-	ImGui::SeparatorText("Start");
-	if (ImGui::Button("Play", ImVec2(180, 40))) L.play = true;
-	ImGui::SameLine();
-	if (ImGui::Button("Save settings", ImVec2(160, 40)))
-	{
-		L.dirty = false;
-		nv_save(L);
-		L.status = L.s.save(L.ini_path) ? "Saved." : "Saving failed.";
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Quit", ImVec2(120, 40))) L.quit = true;
-	if (!L.status.empty()) ImGui::TextDisabled("%s", L.status.c_str());
 }
 
 void page_video(Launcher &L)
@@ -279,7 +267,7 @@ void page_video(Launcher &L)
 	edited(L, ImGui::Checkbox("Real widescreen (show more of the world at the sides)", &v.widescreen_hack));
 	ImGui::EndDisabled();
 	help("With the aspect ratio set to 16:9 or 21:9 the 3D view is widened instead of stretched: the game's culling is extended and the "
-	     "image gets extra room left and right (about +86 px at 16:9, 192 px at 21:9 on the arcade's 512). The HUD stays in the 4:3 centre. "
+	     "image gets extra room left and right (about +86 px at 16:9, 192 px at 21:9 on the arcade's 512). "
 	     "Takes effect at the next start of the game. Needs the OpenGL or Vulkan renderer.");
 	ImGui::BeginDisabled(!gpu);
 	static const char *const huds[] = {"Centre (4:3)", "Screen edges", "25% towards the edges", "50% towards the edges", "75% towards the edges"};
@@ -480,6 +468,31 @@ void controls_devices(Launcher &L)
 void controls_bindings(Launcher &L)
 {
 	ControlSettings &c = L.s.controls;
+	ImGui::SeparatorText("Wheel, pedals and sticks");
+	ImGui::TextWrapped("Move the control when asked: the axis and its direction are learnt. A pedal also learns whether it rests at one end "
+	                   "of its axis or at the centre (a combined-pedal axis, where it covers one half). Unbound controls fall back to every "
+	                   "device's default.");
+	struct Row { const char *id, *label; AxisBinding *b; float live; };
+	Row rows[] = {{"steer", "Steering", &c.steer, L.ctl.steer_value()}, {"accel", "Accelerator", &c.accel, L.ctl.accel_value() * 2 - 1},
+	              {"brake", "Brake", &c.brake, L.ctl.brake_value() * 2 - 1}};
+	for (Row &r : rows)
+	{
+		ImGui::PushID(r.id);
+		ImGui::Text("%-12s", r.label);
+		ImGui::SameLine(120);
+		if (ImGui::Button((L.ctl.axis_label(*r.b) + "##a").c_str(), ImVec2(420, 0)))
+		{
+			bool left = true;
+			start_capture(L, Launcher::Cap::Axis, r.id, left);
+		}
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Clear")) { *r.b = AxisBinding{}; L.dirty = true; }
+		ImGui::SameLine();
+		ImGui::ProgressBar((r.live + 1.0f) * 0.5f, ImVec2(140, 0), "");
+		ImGui::PopID();
+	}
+
+	ImGui::SeparatorText("Keys and buttons");
 	ImGui::TextWrapped("Bind a keyboard key and/or a controller button per action. Controller buttons are tied to the device that "
 	                   "pressed them (name + button), so a button on the wheel and the same number on a shifter never mix.");
 	static const char *const shifters[] = {"Buttons (sticky)", "Buttons (toggling)", "Sequential", "H-Pattern"};
@@ -552,30 +565,6 @@ void controls_bindings(Launcher &L)
 		L.s.reset_controls_to_defaults();
 		L.s.controls.steer = st; L.s.controls.accel = ac; L.s.controls.brake = br;
 		L.dirty = true;
-	}
-
-	ImGui::SeparatorText("Wheel, pedals and sticks");
-	ImGui::TextWrapped("Move the control when asked: the axis and its direction are learnt. A pedal also learns whether it rests at one end "
-	                   "of its axis or at the centre (a combined-pedal axis, where it covers one half). Unbound controls fall back to every "
-	                   "device's default.");
-	struct Row { const char *id, *label; AxisBinding *b; float live; };
-	Row rows[] = {{"steer", "Steering", &c.steer, L.ctl.steer_value()}, {"accel", "Accelerator", &c.accel, L.ctl.accel_value() * 2 - 1},
-	              {"brake", "Brake", &c.brake, L.ctl.brake_value() * 2 - 1}};
-	for (Row &r : rows)
-	{
-		ImGui::PushID(r.id);
-		ImGui::Text("%-12s", r.label);
-		ImGui::SameLine(120);
-		if (ImGui::Button((L.ctl.axis_label(*r.b) + "##a").c_str(), ImVec2(420, 0)))
-		{
-			bool left = true;
-			start_capture(L, Launcher::Cap::Axis, r.id, left);
-		}
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Clear")) { *r.b = AxisBinding{}; L.dirty = true; }
-		ImGui::SameLine();
-		ImGui::ProgressBar((r.live + 1.0f) * 0.5f, ImVec2(140, 0), "");
-		ImGui::PopID();
 	}
 }
 
@@ -687,8 +676,7 @@ void controls_ffb(Launcher &L)
 			fx("Understeer lightness", f.fx_understeer, "The wheel lightens when the tyres lose grip.");
 			if (ImGui::Button("Reset effect strengths"))
 			{
-				f.fx_surface = 100; f.fx_kerb = 70; f.fx_bump = 100; f.fx_collision = 100; f.fx_spin = 100;
-				f.fx_landing = 100; f.fx_engine = 25; f.fx_aligning = 100; f.fx_centering = 35; f.fx_menu = 100; f.fx_impact = 100; f.fx_skid = 100; f.fx_air = 100; f.fx_understeer = 100; L.dirty = true;
+				f.reset_effects(); L.dirty = true;
 			}
 		}
 	}
@@ -872,8 +860,6 @@ void page_dip(Launcher &L)
 	dip_bit(L, "Cabinet", 0x0020, "Upright", "Sitdown", "Sitdown enables the seat / motion related screens.");
 	dip_bit(L, "Motion", 0x0040, "Off", "On", "Enable motion platform (the game then tests the motion hardware at boot).");
 	dip_bit(L, "Service mode", 0x0080, "Service", "Normal", "");
-	dip_bit(L, "Unused 7", 0x0002, "On", "Off", "");
-	dip_bit(L, "Unused 5", 0x0008, "On", "Off", "");
 	ImGui::SeparatorText("SW3");
 	dip_bit(L, "Coin counters", 0x0100, "2", "1", "");
 	uint16_t coin = L.s.dsw & 0xfe00;
@@ -932,9 +918,65 @@ void page_network(Launcher &L)
 
 void page_about(Launcher &)
 {
-	ImGui::TextWrapped("Cruis'n USA for Windows.\n\nThe TMS320C3x and ADSP-2100 cores and the V-Unit / DCS hardware behaviour follow MAME "
-	                   "(BSD-3-Clause, Aaron Giles and contributors). Zip reading: miniz. Menu: Dear ImGui. Vulkan loading: volk.\n\n"
-	                   "The game's ROMs are not included.");
+	auto head = [](const char *t) { ImGui::Spacing(); ImGui::SeparatorText(t); };
+	auto line = [](const char *what, const char *text) {
+		ImGui::TextColored(ImVec4(0.55f, 0.80f, 1.0f, 1), "%s", what);
+		ImGui::Indent();
+		ImGui::TextWrapped("%s", text);
+		ImGui::Unindent();
+	};
+	ImGui::TextWrapped("Cruis'n USA for Windows");
+	ImGui::TextDisabled("PC port by Endprodukt, 2026   -   github.com/Endprodukt/cruisin-usa-pc");
+	ImGui::Spacing();
+	ImGui::TextWrapped("The original game program runs unchanged on a native implementation of the arcade board (Midway V-Unit: TMS320C31 "
+	                   "CPU, DCS sound board), with a GPU renderer, widescreen, force feedback and this launcher around it. The game's ROMs "
+	                   "are not included: you need your own crusnusa.zip.");
+
+	head("The game");
+	line("Cruis'n USA (1994)", "Created by Eugene Jarvis and the team at TV Games, Inc., built and published by Midway Manufacturing Company "
+	                           "under licence from Nintendo. All rights to the game, its name, artwork and ROMs belong to their owners. "
+	                           "This port is a fan project and is not affiliated with or endorsed by them.");
+	line("Game source code", "\"COPYRIGHT (C) 1994 BY TV GAMES, INC.\" - the original TMS320C31 assembly source, preserved at "
+	                         "github.com/historicalsource/cruisin-usa. It was the reference for every fix, the widescreen and draw "
+	                         "distance changes and the force feedback; this repository is a fork of it.");
+	line("Launcher artwork", "Original Cruis'n USA logo and cabinet artwork (signed Youssi), (C) Midway / Nintendo.");
+
+	head("Made possible by");
+	line("MAME - mamedev.org", "The V-Unit driver (midvunit), the TMS3203x and ADSP-21xx CPU cores and the DCS audio emulation by Aaron Giles "
+	                           "and the MAME contributors are the foundation of the hardware side of this port. Without two decades of "
+	                           "their documentation of this board there would be no port. Licence: BSD-3-Clause.");
+	line("historicalsource", "For preserving and publishing the game's source code.");
+
+	head("Libraries and licences");
+	line("MAME cores and hardware behaviour", "BSD-3-Clause. Copyright (c) Aaron Giles and the MAME team.");
+	line("Dear ImGui 1.91", "MIT licence. Copyright (c) 2014-2025 Omar Cornut. (this launcher)");
+	line("miniz", "MIT licence. Copyright (c) 2013-2014 RAD Game Tools and Valve Software, 2010-2014 Rich Geldreich and Tenacious Software LLC. (zip and PNG)");
+	line("volk", "MIT licence. Copyright (c) 2018-2025 Arseny Kapoulkine. (Vulkan loader)");
+	line("Vulkan headers", "Apache-2.0 OR MIT. Copyright (c) The Khronos Group Inc.");
+	line("Windows APIs", "OpenGL, Vulkan, WASAPI, DirectInput 8 and XInput as shipped with Windows and the graphics driver.");
+	ImGui::Spacing();
+	ImGui::TextDisabled("The full licence texts are in LICENSES.txt next to the program.");
+}
+
+// the launcher's pictures are resources of the program (assets/cruisn.rc)
+GLuint load_picture(const char *name, int &w, int &h)
+{
+	HRSRC res = FindResourceA(nullptr, name, MAKEINTRESOURCEA(10));   // RT_RCDATA
+	if (!res) return 0;
+	HGLOBAL mem = LoadResource(nullptr, res);
+	const uint8_t *data = mem ? static_cast<const uint8_t *>(LockResource(mem)) : nullptr;
+	std::vector<uint8_t> rgba;
+	if (!data || !png_decode_rgba(data, SizeofResource(nullptr, res), w, h, rgba)) return 0;
+	GLuint tex = 0;
+	glGenTextures(1, &tex);
+	glBindTexture(GL_TEXTURE_2D, tex);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F);   // GL_CLAMP_TO_EDGE
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+	return tex;
 }
 
 // ---- window ----------------------------------------------------------------------------------------------------------
@@ -957,14 +999,18 @@ void apply_style()
 	st.WindowRounding = 0; st.FrameRounding = 4; st.GrabRounding = 4; st.TabRounding = 4; st.ChildRounding = 4;
 	st.FramePadding = ImVec2(8, 5); st.ItemSpacing = ImVec2(8, 7);
 	ImVec4 *c = st.Colors;
-	c[ImGuiCol_WindowBg] = ImVec4(0.09f, 0.10f, 0.12f, 1);
-	c[ImGuiCol_ChildBg] = ImVec4(0.11f, 0.12f, 0.15f, 1);
+	c[ImGuiCol_WindowBg] = ImVec4(0.09f, 0.10f, 0.12f, 0);       // the root window: the picture behind it shows
+	c[ImGuiCol_ChildBg] = ImVec4(0.09f, 0.10f, 0.13f, 0.80f);    // the panels: see-through
+	c[ImGuiCol_PopupBg] = ImVec4(0.09f, 0.10f, 0.12f, 0.97f);
+	c[ImGuiCol_Border] = ImVec4(0.45f, 0.55f, 0.75f, 0.35f);
 	c[ImGuiCol_Button] = ImVec4(0.20f, 0.24f, 0.32f, 1);
 	c[ImGuiCol_ButtonHovered] = ImVec4(0.27f, 0.36f, 0.52f, 1);
 	c[ImGuiCol_ButtonActive] = ImVec4(0.33f, 0.46f, 0.70f, 1);
 	c[ImGuiCol_Header] = ImVec4(0.22f, 0.30f, 0.45f, 1);
 	c[ImGuiCol_HeaderHovered] = ImVec4(0.28f, 0.38f, 0.56f, 1);
-	c[ImGuiCol_FrameBg] = ImVec4(0.15f, 0.17f, 0.21f, 1);
+	c[ImGuiCol_FrameBg] = ImVec4(0.15f, 0.17f, 0.21f, 0.90f);
+	c[ImGuiCol_TableRowBg] = ImVec4(0.10f, 0.11f, 0.14f, 0.55f);
+	c[ImGuiCol_TableRowBgAlt] = ImVec4(0.16f, 0.18f, 0.22f, 0.55f);
 	c[ImGuiCol_CheckMark] = ImVec4(0.45f, 0.75f, 1.0f, 1);
 	c[ImGuiCol_SliderGrab] = ImVec4(0.40f, 0.65f, 0.95f, 1);
 	c[ImGuiCol_PlotHistogram] = ImVec4(0.30f, 0.60f, 0.95f, 1);
@@ -980,6 +1026,7 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 	wc.lpfnWndProc = launcher_proc;
 	wc.hInstance = hi;
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hIcon = LoadIconA(hi, MAKEINTRESOURCEA(1));
 	wc.lpszClassName = "CruisnLauncher";
 	wc.hbrBackground = nullptr;
 	RegisterClassA(&wc);
@@ -1013,6 +1060,9 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 	hub.shutdown();
 	hub.init(hwnd, settings.controls.ignore_devices, settings.controls.allow_duplicate_devices);
 
+	int logo_w = 0, logo_h = 0, bg_w = 0, bg_h = 0;
+	const GLuint logo = load_picture("LOGO", logo_w, logo_h), backdrop = load_picture("BACKGROUND", bg_w, bg_h);
+
 	Launcher L(settings, ini_path, hub, controls);
 	if (const char *pg = std::getenv("CRUISN_PAGE")) L.page = Page(std::clamp(std::atoi(pg), 0, int(P_COUNT) - 1));      // testing aid
 	if (const char *tb = std::getenv("CRUISN_TAB")) L.ctl_tab = std::atoi(tb);
@@ -1038,24 +1088,49 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 		ImGui::SetNextWindowSize(vp->Size);
 		ImGui::Begin("##root", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
 
-		ImGui::BeginChild("nav", ImVec2(200 * scale, 0), true);
-		ImGui::TextDisabled("CRUIS'N USA");
+		if (backdrop)
+		{
+			// the picture covers the window (cropped, never stretched)
+			const float wa = vp->Size.x / vp->Size.y, pa = float(bg_w) / float(bg_h);
+			ImVec2 uv0(0, 0), uv1(1, 1);
+			if (wa > pa) { const float k = pa / wa; uv0.y = (1 - k) * 0.5f; uv1.y = 1 - uv0.y; }
+			else { const float k = wa / pa; uv0.x = (1 - k) * 0.5f; uv1.x = 1 - uv0.x; }
+			ImGui::GetBackgroundDrawList()->AddImage(ImTextureID(intptr_t(backdrop)), vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), uv0, uv1);
+		}
+
+		ImGui::BeginChild("nav", ImVec2(250 * scale, 0), true);
+		if (logo)
+		{
+			const float lw = ImGui::GetContentRegionAvail().x * 0.86f, lh = lw * float(logo_h) / float(logo_w);
+			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - lw) * 0.5f);
+			ImGui::Image(ImTextureID(intptr_t(logo)), ImVec2(lw, lh));
+		}
+		else ImGui::TextDisabled("CRUIS'N USA");
 		ImGui::Separator();
 		for (int i = 0; i < P_COUNT; i++)
-			if (ImGui::Selectable(kPageNames[i], L.page == i, 0, ImVec2(0, 34 * scale))) L.page = Page(i);
-		ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 132 * scale);
-		ImGui::Separator();
-		if (ImGui::Button("Save", ImVec2(-1, 34 * scale)))
+			if (ImGui::Selectable(kPageNames[i], L.page == i, 0, ImVec2(0, 30 * scale))) L.page = Page(i);
+		// PLAY / SAVE / QUIT at the bottom
+		const float bh = 36 * scale, gap = ImGui::GetStyle().ItemSpacing.y;
+		ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), ImGui::GetWindowHeight() - 3 * (bh + gap) - 2 * ImGui::GetTextLineHeightWithSpacing() - ImGui::GetStyle().WindowPadding.y));
+		if (L.dirty) ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "unsaved changes");
+		else if (!L.status.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", L.status.c_str()); ImGui::PopTextWrapPos(); }
+		else ImGui::TextUnformatted("");
+		ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 3 * (bh + gap) - ImGui::GetStyle().WindowPadding.y);
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.45f, 0.26f, 1));
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.58f, 0.33f, 1));
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.24f, 0.70f, 0.40f, 1));
+		if (ImGui::Button("PLAY", ImVec2(-1, bh))) L.play = true;
+		ImGui::PopStyleColor(3);
+		if (ImGui::Button("SAVE", ImVec2(-1, bh)))
 		{
 			L.dirty = false;
 			nv_save(L);
 			L.status = L.s.save(L.ini_path) ? "Saved." : "Saving failed.";
 		}
-		if (ImGui::Button("Play", ImVec2(-1, 34 * scale))) L.play = true;
-		if (L.dirty) ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "unsaved changes");
+		if (ImGui::Button("QUIT", ImVec2(-1, bh))) L.quit = true;
 		ImGui::EndChild();
 		ImGui::SameLine();
-		ImGui::BeginChild("page", ImVec2(0, 0), false);
+		ImGui::BeginChild("page", ImVec2(0, 0), true);
 		switch (L.page)
 		{
 		case P_HOME: page_home(L); break;
@@ -1085,6 +1160,8 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 
 	nv_save(L);
 	if (L.dirty || L.play) L.s.save(L.ini_path);
+	if (logo) glDeleteTextures(1, &logo);
+	if (backdrop) glDeleteTextures(1, &backdrop);
 	ImGui_ImplOpenGL3_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();

@@ -30,7 +30,9 @@ struct Telemetry
 	int road_poly[5] = {};       // road polygon under those points (SYS.EQU calls it "road object collided with")
 	uint32_t hits_light = 0;     // running counts of the player's car hitting bushes,
 	uint32_t hits_object = 0;    // signs / barrels / posts / cones,
-	uint32_t hits_wall = 0;      // and the edge of the world
+	uint32_t hits_wall = 0;      // the edge of the world,
+	uint32_t hits_animal = 0;    // animals on the road,
+	uint32_t hits_hard = 0;      // and objects that do not give way (trees, poles)
 };
 
 double c3x_to_double(uint32_t w);   // TMS320C3x 32-bit short float

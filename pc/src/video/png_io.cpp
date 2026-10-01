@@ -31,6 +31,14 @@ bool png_read_rgba(const std::string &path, int &w, int &h, std::vector<uint8_t>
 		std::fclose(f);
 		if (got != file.size()) return fail(err, "read error");
 	}
+	return png_decode_rgba(file.data(), file.size(), w, h, rgba, err);
+}
+
+bool png_decode_rgba(const uint8_t *file_data, size_t file_size, int &w, int &h, std::vector<uint8_t> &rgba, std::string *err)
+{
+	struct View { const uint8_t *p; size_t n; const uint8_t *data() const { return p; } size_t size() const { return n; } const uint8_t &operator[](size_t i) const { return p[i]; } };
+	const View file{file_data, file_size};
+	if (file_size < 33) return fail(err, "file too small");
 	static const uint8_t sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
 	if (std::memcmp(file.data(), sig, 8) != 0) return fail(err, "not a PNG");
 

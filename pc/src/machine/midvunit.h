@@ -61,6 +61,7 @@ public:
 	uint32_t ram_peek(uint32_t a) const { return (a >= 0x809000 && a < 0x80A000) ? m_iram_page[a - 0x809000] : a < m_ram0.size() ? m_ram0[a] : (a >= 0x400000 && a - 0x400000 < m_ram1.size()) ? m_ram1[a - 0x400000] : 0xDEADBEEFu; }
 	bool in_attract() const { return (m_ram0[0xC8F5] & 0xf) == 2; }   // _MODE == MATTR: the attract mode (nobody is playing)
 	uint64_t palette_queue_overflows = 0;  // times the palette transfer queue was full and was flushed by the host
+	uint32_t rom_word(uint32_t i) const { return i < m_rom.size() ? m_rom[i] : 0; }
 	uint64_t watchdog_resets = 0;          // times the game's watchdog fired (the main loop hung)
 	bool debug_routines = false;           // print the track's section routines as they are called (headless)
 	bool auto_overclock = true;            // raise the CPU clock while a longer draw distance needs it (see update_clock)
@@ -169,13 +170,15 @@ private:
 	std::unique_ptr<Dcs1> m_dcs;
 	int run_cpu(int cycles);
 	void setup_idle_hooks();
+	uint32_t m_campos_ptr_addr = 0, m_dgroups_ptr_addr = 0;   // CAMERAPOSI / DGROUPSI (pointers in the code's constant area)
 	bool m_finish_loaded = false;          // the section with this leg's finish line is active (see the section activation hook)
 	bool m_tower_armed = false;            // the bridge tower palette is still the first bridge's (see setup_idle_hooks, (f))
 	int m_oc_q4 = 4;                       // effective CPU clock factor in quarters (4 = original speed)
 	uint32_t m_framrate_addr = 0;          // FRAMRATE, the game's frame governor (minimum vblanks per frame - 1)
 	void update_clock();
 	uint32_t m_idle_flag_addr = 0, m_idle_sync_addr = 0, m_dgroup_count_addr = 0, m_ofree_addr = 0;
-	uint32_t m_obj_hits[3] = {};   // player hits: bushes, small road objects, walls (counted at the game's sound calls)
+	uint32_t m_obj_hits[5] = {};   // player hits: light (bushes, debris), road objects, walls, animals, immobile objects
+	uint32_t m_hit_obj[8] = {}; uint64_t m_hit_frame[8] = {}; int m_hit_next = 0;   // objects hit lately (one count per contact)
 	bool m_zsort_first = true;
 	void sync_dcs();
 
@@ -187,6 +190,14 @@ private:
 	std::unordered_map<uint32_t, uint8_t> m_pc2d;   // writer PC -> is the 2D (rdma) routine
 	bool writer_is_2d();
 	bool in_race() const;
+	bool hud_shown() const;
+	void text_begin();
+	struct TextSeen { uint32_t str = 0, posx = 0; int y = 0; uint64_t frame = 0; bool moving = false; };
+	TextSeen m_text_seen[64];
+	int m_text_next = 0;
+	bool m_text_on = false;                // a string of the text list is being drawn
+	float m_text_shift = 0;                // ...and this is where its letters go (page pixels added to the game's x)
+	static constexpr int kHudTop = 110, kHudBottom = 290;   // rows of the HUD's top and bottom bands (the middle stays centred)
 	uint64_t m_tex_gen = 1;                 // bumped on every texture RAM write
 	bool m_repl_pending = false;
 	int m_wide = 0;                        // widescreen: extra page pixels on each side (quads are shifted by this)

@@ -199,10 +199,12 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 	// command line overrides (testing and scripting)
 	std::string shot = arg_value(a, "--shot");
-	int shot_frames = 600, shot_seq = 1;
+	int shot_frames = 600, shot_seq = 1, shot_step = 1;
 	if (std::string v = arg_value(a, "--shot-frames"); !v.empty()) shot_frames = std::atoi(v.c_str());
 	if (std::string v = arg_value(a, "--shot-seq"); !v.empty()) shot_seq = std::max(1, std::atoi(v.c_str()));
+	if (std::string v = arg_value(a, "--shot-step"); !v.empty()) shot_step = std::max(1, std::atoi(v.c_str()));   // every n-th frame
 	bool autoplay = a.find("--autoplay") != std::string::npos;
+	const bool autopilot = a.find("--autopilot") != std::string::npos;   // with --autoplay: steers along the road
 	PerfStats perf;
 	const bool bench = a.find("--bench") != std::string::npos;
 	if (a.find("--perf") != std::string::npos) { perf.on = true; perf.log_path = exe_relative("perf.log"); }
@@ -284,6 +286,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	wc.lpfnWndProc = wnd_proc;
 	wc.hInstance = hi;
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hIcon = LoadIconA(hi, MAKEINTRESOURCEA(1));
 	wc.lpszClassName = "CruisnPC";
 	RegisterClassA(&wc);
 	HWND hwnd = CreateWindowA("CruisnPC", "Cruis'n USA (PC)", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr, nullptr, hi, nullptr);
@@ -480,6 +483,19 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 				if (hit(60) || hit(80) || hit(100)) m.inputs.in0 &= ~in0bit::COIN1;
 				if (hit(140) || hit(320) || hit(500) || hit(680) || hit(860) || hit(1040)) m.inputs.in0 &= ~in0bit::START;
 				if (af > 1300) m.inputs.accel = 255;
+				if (autopilot)
+				{
+					static float prev = 0, dfilt = 0;
+					Telemetry t;
+					if (m.read_telemetry(t))
+					{
+						const float d = t.dist_to_center;
+						if (d != prev) { dfilt = dfilt * 0.6f + (d - prev) * 0.4f; prev = d; }
+						m.inputs.wheel = uint8_t(std::clamp(128.0f + std::clamp(0.10f * d + 1.2f * dfilt, -100.0f, 100.0f), 16.0f, 240.0f));
+						m.inputs.accel = uint8_t(std::fabs(d) > 700.0f ? 120 : 255);
+					}
+					else if (af > 2600 && (af / 6) % 30 == 0) m.inputs.in0 &= ~in0bit::START;
+				}
 			}
 			std::fill(std::begin(g_pressed), std::end(g_pressed), false);
 			m.run_frame();
@@ -510,7 +526,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		if (perf.on && video) perf.gpu(video->last_gpu_ms());
 		if (perf.on) { perf.presented(perf_now_ms() - perf_p0); if (!perf.summary().empty()) SetWindowTextA(hwnd, ("Cruis'n USA (PC) - " + perf.summary()).c_str()); }
 
-		if (ran && !shot.empty() && ++shot_count >= shot_frames)
+		if (ran && !shot.empty() && ++shot_count >= shot_frames && (shot_count - shot_frames) % shot_step == 0)
 		{
 			std::vector<uint32_t> px; int pw = 0, ph = 0;
 			bool ok = video ? video->read_display(px, pw, ph) : false;
@@ -532,13 +548,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 				std::string path = shot;
 				if (shot_seq > 1)
 				{
-					char suf[24]; std::snprintf(suf, sizeof(suf), "_%03d.png", shot_count - shot_frames);
+					char suf[24]; std::snprintf(suf, sizeof(suf), "_%03d.png", (shot_count - shot_frames) / shot_step);
 					path = shot.substr(0, shot.rfind('.')) + suf;
 				}
 				if (FILE *fp = std::fopen(path.c_str(), "wb")) { std::fwrite(png, 1, len, fp); std::fclose(fp); }
 				mz_free(png);
 			}
-			if (shot_count - shot_frames + 1 >= shot_seq) g_quit = true;
+			if ((shot_count - shot_frames) / shot_step + 1 >= shot_seq) g_quit = true;
 		}
 
 		if (ran) fps_n++;

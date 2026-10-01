@@ -267,13 +267,18 @@ public:
 		copy_rows_to_image(m_tex_ovl, layer + size_t(first) * 512, 512 * 2, 512, first, last - first + 1);
 		begin_cb();
 		{
+			// thirds only in the top and bottom bands; the middle band is placed as a whole (text there is not cut apart)
 			static const int cut[4] = {0, 171, 341, 512};
+			static const int band[4] = {0, kHudBandTop, kHudBandBottom, 512};
 			const float W = page_w_px();
-			for (int k = 0; k < 3; k++)
-			{
-				float x0 = float(cut[k] + m_ovl_off[k]), x1 = float(cut[k + 1] + m_ovl_off[k]);
-				draw_rect_pass(page, m_pipe_ovl, m_set_ovl, Params{{-1 + 2 * x0 / W, -1, -1 + 2 * x1 / W, 1}, {float(cut[k]) / 512.0f, 0, float(cut[k + 1]) / 512.0f, 1}, {0, 0, 0, 0}});
-			}
+			for (int b = 0; b < 3; b++)
+				for (int k = 0; k < 3; k++)
+				{
+					const int off = b == 1 ? m_ovl_off[1] : m_ovl_off[k];
+					float x0 = float(cut[k] + off), x1 = float(cut[k + 1] + off);
+					float y0 = -1 + 2 * float(band[b]) / 512.0f, y1 = -1 + 2 * float(band[b + 1]) / 512.0f;
+					draw_rect_pass(page, m_pipe_ovl, m_set_ovl, Params{{-1 + 2 * x0 / W, y0, -1 + 2 * x1 / W, y1}, {float(cut[k]) / 512.0f, float(band[b]) / 512.0f, float(cut[k + 1]) / 512.0f, float(band[b + 1]) / 512.0f}, {0, 0, 0, 0}});
+				}
 		}
 	}
 

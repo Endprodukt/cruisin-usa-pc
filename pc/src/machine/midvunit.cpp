@@ -11,6 +11,7 @@
 #include "../../third_party/miniz/miniz.h"
 #include "default_nvram.h"
 #include "cmos.h"
+#include "telemetry.h"
 
 #include <windows.h>
 namespace {
@@ -1201,7 +1202,7 @@ void MidVUnit::gpu_sync_state()
 	{
 		// the CPU-drawn layer (HUD text, gauges) follows the same placement as the 2D quads
 		int l = m_wide, c = m_wide, r = m_wide;
-		if (m_hud_spread > 0 && in_race())
+		if (m_hud_spread > 0 && hud_shown())
 		{
 			l = int(std::lround(m_wide * (1.0f - m_hud_spread)));
 			r = int(std::lround(m_wide * (1.0f + m_hud_spread)));
@@ -1306,11 +1307,16 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 		bool full = flat && minx <= 0 && maxx >= 511 && miny <= 0 && maxy >= 399;
 		// HUD placement: 2D elements of a race are moved towards the screen edges by their third of the picture
 		float shift = float(m_wide);
-		if (is2d && m_hud_spread > 0 && in_race() && !full)
+		if (is2d && m_text_on && !full) shift = m_text_shift;   // a letter of a text string: the string is placed as a whole (text_begin)
+		else if (is2d && m_hud_spread > 0 && hud_shown() && !full)
 		{
-			float cx = (minx + maxx) * 0.5f;
-			if (cx < 171) shift = float(m_wide) * (1.0f - m_hud_spread);
-			else if (cx > 341) shift = float(m_wide) * (1.0f + m_hud_spread);
+			// only the HUD's corners move: the top and bottom bands and the course map at the right edge. Whatever is drawn in
+			// the middle band (track names, banners, results) stays where it is, in one piece.
+			const float cx = (minx + maxx) * 0.5f, cy = (miny + maxy) * 0.5f;
+			const bool band = cy < float(kHudTop) || cy >= float(kHudBottom);
+			const bool map = cx > 420 && cy < 215 && maxx - minx < 90;
+			if (band && cx < 171) shift = float(m_wide) * (1.0f - m_hud_spread);
+			else if ((band || map) && cx > 341) shift = float(m_wide) * (1.0f + m_hud_spread);
 		}
 		for (int i = 0; i < 4; i++)
 		{
@@ -1362,6 +1368,78 @@ void MidVUnit::debug_ram_usage() const
 	}
 }
 
+// A string of the game's text list is about to be drawn (hook in TEXT_OUTPUT), letter by letter. On a wide picture the
+// placement is decided once for the whole string instead of per letter:
+//  * A string that moves (the track names at the start and the end of a race, "NEXT RACE:", the banners) scrolls in from
+//    outside the arcade's 512 pixels and parks out there again. The wide page shows that outside, so the way is stretched:
+//    the string's distance from the middle is scaled so that "just off the arcade screen" becomes "just off the wide one".
+//    The same goes for a string that lies outside altogether.
+//  * With the HUD at the screen edges, a still string in the left or right third of the top or bottom rows goes to that edge
+//    with the rest of the HUD (speed, elapsed time, gear). Per letter that tore apart every string reaching across two thirds.
+//  * Everything else stays where the game puts it.
+// The game adds the HUD's strings anew every frame, so a string is recognised by its text and row, not by its structure.
+void MidVUnit::text_begin()
+{
+	auto rd = [&](uint32_t a) -> uint32_t {
+		if (a < m_ram0.size()) return m_ram0[a];
+		if (a >= 0x400000 && a - 0x400000 < m_ram1.size()) return m_ram1[a - 0x400000];
+		if (a >= 0xC00000 && a - 0xC00000 < m_rom.size()) return m_rom[a - 0xC00000];
+		return 0;
+	};
+	m_text_on = true;
+	m_text_shift = float(m_wide);
+	if (!m_wide) return;
+	const uint32_t t = m_cpu->reg(12);   // AR4: TEXT_PTR 1, TEXT_POSX 3, TEXT_HEIGHT 9, TEXT_ADDR 10 (font table: 4 words per character)
+	const uint32_t str = rd(t + 1), posx = rd(t + 3), font = rd(t + 10);
+	const int x0 = int32_t(m_cpu->reg(2)), y0 = int32_t(m_cpu->reg(3)), height = int32_t(rd(t + 9));
+	// the same string in the same row, its anchor elsewhere than a frame ago: it is on the move. Once it stands still it is
+	// placed like any other string (the HUD's numbers slide in with the HUD at the start and then belong to their corner).
+	// (a string and its drop shadow are two entries of the same text in the same row, three pixels apart)
+	TextSeen *e = nullptr;
+	for (TextSeen &k : m_text_seen) if (k.str == str && k.y == y0 && k.posx == posx && m_frame_count - k.frame <= 8) { e = &k; break; }
+	if (e) e->moving = false;
+	else
+	{
+		for (TextSeen &k : m_text_seen) if (k.str == str && k.y == y0 && k.frame != m_frame_count && m_frame_count - k.frame <= 8) { e = &k; break; }
+		if (e) e->moving = true;
+		else { e = &m_text_seen[m_text_next]; m_text_next = (m_text_next + 1) % int(std::size(m_text_seen)); *e = TextSeen{}; e->str = str; e->y = y0; }
+	}
+	e->posx = posx; e->frame = m_frame_count;
+	// width as STRLEN computes it: characters packed four to a word, low byte first
+	int w = 0, last = 8;
+	for (int n = 0; n < 80; n++)
+	{
+		const uint32_t ch = (rd(str + uint32_t(n / 4)) >> (8 * (n % 4))) & 0xff;
+		if (ch == 0) break;
+		if (ch != ' ')
+		{
+			const uint32_t ent = font + ((ch == '/' ? uint32_t('@') : ch) - '0') * 4, e0 = rd(ent);
+			last = int(rd(ent + 2)) - int(rd(ent + 1)) + int(int16_t(e0 & 0xffff)) + int(e0 >> 16);
+			if (last < 0 || last > 64) last = 8;
+		}
+		w += last;
+	}
+	const int x1 = x0 + w;
+	const float mid = float(x0 + x1) * 0.5f, half = float(w) * 0.5f;
+	if (e->moving || x1 <= 0 || x0 >= 512)
+		m_text_shift = float(m_wide) + (mid - 256.0f) * float(m_wide) / (256.0f + half);
+	else if (m_hud_spread > 0 && hud_shown())
+	{
+		const float cy = float(y0) + float(height) * 0.5f;
+		if (cy >= float(kHudTop) && cy < float(kHudBottom)) return;
+		if (x1 <= 256 && mid < 171) m_text_shift = float(m_wide) * (1.0f - m_hud_spread);
+		else if (x0 >= 256 && mid > 341) m_text_shift = float(m_wide) * (1.0f + m_hud_spread);
+	}
+}
+
+// the race HUD is on screen: the race itself and the phases after the finish line (modes 5 and 7), so that the HUD does not jump
+// back to the middle (leaving its pieces in the margins) when the race ends
+bool MidVUnit::hud_shown() const
+{
+	const uint32_t m = m_ram0[0xC8F5] & 0xf;
+	return m == 4 || m == 5 || m == 7;
+}
+
 bool MidVUnit::in_race() const
 {
 	return (m_ram0[0xC8F5] & 0xf) == 4;   // _MODE == MGAME
@@ -1402,7 +1480,7 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->on_hook = nullptr;
 	const bool idle = idle_skip && !std::getenv("NOIDLESKIP");
 	const std::vector<uint32_t> &c = m_ram0;
-	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0, wdog_pc = ~0u, palq_pc = ~0u, palq_free = 0, palq_active = 0;
+	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0, wdog_pc = ~0u, palq_pc = ~0u, palq_free = 0, palq_active = 0, hit_pc = ~0u, text_pc = ~0u, textend_pc = ~0u;
 	m_ofree_addr = 0;
 	for (uint32_t i = 0; i + 8 < 0x20000; i++)
 	{
@@ -1432,6 +1510,9 @@ void MidVUnit::setup_idle_hooks()
 		    c[i + 5] == 0x0AE90005u && dact_pc == ~0u)
 		{
 			dact_pc = i + 1;   // the branch: taken = no activation
+			// ... LDI (CAMERAPOSI),R2 / CALL GET_XZ_DISTANCE / CMPF ...   and   ... MPYI 5,AR1 / ADDI (DGROUPSI),AR1
+			if (i >= 2 && (c[i - 2] & 0xffff0000u) == 0x08220000u) m_campos_ptr_addr = c[i - 2] & 0xffff;
+			if ((c[i + 6] & 0xffff0000u) == 0x02290000u) m_dgroups_ptr_addr = c[i + 6] & 0xffff;
 			dact_skip = i + 2 + (c[i + 1] & 0xffff);
 			m_dgroup_count_addr = c[i + 4] & 0xffff;
 		}
@@ -1483,6 +1564,23 @@ void MidVUnit::setup_idle_hooks()
 			palq_free = c[i + 3] & 0xffff;
 			palq_active = c[i + 6] & 0xffff;
 		}
+		// COLSGCK (COLLA.ASM), "GOT A COLLISION": a car (AR0) touches an object of the sign or debris list (AR1):
+		//   NOP / LDI *+AR0(OCARBLK),AR5 / LDI *+AR1(OID),R0 / AND TYPE_M,R0 / CMPI TSC_IGNORE,R0.
+		// Every roadside object that can be driven into ends up here (signs, posts, lamps, bushes, barrels, barriers, cones,
+		// trees, and the animals of ROADKILL.ASM), for the player and for the other cars. Hits of the player's car are counted
+		// for the force feedback.
+		if (c[i] == 0x0C800000u && c[i + 1] == 0x084D001Bu && c[i + 2] == 0x0840010Fu && c[i + 3] == 0x02E000F0u && c[i + 4] == 0x04E00060u && hit_pc == ~0u)
+			hit_pc = i + 1;
+		// TEXT_OUTPUT (TEXT.ASM), TEXT_RET: a string of the text list is about to be drawn, letter by letter:
+		//   SUBI R0,R2 / CLRI RS / CMPI -32,RS / BNE +2 / CLRI RS / NOP *AR2++ / LDI *AR2,AR0 / LSH RS,AR0
+		// (R2 = left edge, R3 = top, AR4 = the text structure); the routine starts 23 words before with PUSH AR4 .. BUD NXTGRP,
+		// and TXTOUT, its end, is two words behind NXTGRP. The HUD placement treats a string as one piece (see text_begin).
+		if (i >= 24 && c[i] == 0x18190019u && c[i + 1] == 0x04F9FFE0u && c[i + 2] == 0x6A060002u && c[i + 3] == 0x18190019u && c[i + 4] == 0x0CC02201u &&
+		    c[i + 5] == 0x0848C200u && c[i + 6] == 0x09880019u && c[i - 1] == 0x18020000u && (c[i - 19] & 0xffff0000u) == 0x6A200000u && text_pc == ~0u)
+		{
+			text_pc = i;
+			textend_pc = (i - 19) + 3 + (c[i - 19] & 0xffff) + 2;
+		}
 		// the watchdog in the vblank interrupt: ... ADDI 1,R0 / CMPI 300,R0 / BLE ok / BU error. The main loop did not get to
 		// its process dispatch for 300 vblanks: it hangs. (Only counted and, with the jump trace on, reported.)
 		if (c[i] == 0x02600001u && c[i + 1] == 0x04E0012Cu && (c[i + 2] & 0xffff0000u) == 0x6A080000u && wdog_pc == ~0u)
@@ -1508,10 +1606,37 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->hook_pc[6] = routine_pc;
 	m_cpu->hook_pc[7] = wdog_pc;
 	m_cpu->hook_pc[8] = palq_pc;
+	m_cpu->hook_pc[9] = hit_pc;
+	m_cpu->hook_pc[10] = text_pc;
+	m_cpu->hook_pc[11] = textend_pc;
 	m_cpu->refresh_hooks();
 	m_zsort_first = true;
-	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr, routine_pc, routine_tab, wdog_pc, palq_pc, palq_free, palq_active]() -> bool {
+	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr, routine_pc, routine_tab, wdog_pc, palq_pc, palq_free, palq_active, hit_pc, text_pc, textend_pc]() -> bool {
 		uint32_t pc = m_cpu->pc();
+		if (pc == text_pc) { text_begin(); return false; }
+		if (pc == textend_pc) { m_text_on = false; return false; }
+		if (pc == hit_pc)
+		{
+			auto rd = [&](uint32_t a) -> uint32_t {
+				if (a < m_ram0.size()) return m_ram0[a];
+				if (a >= 0x400000 && a - 0x400000 < m_ram1.size()) return m_ram1[a - 0x400000];
+				return 0;
+			};
+			const uint32_t car = m_cpu->reg(8), obj = m_cpu->reg(9);
+			if (rd(car + 0x1B) != m_ram0[0xE8A8] || m_ram0[0xE8A8] == 0) return false;   // not the player's car (OCARBLK != PLYCBLK)
+			// an object stays in contact for several frames (a barrel flying along with the car): count it once
+			for (int k = 0; k < 8; k++)
+				if (m_hit_obj[k] == obj && m_frame_count - m_hit_frame[k] < 40) { m_hit_frame[k] = m_frame_count; return false; }
+			m_hit_obj[m_hit_next] = obj; m_hit_frame[m_hit_next] = m_frame_count; m_hit_next = (m_hit_next + 1) & 7;
+			const uint32_t id = rd(obj + 0xF), type = id & 0xF0, sub = id & 0xF;
+			if (debug_routines) std::fprintf(stderr, "HIT frame %llu obj %06X id %04X\n", (unsigned long long)m_frame_count, obj, id);
+			if (type == 0x60) return false;                                     // TSC_IGNORE
+			if ((id & 0xFF0) == 0x750) m_obj_hits[sub == 3 ? 0 : 3]++;           // road kill: flying parts are light, the animal itself is heavy
+			else if (type == 0x30) m_obj_hits[1]++;                              // TSC_FLYING: barrels, barriers, cones, mail boxes
+			else if (type == 0x20) m_obj_hits[sub == 1 ? 0 : 1]++;               // TSC_RUNOVER: sage brush is light; signs, posts, lamps, small trees
+			else m_obj_hits[4]++;                                                // immobile / hard: trees, poles, walls of rock
+			return false;
+		}
 		if (pc == palq_pc)
 		{
 			if (m_ram0[palq_free] != 0) return false;
@@ -1598,12 +1723,10 @@ void MidVUnit::setup_idle_hooks()
 		}
 		if (pc == snd_pc)
 		{
-			// sound indices (SNDTAB.EQU) that only the player's car triggers (the drones use DRONESND): COLLA.ASM RUNOVER / FLYCOLL
-			// and PLYR.ASM CURBCOLP
+			// sound index (SNDTAB.EQU) that only the player's car triggers: PLYR.ASM CURBCOLP (objects are counted at the collision
+			// routine itself, see hit_pc)
 			switch (m_cpu->reg(10))   // AR2
 			{
-			case 531: case 534: case 537: case 540: m_obj_hits[0]++; break;   // SAGESND..3: sage brush
-			case 507: case 522: case 525: case 528: m_obj_hits[1]++; break;   // DRUMSND, SIGNSND, LAMPSND, DONGSND: barrels, signs, posts
 			case 498: case 501: case 504: m_obj_hits[2]++; break;             // WALLHITA..C: the car is thrown back off the edge of the world
 			default: break;
 			}
@@ -1626,7 +1749,64 @@ void MidVUnit::setup_idle_hooks()
 				const uint32_t routine = (w >> 16) & 0xff;
 				const double dist = m_cpu->reg_float(0);
 				if (m_finish_loaded && dist > 80000.0) hold = true;
-				else if (!hold && ((routine >= 32 && routine <= 45) || routine == 19)) m_finish_loaded = true;   // this section may load
+				// The game decides by the straight-line distance, but the tracks are not laid out as one world: US 101 winds
+				// round in a loop of eight sections and comes back over its own road, a thousand units higher. Section 206 lies
+				// on top of section 200. The original never has both loaded, since only 80000 units are ever there. Loaded
+				// four times as far, the ground and the hills of the later section stand on the road being driven. So the
+				// distance along the track has to be within the draw distance as well: from the camera to the anchor of the
+				// section after the one the car is on, then anchor to anchor up to the new section. On a straight track that
+				// is the same as the straight-line distance.
+				if (!hold && rom_patches.draw_distance_pct > 100 && m_campos_ptr_addr && m_dgroups_ptr_addr)
+				{
+					auto rd = [&](uint32_t a) -> uint32_t {
+						if (a < m_ram0.size()) return m_ram0[a];
+						if (a >= 0x400000 && a - 0x400000 < m_ram1.size()) return m_ram1[a - 0x400000];
+						if (a >= 0xC00000 && a - 0xC00000 < m_rom.size()) return m_rom[a - 0xC00000];
+						if (a >= 0x809000 && a < 0x80A000) return m_iram_page[a - 0x809000];   // the camera position is in on-chip RAM
+						return 0;
+					};
+					const uint32_t groups = m_ram0[m_dgroup_count_addr], cam = m_ram0[m_campos_ptr_addr], tab = m_ram0[m_dgroups_ptr_addr];
+					if (groups >= 1 && groups <= 20)
+					{
+						const double cx = c3x_to_double(rd(cam)), cz = c3x_to_double(rd(cam + 2));
+						double ax[21], az[21];
+						for (uint32_t g = 0; g < groups; g++)
+						{
+							const uint32_t bin = rd(tab + g * 5 + 1);
+							ax[g] = c3x_to_double(rd(bin + 1)); az[g] = c3x_to_double(rd(bin + 3));
+						}
+						ax[groups] = c3x_to_double(rd(entry + 1)); az[groups] = c3x_to_double(rd(entry + 3));
+						// the section the car is on: that of the nearest road piece (PLYCBLK -> CARTRAK -> OUSR1 >> 8); without a
+						// car (attract mode) the first section whose successor's anchor is still ahead, i.e. the nearest anchor
+						int own = -1;
+						if ((m_ram0[0xC8F5] & 0xf) == 4)
+						{
+							const uint32_t blk = m_ram0[0xE8A8], piece = blk ? rd(blk + 55) : 0;
+							if (piece)
+							{
+								const uint32_t idx = rd(piece + 0x1E) >> 8;
+								for (uint32_t g = 0; g < groups; g++) if (rd(tab + g * 5 + 4) == idx) { own = int(g); break; }
+							}
+						}
+						if (own < 0)
+						{
+							double nearest = 1e30;
+							for (uint32_t g = 0; g < groups; g++)
+							{
+								const double d = std::hypot(ax[g] - cx, az[g] - cz);
+								if (d < nearest) { nearest = d; own = int(g); }
+							}
+						}
+						double path = std::hypot(ax[own + 1] - cx, az[own + 1] - cz);
+						for (uint32_t g = uint32_t(own) + 1; g < groups; g++) path += std::hypot(ax[g + 1] - ax[g], az[g + 1] - az[g]);
+						if (path > 80000.0 * double(rom_patches.draw_distance_pct) / 100.0 * 1.25) hold = true;
+						// ...and the loop is short (seven sections round), so even within that distance the track is back at the
+						// car: a section that is much nearer in a straight line than along the road has curled back towards
+						// the camera and waits until the car has gone far enough round to see it from the other side
+						if (path > 100000.0 && dist < path * 0.6) hold = true;
+					}
+				}
+				if (!hold && ((routine >= 32 && routine <= 45) || routine == 19)) m_finish_loaded = true;   // this section may load
 			}
 			if (!hold && m_ofree_addr)
 			{

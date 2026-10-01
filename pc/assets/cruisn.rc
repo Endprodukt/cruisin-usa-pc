@@ -1,0 +1,4 @@
+// icon of the program and the launcher's pictures
+1 ICON "cruisn.ico"
+LOGO RCDATA "logo.png"
+BACKGROUND RCDATA "background.png"

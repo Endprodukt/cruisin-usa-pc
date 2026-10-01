@@ -63,6 +63,7 @@ public:
 	// where the CPU-drawn layer (HUD text and gauges) is placed on the wide page, as extra pixels from the page's left edge for the
 	// left / centre / right third of the 512 px picture
 	virtual void set_overlay_offsets(int left, int centre, int right) = 0;
+	static constexpr int kHudBandTop = 110, kHudBandBottom = 290;   // rows: above / below these the HUD thirds are placed separately
 	virtual void upload_overlay(int page, const uint16_t *layer512, int first_row, int last_row) = 0;
 
 	virtual void draw(int page, const GpuQuad *quads, int count) = 0;

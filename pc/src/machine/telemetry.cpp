@@ -50,5 +50,7 @@ bool MidVUnit::read_telemetry(Telemetry &t) const
 	t.hits_light = m_obj_hits[0];
 	t.hits_object = m_obj_hits[1];
 	t.hits_wall = m_obj_hits[2];
+	t.hits_animal = m_obj_hits[3];
+	t.hits_hard = m_obj_hits[4];
 	return true;
 }

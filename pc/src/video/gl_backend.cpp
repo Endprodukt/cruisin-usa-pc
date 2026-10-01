@@ -223,14 +223,19 @@ public:
 		glActiveTexture(GL_TEXTURE0);
 		glBindVertexArray(m_vao_empty);
 		// three strips of the 512 px layer, each placed with its own offset (HUD placement)
+		// (only in the top and bottom bands; the middle band is placed as a whole, so that text there is not cut apart)
 		static const int cut[4] = {0, 171, 341, 512};
+		static const int band[4] = {0, kHudBandTop, kHudBandBottom, 512};
 		const float W = page_w_px();
-		for (int k = 0; k < 3; k++)
-		{
-			float x0 = float(cut[k] + m_ovl_off[k]), x1 = float(cut[k + 1] + m_ovl_off[k]);
-			set_params({-1 + 2 * x0 / W, -1, -1 + 2 * x1 / W, 1}, {float(cut[k]) / 512.0f, 0, float(cut[k + 1]) / 512.0f, 1});
-			glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
-		}
+		for (int b = 0; b < 3; b++)
+			for (int k = 0; k < 3; k++)
+			{
+				const int off = b == 1 ? m_ovl_off[1] : m_ovl_off[k];
+				float x0 = float(cut[k] + off), x1 = float(cut[k + 1] + off);
+				float y0 = -1 + 2 * float(band[b]) / 512.0f, y1 = -1 + 2 * float(band[b + 1]) / 512.0f;
+				set_params({-1 + 2 * x0 / W, y0, -1 + 2 * x1 / W, y1}, {float(cut[k]) / 512.0f, float(band[b]) / 512.0f, float(cut[k + 1]) / 512.0f, float(band[b + 1]) / 512.0f});
+				glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+			}
 	}
 
 	void clear_margins(int page) override

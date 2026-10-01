@@ -129,6 +129,41 @@ int main(int argc, char **argv)
 			}
 			else if (f > 2600 && (f / 6) % 30 == 0) m.inputs.in0 &= ~in0bit::START;   // between races: press start now and then to move on
 		}
+		if (const char *od = getenv("OBJDUMP"))
+		{   // OBJDUMP=frame: the large objects on the active list at that frame (id, section group, distance, radius, position)
+			if (f == atoi(od))
+			{
+				fprintf(stderr, "OBJDUMP frame %d mode %X groups %u%c", f, m.ram_word(0xC8F5), m.ram_word(0xE49C), 10);
+				int n = 0;
+				for (uint32_t o = m.ram_peek(m.ram_word(0x40)); o && o != 0xDEADBEEFu && n < 6000; o = m.ram_peek(o), n++)
+				{
+					const uint32_t rad = m.ram_peek(o + 0x1D);
+					if (int32_t(rad) < 2500) continue;
+					fprintf(stderr, "  obj %06X id %04X group %06X dist %d rad %u pos %.0f %.0f %.0f flags %08X%c", o, m.ram_peek(o + 0xF), m.ram_peek(o + 0x1F), int32_t(m.ram_peek(o + 0x1C)), rad,
+					        c3x_to_double(m.ram_peek(o + 1)), c3x_to_double(m.ram_peek(o + 2)), c3x_to_double(m.ram_peek(o + 3)), m.ram_peek(o + 0xE), 10);
+				}
+				fprintf(stderr, "  (%d objects on the active list)%c", n, 10);
+				// the loaded sections (index, anchor distance from the camera) and the scenery objects near the camera
+				const uint32_t cam = m.ram_word(m.ram_word(0x401D) & 0xffff), tab = m.ram_word(0x3F7A), groups = m.ram_word(0xE49C);
+				auto romw = [&](uint32_t a) { return a >= 0xC00000 ? m.rom_word(a - 0xC00000) : m.ram_peek(a); };
+				const double cx = c3x_to_double(m.ram_peek(cam)), cz = c3x_to_double(m.ram_peek(cam + 2));
+				for (uint32_t g = 0; g < groups && g < 20; g++)
+				{
+					const uint32_t bin = m.ram_peek(tab + g * 5 + 1);
+					const uint32_t w = romw(bin);
+					fprintf(stderr, "  section %u: anchor %.0f from the camera (entry %06X flags %08X)%c", m.ram_peek(tab + g * 5 + 4),
+					        std::hypot(c3x_to_double(romw(bin + 1)) - cx, c3x_to_double(romw(bin + 3)) - cz), bin, w, 10);
+				}
+				for (uint32_t list = 0x40; list <= 0x41; list++)
+					for (uint32_t o = m.ram_peek(m.ram_word(list)), k = 0; o && o != 0xDEADBEEFu && k < 6000; o = m.ram_peek(o), k++)
+					{
+						const uint32_t id = m.ram_peek(o + 0xF);
+						const double d = std::hypot(c3x_to_double(m.ram_peek(o + 1)) - cx, c3x_to_double(m.ram_peek(o + 3)) - cz);
+						if (d < 30000 && (id & 0xF00) != 0x300 && int32_t(m.ram_peek(o + 0x1D)) > 1500)
+							fprintf(stderr, "  near: obj %06X id %04X section %u flags %08X rad %u, %.0f from the camera, y %.0f, list %s%c", o, id, m.ram_peek(o + 0x1F) >> 8, m.ram_peek(o + 0xE), m.ram_peek(o + 0x1D), d, c3x_to_double(m.ram_peek(o + 2)), list == 0x40 ? "active" : "idle", 10);
+					}
+			}
+		}
 		if (getenv("PALLOG"))
 		{   // palettes being loaded / released (RAWLOCS: palette id -> slot, 0 = not loaded), with the frame
 			static std::vector<uint32_t> prev(512, 0);

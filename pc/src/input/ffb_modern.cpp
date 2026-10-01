@@ -55,7 +55,8 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 	m_bump_cool -= 1.0f / 58.0f;
 	m_wall_cool -= 1.0f / 58.0f;
 	if (m_have_prev && t.speed == m_prev.speed && t.y_rot == m_prev.y_rot && t.v_rot == m_prev.v_rot && t.susp_yv[1] == m_prev.susp_yv[1] &&
-	    t.hits_object == m_prev.hits_object && t.hits_light == m_prev.hits_light && t.hits_wall == m_prev.hits_wall && t.spin == m_prev.spin)
+	    t.hits_object == m_prev.hits_object && t.hits_light == m_prev.hits_light && t.hits_wall == m_prev.hits_wall &&
+	    t.hits_animal == m_prev.hits_animal && t.hits_hard == m_prev.hits_hard && t.spin == m_prev.spin)
 		return;
 	const float per2 = 2.0f / float(std::clamp(m_steps, 1, 4));
 	m_steps = 0;
@@ -127,11 +128,23 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 			m_bump_cool = 0.15f;
 		}
 
-		// objects the car runs into (counted at the game's sound calls): a short push to the side the object was on (they stand at
+		// objects the car runs into (counted at the game's collision routine, COLSGCK: every sign, post, lamp, bush, barrel,
+		// barrier, cone, tree and animal at the roadside): a short push to the side the object was on (they stand at
 		// the road's edges: left of the centre line -> the left front wheel hit it) plus one short knock
 		const float side = t.dist_to_center >= 0 ? -1.0f : 1.0f;
 		const bool hit_obj = t.hits_object != p.hits_object, hit_bush = t.hits_light != p.hits_light;
 		const bool hit_wall = t.hits_wall != p.hits_wall && m_wall_cool <= 0;
+		const bool hit_animal = t.hits_animal != p.hits_animal, hit_hard = t.hits_hard != p.hits_hard;
+		if (hit_animal)   // a cow or a deer: heavier than a sign
+		{
+			m_thud += side * m_c.bump * (0.40f + 0.30f * v);
+			add_jolt(m_c.bump * (0.30f + 0.22f * v), 11.0f, 14.0f);
+		}
+		if (hit_hard)     // a tree or a pole stops the car: a hard knock (the loss of speed itself is not added on top)
+		{
+			m_thud += side * m_c.collision * (0.40f + 0.35f * v);
+			add_jolt(m_c.collision * (0.30f + 0.25f * v), 12.0f, 12.0f);
+		}
 		if (hit_obj)
 		{
 			m_thud += side * m_c.bump * (0.30f + 0.25f * v);
@@ -147,7 +160,7 @@ void FfbModern::frame(const Telemetry &t, float arcade, float steer)
 
 		// collision: a big loss of speed in one frame (one knock, not a rattle). Skipped when one of the hits above explains it.
 		float dv = p.speed - t.speed;
-		if (dv * per2 > 5.0f && (t.bump > 0 || t.spin || dv * per2 > 10.0f) && !hit_obj && !hit_wall && !hit_bush)
+		if (dv * per2 > 5.0f && (t.bump > 0 || t.spin || dv * per2 > 10.0f) && !hit_obj && !hit_wall && !hit_bush && !hit_animal && !hit_hard)
 			add_jolt(m_c.collision * std::min(0.6f, 0.2f + dv / 50.0f), 14.0f, 14.0f);
 
 		// spin-out start: a slam in the direction the wheel is about to be held

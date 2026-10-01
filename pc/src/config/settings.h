@@ -23,7 +23,7 @@ struct VideoSettings
 	WindowMode window_mode = WindowMode::Window;
 	int window_w = 1280, window_h = 960;     // client size in window / borderless mode
 	int monitor = 0;                          // which monitor for borderless / fullscreen (0 = primary)
-	int internal_scale = 2;                   // 1..8 x the arcade's 512x400
+	int internal_scale = 1;                   // 1..8 x the arcade's 512x400
 	AspectMode aspect = AspectMode::Native43;
 	bool integer_scale = false;
 	bool vsync = true;
@@ -37,7 +37,7 @@ struct VideoSettings
 
 	// reserved for the widescreen / rendering stage (stored now, applied when implemented)
 	bool widescreen_hack = true;              // with a 16:9 / 21:9 aspect: show more of the world at the sides instead of stretching
-	HudPlacement hud = HudPlacement::Centre;
+	HudPlacement hud = HudPlacement::Edges;
 	int draw_distance = 100;                  // percent of the original
 	ShadowMode shadows = ShadowMode::Modern;
 	int shadow_strength = 55;                 // percent darkness of modern shadows
@@ -93,9 +93,16 @@ struct FfbSettings
 	int rumble_strength = 100;
 	FfbMode mode = FfbMode::Modern;   // vanilla: only the force the game computes; modern: plus effects from the game's car state
 	// modern effect strengths, percent of their default (0 = off)
-	int fx_surface = 100, fx_kerb = 70, fx_bump = 100, fx_collision = 100, fx_spin = 100;
-	int fx_landing = 100, fx_engine = 25, fx_skid = 100, fx_air = 100, fx_understeer = 100;
-	int fx_aligning = 100, fx_centering = 35, fx_menu = 100, fx_impact = 100;
+	int fx_surface = 0, fx_kerb = 30, fx_bump = 30, fx_collision = 70, fx_spin = 70;
+	int fx_landing = 70, fx_engine = 5, fx_skid = 5, fx_air = 70, fx_understeer = 70;
+	int fx_aligning = 110, fx_centering = 80, fx_menu = 100, fx_impact = 60;
+	void reset_effects()
+	{
+		const FfbSettings d;
+		fx_surface = d.fx_surface; fx_kerb = d.fx_kerb; fx_bump = d.fx_bump; fx_collision = d.fx_collision; fx_spin = d.fx_spin;
+		fx_landing = d.fx_landing; fx_engine = d.fx_engine; fx_skid = d.fx_skid; fx_air = d.fx_air; fx_understeer = d.fx_understeer;
+		fx_aligning = d.fx_aligning; fx_centering = d.fx_centering; fx_menu = d.fx_menu; fx_impact = d.fx_impact;
+	}
 };
 
 struct OutputSettings
