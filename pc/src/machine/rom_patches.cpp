@@ -109,7 +109,20 @@ void widescreen(std::vector<uint32_t> &ram, int margin, int &applied, std::strin
 			break;
 		}
 
-	// 2. polygon clip (CLIP): "all X > 511" tests
+	// 2. polygons that reach beyond +-1023 pixels were sent to the clipper (CLIP), which splits them and drops every piece that lies
+	//    wholly off the arcade's 512 x 400 picture. With margins that removes geometry that should be visible, and the hardware
+	//    (and our GPU) can draw large polygons directly anyway: only coordinates beyond +-16383 (16 bit DMA fields) are still clipped.
+	//      CLIPCK: OR R1,R5 / LSH -10,R5 / RETSEQ / LDI 0,R5
+	for (size_t i = 0; i + 3 <= std::min(scan, ram.size()); i++)
+		if (ram[i] == 0x09E5FFF6 && ram[i + 1] == 0x78850000 && ram[i + 2] == 0x08650000)
+		{
+			ram[i] = 0x09E5FFF2;
+			applied++;
+			log += "  large polygons are no longer split by the clipper\n";
+			break;
+		}
+
+	// 3. polygon clip (CLIP): "all X > 511" tests
 	const uint32_t seq[5] = {0x086101FF, 0x274201C0, 0x27430140, 0x02820003, 0x086301FF};   // LDI 511,R1 / SUBI3 / SUBI3 / AND / LDI 511,R3
 	int n = 0;
 	for (size_t i = 0; i + 5 <= std::min(scan, ram.size()); i++)

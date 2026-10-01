@@ -187,13 +187,20 @@ public:
 		copy_rows_to_image(m_tex_ram, ram + size_t(first) * 256, 256, 256, first, last - first + 1);
 	}
 
+	void set_overlay_offsets(int l, int c, int r) override { m_ovl_off[0] = l; m_ovl_off[1] = c; m_ovl_off[2] = r; }
+
 	void upload_overlay(int page, const uint16_t *layer, int first, int last) override
 	{
 		copy_rows_to_image(m_tex_ovl, layer + size_t(first) * 512, 512 * 2, 512, first, last - first + 1);
 		begin_cb();
 		{
-			float W = page_w_px(), m = float(m_opt.wide_margin);
-			draw_rect_pass(page, m_pipe_ovl, m_set_ovl, Params{{-1 + 2 * m / W, -1, -1 + 2 * (m + 512) / W, 1}, {0, 0, 1, 1}, {0, 0, 0, 0}});
+			static const int cut[4] = {0, 171, 341, 512};
+			const float W = page_w_px();
+			for (int k = 0; k < 3; k++)
+			{
+				float x0 = float(cut[k] + m_ovl_off[k]), x1 = float(cut[k + 1] + m_ovl_off[k]);
+				draw_rect_pass(page, m_pipe_ovl, m_set_ovl, Params{{-1 + 2 * x0 / W, -1, -1 + 2 * x1 / W, 1}, {float(cut[k]) / 512.0f, 0, float(cut[k + 1]) / 512.0f, 1}, {0, 0, 0, 0}});
+			}
 		}
 	}
 
@@ -399,6 +406,7 @@ public:
 	}
 
 private:
+	int m_ovl_off[3] = {0, 0, 0};
 	int page_w() const { return (512 + 2 * m_opt.wide_margin) * m_opt.scale; }
 	int page_h() const { return 512 * m_opt.scale; }
 	float page_w_px() const { return float(512 + 2 * m_opt.wide_margin); }

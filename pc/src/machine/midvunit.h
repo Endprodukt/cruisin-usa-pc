@@ -2,6 +2,8 @@
 // Hardware behaviour follows MAME's midvunit driver (BSD-3-Clause,
 // copyright-holders: Aaron Giles); this is a standalone re-implementation.
 #pragma once
+#include <map>
+#include <unordered_map>
 #include "rom_patches.h"
 
 #include <cstdint>
@@ -52,6 +54,12 @@ public:
 	bool load_roms(const std::string &zip_path, const std::string &version, std::string &err);
 	void reset();
 	void debug_ram_usage() const;
+	bool m_pchist_on = false;
+	bool m_qhist_on = false;
+	bool m_qpc_on = false;
+	uint64_t m_qpc_from = 0;
+	uint64_t m_qhist[20] = {};
+	std::map<uint32_t, uint32_t> m_pchist;
 	bool read_telemetry(struct Telemetry &t) const;   // player car state for motion / force feedback
 	RomPatchOptions rom_patches;           // applied to the RAM copy at reset
 
@@ -72,6 +80,7 @@ public:
 	void attach_video_backend(IVideoBackend *gpu);
 	void set_shadow_mode(int m) { m_shadow_mode = m; }
 	void set_wide_margin(int m) { m_wide = m; }
+	void set_hud_spread(float f) { m_hud_spread = f; }   // 0 = HUD in the 4:3 centre, 1 = pushed to the screen edges
 	void present_gpu();                       // flush pending draws and present the display page
 	int  display_page() const { return m_present_page; }
 
@@ -144,6 +153,10 @@ private:
 	IVideoBackend *m_gpu = nullptr;
 	std::vector<GpuQuad> m_gq;
 	std::vector<GpuQuad> m_gs;             // shadow quads (modern shadow mode), same page as m_gq_page
+	float m_hud_spread = 0;
+	std::unordered_map<uint32_t, uint8_t> m_pc2d;   // writer PC -> is the 2D (rdma) routine
+	bool writer_is_2d();
+	bool in_race() const;
 	int m_wide = 0;                        // widescreen: extra page pixels on each side (quads are shifted by this)
 	int m_shadow_mode = 0;                 // 0 original, 1 modern, 2 off
 	int m_gq_page = 0;
@@ -160,6 +173,7 @@ private:
 	uint64_t m_dcs_synced = 0;
 	double   m_dcs_ahead = 0;
 
+	std::vector<uint32_t> m_code_orig;      // pristine first 128K words of the ROM (patches are applied to m_rom at reset)
 	std::vector<uint32_t> m_ram0, m_ram1;   // 0x000000 / 0x400000, 128K words each
 	std::vector<uint32_t> m_rom;            // maindata, mapped at 0xc00000 (4M words)
 	std::vector<uint32_t> m_nvram;          // 0x2000 words

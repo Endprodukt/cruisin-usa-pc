@@ -133,6 +133,7 @@ bool MidVUnit::load_roms(const std::string &zip_path, const std::string &version
 	}
 	const std::string &dir = vd->second;
 
+	m_code_orig.clear();
 	std::fill(m_rom.begin(), m_rom.end(), 0xffffffffu);
 
 	auto load_game = [&](const std::string &d, int unit, uint32_t byteoff, int lane) -> bool {
@@ -203,13 +204,17 @@ bool MidVUnit::load_roms(const std::string &zip_path, const std::string &version
 
 void MidVUnit::reset()
 {
-	// boot: the first 128K words of the ROM are copied to RAM at 0
-	std::copy(m_rom.begin(), m_rom.begin() + 0x20000, m_ram0.begin());
+	// Optional program patches go into the in-memory ROM image (the game re-copies its code from the ROM while it runs,
+	// so patching only the RAM copy would be undone). The image is restored from the pristine copy first.
+	if (m_code_orig.empty()) m_code_orig.assign(m_rom.begin(), m_rom.begin() + 0x20000);
+	std::copy(m_code_orig.begin(), m_code_orig.end(), m_rom.begin());
 	{
 		std::string plog;
-		int n = apply_rom_patches(m_ram0, rom_patches, plog);
+		int n = apply_rom_patches(m_rom, rom_patches, plog);
 		if (n && std::getenv("ROMPATCH_LOG")) std::fprintf(stderr, "ROM patches: %d\n%s", n, plog.c_str());
 	}
+	// boot: the first 128K words of the ROM are copied to RAM at 0
+	std::copy(m_rom.begin(), m_rom.begin() + 0x20000, m_ram0.begin());
 
 	m_control_data = 0;
 	m_cmos_protected = 0;
@@ -235,6 +240,7 @@ void MidVUnit::reset()
 int MidVUnit::run_cpu(int cycles)
 {
 	int used = m_cpu->run(cycles);
+	if (m_pchist_on) m_pchist[m_cpu->pc() >> 8]++;
 	sync_dcs();
 	return used;
 }
@@ -590,6 +596,19 @@ void MidVUnit::dma_trigger()
 	std::memcpy(q.dma, m_dma_data, sizeof(q.dma));
 	q.page = (m_page_control & 4) ? 1 : 0;
 	if (const char *sk = std::getenv("SKIPQ")) { unsigned v = unsigned(std::strtoul(sk, nullptr, 16)); if (q.dma[0] == v) { m_dma_data_index = 0; return; } }
+	if (m_qpc_on && m_frame_count >= m_qpc_from && m_frame_count < m_qpc_from + 1)
+	{
+		int xs[4], ys[4]; for (int i = 0; i < 4; i++) { xs[i] = int(int16_t(q.dma[2 + i * 2])); ys[i] = int(int16_t(q.dma[3 + i * 2])); }
+		std::fprintf(stderr, "QPC pc=%06X flags=%04X x=%d..%d y=%d..%d\n", m_cpu->pc(), q.dma[0], std::min(std::min(xs[0], xs[1]), std::min(xs[2], xs[3])), std::max(std::max(xs[0], xs[1]), std::max(xs[2], xs[3])),
+		             std::min(std::min(ys[0], ys[1]), std::min(ys[2], ys[3])), std::max(std::max(ys[0], ys[1]), std::max(ys[2], ys[3])));
+	}
+	if (m_qhist_on && (q.dma[0] & 0x2000) == 0)
+	{
+		int xs[4]; for (int i = 0; i < 4; i++) xs[i] = int(int16_t(q.dma[2 + i * 2]));
+		int cx = (std::min(std::min(xs[0], xs[1]), std::min(xs[2], xs[3])) + std::max(std::max(xs[0], xs[1]), std::max(xs[2], xs[3]))) / 2;
+		int b = (cx + 256) >> 6;
+		if (b >= 0 && b < 20) m_qhist[b]++;
+	}
 	if (std::getenv("QBIG") && q.dma[0] != 0x0100 && m_gpu)
 	{ int w = int(int16_t(q.dma[4])) - int(int16_t(q.dma[2])); if (w > 300 || w < -300) { std::fprintf(stderr, "BIG f%llu ", (unsigned long long)m_frame_count); for (int i = 0; i < 16; i++) std::fprintf(stderr, "%04X ", q.dma[i]); std::fprintf(stderr, "\n"); } }
 	if (const char *qd = std::getenv("QDUMP"))
@@ -1077,6 +1096,16 @@ void MidVUnit::gpu_sync_state()
 		m_gpu->upload_texture_rows(m_textureram.data(), m_tex_lo, m_tex_hi);
 		m_tex_lo = 0x7fffffff; m_tex_hi = -1;
 	}
+	{
+		// the CPU-drawn layer (HUD text, gauges) follows the same placement as the 2D quads
+		int l = m_wide, c = m_wide, r = m_wide;
+		if (m_hud_spread > 0 && in_race())
+		{
+			l = int(std::lround(m_wide * (1.0f - m_hud_spread)));
+			r = int(std::lround(m_wide * (1.0f + m_hud_spread)));
+		}
+		m_gpu->set_overlay_offsets(l, c, r);
+	}
 	for (int pg = 0; pg < 2; pg++)
 	{
 		if (m_ovl_hi[pg] < 0)
@@ -1115,7 +1144,8 @@ void MidVUnit::gpu_flush_quads()
 void MidVUnit::gpu_add_quad(const VQuad &q)
 {
 	// the game's shadows are flat dithered quads; in modern mode they become a soft blended pass
-	const bool is_shadow = (q.dma[0] & 0x2000) != 0;
+	const bool is2d = writer_is_2d();
+	const bool is_shadow = (q.dma[0] & 0x2000) != 0 && !is2d;   // dithered boxes of the 2D routine are HUD panels, not shadows
 	if (is_shadow && m_shadow_mode == 2)
 		return;
 	const bool modern = is_shadow && m_shadow_mode == 1;
@@ -1159,6 +1189,18 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 			if (rmask & (1 << eff)) g.p[vn * 2] += 0.001f;
 			if (bmask & (1 << eff)) g.p[vn * 2 + 1] += 0.001f;
 		}
+	if (std::getenv("QSTAT"))
+	{
+		static uint64_t nright = 0, nleft = 0, ntotal = 0;
+		float mn = std::min(std::min(vx[0], vx[1]), std::min(vx[2], vx[3])), mx = std::max(std::max(vx[0], vx[1]), std::max(vx[2], vx[3]));
+		ntotal++;
+		static uint64_t hist[20] = {};
+		{ int bkt = int(std::floor((mn + mx) * 0.5f / 64.0f)) + 4; if (bkt >= 0 && bkt < 20) hist[bkt]++; }
+		if (ntotal % 400000 == 0) { for (int i = 0; i < 20; i++) std::fprintf(stderr, "%llu ", (unsigned long long)hist[i]); std::fprintf(stderr, "<- quad centres per 64 px bucket from x=-256\n"); }
+		if (mn >= 512) nright++;
+		if (mx < 0) nleft++;
+		if (ntotal % 200000 == 0) std::fprintf(stderr, "QSTAT total %llu right-only %llu left-only %llu\n", (unsigned long long)ntotal, (unsigned long long)nright, (unsigned long long)nleft);
+	}
 	if (m_wide)
 	{
 		// the page is wider than the arcade's 512 px: game x 0 sits m_wide pixels in. A flat full-screen fill (the per-frame clear)
@@ -1167,11 +1209,19 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 		float miny = std::min(std::min(vy[0], vy[1]), std::min(vy[2], vy[3])), maxy = std::max(std::max(vy[0], vy[1]), std::max(vy[2], vy[3]));
 		bool flat = (d[0] & 0x300) != 0x100 || (d[0] & 0xc00) == 0x400;
 		bool full = flat && minx <= 0 && maxx >= 511 && miny <= 0 && maxy >= 399;
+		// HUD placement: 2D elements of a race are moved towards the screen edges by their third of the picture
+		float shift = float(m_wide);
+		if (is2d && m_hud_spread > 0 && in_race() && !full)
+		{
+			float cx = (minx + maxx) * 0.5f;
+			if (cx < 171) shift = float(m_wide) * (1.0f - m_hud_spread);
+			else if (cx > 341) shift = float(m_wide) * (1.0f + m_hud_spread);
+		}
 		for (int i = 0; i < 4; i++)
 		{
 			float &x = g.p[i * 2];
 			if (full) x = vx[i] <= 0 ? 0.5f : x + float(2 * m_wide);
-			else x += float(m_wide);
+			else x += shift;
 		}
 	}
 	g.edge = 0;
@@ -1193,6 +1243,18 @@ void MidVUnit::present_gpu()
 
 void MidVUnit::debug_ram_usage() const
 {
+	std::fprintf(stderr, "words ram0[BF]=%08X ram0[C3]=%08X ram1[BF]=%08X rom[BF]=%08X ram0[55]=%08X ram1[55]=%08X\n", m_ram0[0xBF], m_ram0[0xC3], m_ram1[0xBF], m_rom[0xBF], m_ram0[0x55], m_ram1[0x55]);
+	for (auto &kv : m_pchist) if (kv.second > 40) std::fprintf(stderr, "PCHIST %06X00 %u\n", kv.first, kv.second);
+	{
+		const uint32_t pat[2] = {0x04E21F40u, 0x04E23A98u};
+		auto scan = [&](const char *name, const std::vector<uint32_t> &v) {
+			for (size_t i = 0; i + 4 <= v.size(); i++)
+				if (v[i] == pat[0] || v[i] == pat[1]) std::fprintf(stderr, "pattern %08X in %s at 0x%zX\n", v[i], name, i);
+		};
+		scan("ram0", m_ram0); scan("ram1", m_ram1); scan("rom", m_rom);
+		std::vector<uint32_t> ir(m_iram, m_iram + 0x800);
+		scan("iram", ir);
+	}
 	for (int b = 0; b < 2; b++)
 	{
 		const std::vector<uint32_t> &r = b ? m_ram1 : m_ram0;
@@ -1200,4 +1262,28 @@ void MidVUnit::debug_ram_usage() const
 		for (size_t i = 0; i < r.size(); i++) if (r[i]) { hi = i; nz++; }
 		std::fprintf(stderr, "RAM%d: highest nonzero word 0x%zX, %zu nonzero of %zu\n", b, hi, nz, r.size());
 	}
+}
+
+bool MidVUnit::in_race() const
+{
+	return (m_ram0[0xC8F5] & 0xf) == 4;   // _MODE == MGAME
+}
+
+// The 2D draw routine (rdma / _stuff_fpga in TOTALA.ASM) is the only writer that starts with
+//   STI RS,($xxxx) / STI RE,($xxxx)
+// A trigger comes from inside it; recognise it by searching back for that pair.
+bool MidVUnit::writer_is_2d()
+{
+	uint32_t pc = m_cpu->pc();
+	auto it = m_pc2d.find(pc);
+	if (it != m_pc2d.end()) return it->second != 0;
+	bool found = false;
+	if (pc < m_ram0.size())
+		for (uint32_t k = 1; k < 96 && k <= pc && !found; k++)
+		{
+			uint32_t a = pc - k;
+			if ((m_ram0[a] & 0xffff0000u) == 0x15390000u && (m_ram0[a + 1] & 0xffff0000u) == 0x153A0000u) found = true;
+		}
+	m_pc2d[pc] = found ? 1 : 0;
+	return found;
 }

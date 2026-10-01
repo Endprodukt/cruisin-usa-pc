@@ -57,6 +57,9 @@ public:
 	virtual void upload_palette(const uint32_t *argb32768, int first, int last) = 0;
 	virtual void upload_texture_rows(const uint8_t *ram4mb, int first_row, int last_row) = 0;   // 256-byte rows
 	// CPU-drawn pixels (index | 0x8000 marks a valid pixel) composited into a page
+	// where the CPU-drawn layer (HUD text and gauges) is placed on the wide page, as extra pixels from the page's left edge for the
+	// left / centre / right third of the 512 px picture
+	virtual void set_overlay_offsets(int left, int centre, int right) = 0;
 	virtual void upload_overlay(int page, const uint16_t *layer512, int first_row, int last_row) = 0;
 
 	virtual void draw(int page, const GpuQuad *quads, int count) = 0;

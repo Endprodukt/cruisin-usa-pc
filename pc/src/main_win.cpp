@@ -212,6 +212,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	if (std::string v = arg_value(a, "--draw-distance"); !v.empty()) S.video.draw_distance = std::clamp(std::atoi(v.c_str()), 10, 400);
 	if (std::string v = arg_value(a, "--aa"); !v.empty()) S.video.aa = std::clamp(std::atoi(v.c_str()), 0, 3);
 	if (std::string v = arg_value(a, "--aspect"); !v.empty()) S.video.aspect = v == "16:9" ? AspectMode::Wide169 : v == "21:9" ? AspectMode::Wide219 : AspectMode::Native43;
+	if (std::string v = arg_value(a, "--hud"); !v.empty()) S.video.hud = v == "edges" ? HudPlacement::Edges : v == "25" ? HudPlacement::Quarter25 : v == "50" ? HudPlacement::Half50 : v == "75" ? HudPlacement::Quarter75 : HudPlacement::Centre;
 	if (std::string v = arg_value(a, "--scale"); !v.empty()) S.video.internal_scale = std::clamp(std::atoi(v.c_str()), 1, 8);
 	if (std::string v = arg_value(a, "--vsync"); !v.empty()) S.video.vsync = v != "0";
 	if (std::string v = arg_value(a, "--filter"); !v.empty()) S.video.texture_filter = v != "0";
@@ -260,6 +261,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	m.rom_patches.draw_distance_pct = S.video.draw_distance;
 	m.rom_patches.wide_margin = S.video.renderer == Renderer::Cpu ? 0 : wide_margin_for(S.video);
 	m.set_wide_margin(m.rom_patches.wide_margin);
+	m.set_hud_spread(S.video.hud == HudPlacement::Edges ? 1.0f : S.video.hud == HudPlacement::Quarter25 ? 0.25f : S.video.hud == HudPlacement::Half50 ? 0.5f : S.video.hud == HudPlacement::Quarter75 ? 0.75f : 0.0f);
 	m.reset();
 	if (!m.load_nvram(S.nvram))
 		m.load_default_nvram();        // embedded, pre-calibrated CMOS: no calibration screen, ever

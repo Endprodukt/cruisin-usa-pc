@@ -273,12 +273,13 @@ void page_video(Launcher &L)
 	help("With the aspect ratio set to 16:9 or 21:9 the 3D view is widened instead of stretched: the game's culling is extended and the "
 	     "image gets extra room left and right (about +86 px at 16:9, 192 px at 21:9 on the arcade's 512). The HUD stays in the 4:3 centre. "
 	     "Takes effect at the next start of the game. Needs the OpenGL or Vulkan renderer.");
-	ImGui::BeginDisabled(true);
-	static const char *const huds[] = {"Centre (4:3)", "Edges", "25% out", "50% out", "75% out"};
+	ImGui::BeginDisabled(!gpu);
+	static const char *const huds[] = {"Centre (4:3)", "Screen edges", "25% towards the edges", "50% towards the edges", "75% towards the edges"};
 	int h = int(v.hud);
-	combo(L, "HUD placement", h, huds);
+	if (combo(L, "HUD placement", h, huds)) v.hud = HudPlacement(h);
 	ImGui::EndDisabled();
-	ImGui::TextDisabled("HUD placement follows in a later update.");
+	help("Where the race HUD sits on a wide picture: in the 4:3 centre, or spread towards the left and right edge (left items left, "
+	     "right items right, time and rank stay centred). Only has an effect with real widescreen. Takes effect at the next start.");
 }
 
 void page_audio(Launcher &L)

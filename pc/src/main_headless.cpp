@@ -56,6 +56,11 @@ int main(int argc, char **argv)
 	if (!m.load_roms(rom, ver, err)) { fprintf(stderr, "ROM error: %s\n", err.c_str()); return 1; }
 	std::vector<int16_t> pcm; double rate = 0; int blocks = 0;
 	m.on_audio = [&](const int16_t *b, int n, double r) { pcm.insert(pcm.end(), b, b + n); if (rate == 0) rate = r; blocks++; };
+	if (const char *dd = getenv("DD")) m.rom_patches.draw_distance_pct = atoi(dd);
+	if (getenv("PCHIST")) m.m_pchist_on = true;
+	if (const char *wm = getenv("WM")) m.rom_patches.wide_margin = atoi(wm);
+	if (getenv("QHIST")) m.m_qhist_on = true;
+	if (const char *qp = getenv("QPC")) { m.m_qpc_on = true; m.m_qpc_from = strtoull(qp, nullptr, 10); }
 	m.reset();
 	if (getenv("DEFAULT_NV")) m.load_default_nvram();
 	if (const char *adj = getenv("ADJ")) { int idx, val, n = 0; const char *q = adj; while (sscanf(q, "%d=%d%n", &idx, &val, &n) == 2) { cmos::set(m.nvram(), idx, uint32_t(val)); q += n; if (*q == ',') q++; } }
@@ -103,6 +108,7 @@ int main(int argc, char **argv)
 		if (const char *tl = getenv("TELEMLOG")) { Telemetry t; if (m.read_telemetry(t) && f % atoi(tl) == 0) fprintf(stderr, "T %d spd=%.2f skid=%.2f thr=%.2f brk=%.2f turn=%.3f trac=%.2f rpm=%.1f yv=%.3f xm=%.3f zm=%.3f xl=%.3f zl=%.3f d2c=%.1f road=%d onroad=%d bump=%d spin=%d air=%d/%d gear=%d yv0=%.2f dy0=%.2f col=%d\n", f, t.speed, t.skid, t.throttle, t.brake, t.turn, t.traction, t.rpm, t.y_vel, t.x_mom, t.z_mom, t.x_lean, t.z_lean, t.dist_to_center, (int)t.road_friction, t.onroad, t.bump, t.spin, t.air_front, t.air_rear, t.gear, t.susp_yv[0], t.susp_dy[0], t.collided[0]); }
 		if (f % 60 == 0) fprintf(stderr, "frame %d pc=%06X quads=%llu vis=%dx%d\n", f, m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
+	if (getenv("QHIST")) { for (int i = 0; i < 20; i++) fprintf(stderr, "%llu ", (unsigned long long)m.m_qhist[i]); fprintf(stderr, "<- quad centres per 64 px from x=-256\n"); }
 	if (getenv("RAMUSE")) m.debug_ram_usage();
 	if (const char *tr = getenv("TEXRAW")) { FILE *tf = fopen(tr, "wb"); fwrite(m.texture_ram(), 1, 0x400000, tf); fclose(tf); }
 	if (const char *td = getenv("TEXDUMP"))

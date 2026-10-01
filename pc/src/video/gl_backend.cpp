@@ -194,13 +194,19 @@ public:
 		glActiveTexture(GL_TEXTURE0 + 1);
 		glBindTexture(GL_TEXTURE_2D, m_tex_pal);
 		glActiveTexture(GL_TEXTURE0);
-		{
-			float W = page_w_px(), m = float(m_opt.wide_margin);
-			set_params({-1 + 2 * m / W, -1, -1 + 2 * (m + 512) / W, 1}, {0, 0, 1, 1});
-		}
 		glBindVertexArray(m_vao_empty);
-		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+		// three strips of the 512 px layer, each placed with its own offset (HUD placement)
+		static const int cut[4] = {0, 171, 341, 512};
+		const float W = page_w_px();
+		for (int k = 0; k < 3; k++)
+		{
+			float x0 = float(cut[k] + m_ovl_off[k]), x1 = float(cut[k + 1] + m_ovl_off[k]);
+			set_params({-1 + 2 * x0 / W, -1, -1 + 2 * x1 / W, 1}, {float(cut[k]) / 512.0f, 0, float(cut[k + 1]) / 512.0f, 1});
+			glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+		}
 	}
+
+	void set_overlay_offsets(int l, int c, int r) override { m_ovl_off[0] = l; m_ovl_off[1] = c; m_ovl_off[2] = r; }
 
 	void draw(int page, const GpuQuad *q, int count) override
 	{
@@ -478,6 +484,7 @@ private:
 		glViewport(0, 0, page_w(), page_h());
 	}
 
+	int m_ovl_off[3] = {0, 0, 0};
 	int page_w() const { return (512 + 2 * m_opt.wide_margin) * m_opt.scale; }
 	int page_h() const { return 512 * m_opt.scale; }
 	float page_w_px() const { return float(512 + 2 * m_opt.wide_margin); }

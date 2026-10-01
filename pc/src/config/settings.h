@@ -33,7 +33,7 @@ struct VideoSettings
 
 	// reserved for the widescreen / rendering stage (stored now, applied when implemented)
 	bool widescreen_hack = true;              // with a 16:9 / 21:9 aspect: show more of the world at the sides instead of stretching
-	HudPlacement hud = HudPlacement::Edges;
+	HudPlacement hud = HudPlacement::Centre;
 	int draw_distance = 100;                  // percent of the original
 	ShadowMode shadows = ShadowMode::Modern;
 	int shadow_strength = 55;                 // percent darkness of modern shadows
