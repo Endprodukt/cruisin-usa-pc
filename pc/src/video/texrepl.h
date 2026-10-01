@@ -2,7 +2,7 @@
 //
 // The arcade's textures are 256 x 256 pages of 8 bit palette indices; the palette is chosen per polygon (pixdata). A "texture" here is
 // therefore one page seen through one palette range: its identity is (page base row, palette base, hash of the page's bytes and
-// of the 256 palette entries it reaches), written as tex_BBBB_PPPP_HHHHHHHH.png.
+// of the 256 palette entries it reaches), written as tex_<hash>.png.
 //
 //  * export:  every new texture that is drawn is written to the dump folder as a 256 x 256 RGBA PNG (index 0 transparent where the
 //             polygon uses transparency).
@@ -24,6 +24,7 @@ public:
 		std::string dump_dir, repl_dir;
 		bool dump = false, replace = false;
 		int max_res = 2048;
+		bool variants = false;   // export: one file per palette variant (colour hash) instead of one per distinct page data
 	};
 
 	void configure(const Config &c) { m_c = c; }
@@ -46,16 +47,17 @@ private:
 		uint64_t tex_gen = ~0ull;
 		uint32_t pal[256] = {};
 		bool used[256] = {};
-		uint32_t hash = 0;
+		uint64_t hash = 0, dhash = 0;   // colour hash, page data hash
+		bool keyed = false;
 		int layer = 0;
 	};
-	static uint32_t page_hash(const uint8_t *ram, uint32_t base, const uint32_t *pal, uint32_t pix, bool *used);
-	void write_dump(uint32_t base, uint32_t pix, uint32_t hash, uint32_t mode, const uint8_t *ram, const uint32_t *pal);
+	static uint64_t colour_hash(const uint8_t *ram, uint32_t base, const uint32_t *pal, uint32_t pix, bool keyed, bool *used, int *colours, uint64_t *data_hash);
+	void write_dump(uint32_t base, uint32_t pix, uint64_t hash, const char *prefix, bool keyed, const uint8_t *ram, const uint32_t *pal);
 
 	Config m_c;
 	int m_res = 0, m_layers = 0;
 	std::vector<std::vector<uint8_t>> m_pages;
-	std::unordered_map<uint64_t, int> m_table;     // (base, pix, hash) -> layer
+	std::unordered_map<uint64_t, int> m_table;     // colour hash -> layer
 	std::unordered_map<uint32_t, Entry> m_cache;   // (base, pix) -> last lookup
 	std::unordered_set<uint64_t> m_dumped;
 };

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 uint32_t c3x_float(double v)
 {
@@ -55,16 +56,62 @@ void draw_distance(std::vector<uint32_t> &ram, int pct, int &applied, std::strin
 		log += "  level-of-detail distances " + std::to_string(d1) + " / " + std::to_string(d2) + "\n";
 	}
 
-	// scenery activation block: ATTRACT_ACTIVATE 15000, ACTIVATE 5000, DACT 80000, DDACT 15000, ATTR_DDACT 45000 (floats)
+	const double k = double(pct) / 100.0;
 	const uint32_t blk[5] = {c3x_float(15000), c3x_float(5000), c3x_float(80000), c3x_float(15000), c3x_float(45000)};
 	long b = find_seq(ram, blk, 5, scan);
-	if (b >= 0 && pct > 100)
+
+	if (pct > 100)
 	{
-		// only the deactivation distances of dynamic objects (traffic, aircraft, trains) are pushed out; 80000 is the engine's limit
-		ram[size_t(b) + 3] = c3x_float(std::min(15000.0 * pct / 100.0, 80000.0));
-		ram[size_t(b) + 4] = c3x_float(std::min(45000.0 * pct / 100.0, 80000.0));
-		applied += 2;
-		log += "  dynamic object deactivation distances scaled\n";
+		// no model degrading at all from 200 % on: the instruction that loads the cruder model is turned into a NOP
+		if (pct >= 200 && l1 >= 0 && l2 >= 0)
+		{
+			ram[size_t(l1) + 1] = 0x0C800000;
+			ram[size_t(l2) + 1] = 0x0C800000;
+			applied += 2;
+			log += "  level-of-detail switching disabled\n";
+		}
+
+		// scenery sections, dynamic objects and the object lists work over k times the original distances
+		if (b >= 0)
+		{
+			for (int i = 0; i < 5; i++) ram[size_t(b) + size_t(i)] = c3x_float(std::min(double(i == 1 ? 5000 : i == 0 ? 15000 : i == 2 ? 80000 : i == 3 ? 15000 : 45000) * k, 1.0e6));
+			applied++;
+			log += "  scenery activation and deactivation distances x" + std::to_string(pct) + "%\n";
+		}
+		const uint32_t act[2] = {75000u, 80000u};   // ACTIVEHI1 / ACTIVEHI of the object lists
+		long a2 = find_seq(ram, act, 2, scan);
+		if (a2 >= 0) { ram[size_t(a2)] = uint32_t(75000 * k); ram[size_t(a2) + 1] = uint32_t(80000 * k); applied++; }
+
+		// The engine projects with a 1/z table of 5000 entries (z / 16, up to 80000). A longer table is built in a free stretch of the
+		// ROM image and the table pointer, the table limit (CMPI/LDIGT 4999 in the projection code) and the far clip are moved.
+		const uint32_t hs[3] = {c3x_float(256.0), c3x_float(200.0), 80000u};
+		long h = find_seq(ram, hs, 3, 0x1000);
+		if (h >= 1)
+		{
+			const uint32_t old_ptr = ram[size_t(h) - 1];
+			const size_t entries = size_t(4999 * k) + 2;
+			// the part of the ROM window above the last graphics ROM is empty (all ones) and not part of the RAM boot copy
+			size_t start = 0x300000;
+			for (size_t i = 0; i < entries + 80 && start; i++)
+				if (start + i >= ram.size() || ram[start + i] != 0xffffffffu) start = 0;
+			if (start && old_ptr >= 80 && old_ptr + 5000 < ram.size())
+			{
+				// 80 entries in front of the label serve negative indices (points just behind the camera)
+				for (size_t i = 0; i < 80; i++) ram[start + i] = ram[old_ptr - 80 + i];
+				for (size_t i = 0; i < entries; i++)
+					ram[start + 80 + i] = i < 5000 ? ram[old_ptr + i] : c3x_float(512.0 / (16.0 * double(i)));
+				ram[size_t(h) - 1] = 0xC00000u + uint32_t(start + 80);
+				ram[size_t(h) + 2] = uint32_t(80000 * k);
+				const uint32_t lim = uint32_t(4999 * k);
+				int n = 0;
+				for (size_t i = 0; i < 0xC8F4; i++)
+					if ((ram[i] & 0xffff) == 0x1387 && (ram[i] & 0x00600000) == 0x00600000) { ram[i] = (ram[i] & 0xffff0000u) | lim; n++; }
+				applied++;
+				log += "  longer 1/z table (" + std::to_string(entries) + " entries), far clip " + std::to_string(uint32_t(80000 * k)) + ", " + std::to_string(n) + " table limits\n";
+			}
+			else
+				log += "  no free ROM space for the longer 1/z table\n";
+		}
 	}
 
 	// far clip: objects whose nearest point is beyond HIGH_CLIP_LEV8 (80000) are dropped. Only shortened here
@@ -137,12 +184,36 @@ void widescreen(std::vector<uint32_t> &ram, int margin, int &applied, std::strin
 	if (n) { applied += n; log += "  polygon clip right edge moved (" + std::to_string(n) + " sites)\n"; }
 }
 
+// Rubber banding (RACER.ASM GETPOWER): the opponents' engine power is 1 + correction * RELATIVITY, the correction growing with the
+// distance to the player (+20..40 % when behind, -10..40 % when ahead). RELATIVITY is a per-racer factor in the race table
+// (1.0 for most racers, 0.35 / 0.30 for two of them); scaling the ten factors scales the whole effect and keeps the racers' ratios.
+void rubberband(std::vector<uint32_t> &ram, int pct, int &applied, std::string &log)
+{
+	if (pct == 100) return;
+	pct = std::clamp(pct, 0, 300);
+	const double accel[3] = {0.90, 0.87, 0.84};
+	for (size_t i = 0; i + 14 < 0x20000; i++)
+		if (ram[i] == c3x_float(accel[0]) && ram[i + 6] == c3x_float(accel[1]) && ram[i + 12] == c3x_float(accel[2]) && ram[i + 1] == 0)
+		{
+			static const double rel[10] = {1.0, 1.0, 1.0, 1.0, 1.0, 0.35, 1.0, 0.30, 1.0, 1.0};
+			for (int k = 0; k < 10; k++)
+			{
+				double v = rel[k] * double(pct) / 100.0;
+				ram[i + 1 + size_t(k) * 6] = v == 0.0 ? 0x80000000u : c3x_float(v);
+			}
+			applied++;
+			log += "  opponent rubber banding " + std::to_string(pct) + "%\n";
+			return;
+		}
+}
+
 } // namespace
 
 int apply_rom_patches(std::vector<uint32_t> &ram, const RomPatchOptions &opt, std::string &log)
 {
 	int applied = 0;
 	draw_distance(ram, opt.draw_distance_pct, applied, log);
+	rubberband(ram, opt.rubberband_pct, applied, log);
 	widescreen(ram, opt.wide_margin, applied, log);
 	return applied;
 }

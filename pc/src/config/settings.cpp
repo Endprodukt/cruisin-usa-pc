@@ -184,6 +184,7 @@ bool Settings::load(const std::string &path)
 	r.str("game", "nvram", nvram);
 	r.boolean("game", "show_launcher", show_launcher);
 	r.boolean("game", "fast_boot", fast_boot);
+	r.integer("game", "rubberband", rubberband, 0, 300);
 
 	r.choice("video", "renderer", video.renderer, kRenderer);
 	r.choice("video", "window_mode", video.window_mode, kWindow);
@@ -198,6 +199,7 @@ bool Settings::load(const std::string &path)
 	r.boolean("video", "smooth_output", video.smooth_output);
 	r.integer("video", "aa", video.aa, 0, 3);
 	r.boolean("video", "export_textures", video.export_textures);
+	r.boolean("video", "export_variants", video.export_variants);
 	r.boolean("video", "replace_textures", video.replace_textures);
 	r.boolean("video", "widescreen_hack", video.widescreen_hack);
 	r.choice("video", "hud", video.hud, kHud);
@@ -244,7 +246,7 @@ bool Settings::load(const std::string &path)
 	r.integer("ffb_modern", "master", ffb.fx_master, 0, 200);
 	r.integer("ffb_modern", "aligning", ffb.fx_aligning, 0, 200);
 	r.integer("ffb_modern", "centering", ffb.fx_centering, 0, 200);
-	r.integer("ffb_modern", "arcade", ffb.fx_arcade, 0, 200);
+	r.integer("ffb_modern", "menu", ffb.fx_menu, 0, 200);
 	r.integer("ffb_modern", "impact", ffb.fx_impact, 0, 200);
 	r.integer("ffb_modern", "surface", ffb.fx_surface, 0, 200);
 	r.integer("ffb_modern", "kerb", ffb.fx_kerb, 0, 200);
@@ -273,7 +275,7 @@ bool Settings::save(const std::string &path) const
 	auto b = [](bool v) { return v ? "true" : "false"; };
 	o << "; Cruis'n USA PC -- written by the launcher. Every key is optional; defaults apply.\n\n";
 	o << "[game]\nrom = " << rom << "\nversion = " << version << "\nnvram = " << nvram
-	  << "\nshow_launcher = " << b(show_launcher) << "\nfast_boot = " << b(fast_boot) << "\n\n";
+	  << "\nshow_launcher = " << b(show_launcher) << "\nfast_boot = " << b(fast_boot) << "\n; opponents' rubber band (catch-up boost) in percent of the original: 100 original, 50 reduced, 0 none\nrubberband = " << rubberband << "\n\n";
 
 	o << "[video]\n; renderer: cpu | opengl | vulkan      window_mode: window | borderless | fullscreen\n"
 	  << "renderer = " << to_string(video.renderer) << "\nwindow_mode = " << to_string(video.window_mode)
@@ -281,7 +283,7 @@ bool Settings::save(const std::string &path) const
 	  << "\n; internal_scale 1..8 x the arcade's 512x400\ninternal_scale = " << video.internal_scale
 	  << "\n; aspect: 4:3 | 16:9 | 21:9 | stretch\naspect = " << to_string(video.aspect)
 	  << "\ninteger_scale = " << b(video.integer_scale) << "\nvsync = " << b(video.vsync)
-	  << "\n; aa: 0 off | 1..3 FXAA light/normal/strong (post filter; internal_scale above 1 is supersampling)\naa = " << video.aa << "\n; textures: export_textures writes every drawn texture to textures/dump (tex_BBBB_PPPP_HHHHHHHH.png); files with the same\n; name in textures/replace are drawn instead (any square size up to 2048)\nexport_textures = " << b(video.export_textures) << "\nreplace_textures = " << b(video.replace_textures)
+	  << "\n; aa: 0 off | 1..3 FXAA light/normal/strong (post filter; internal_scale above 1 is supersampling)\naa = " << video.aa << "\n; textures: export_textures writes every drawn texture to textures/dump (tex_<hash>.png); files with the same\n; name in textures/replace are drawn instead (any square size up to 2048)\nexport_textures = " << b(video.export_textures) << "\nexport_variants = " << b(video.export_variants) << "\nreplace_textures = " << b(video.replace_textures)
 	  << "\ntexture_filter = " << b(video.texture_filter) << "\nsmooth_output = " << b(video.smooth_output)
 	  << "\n; reserved for the widescreen / rendering stage\nwidescreen_hack = " << b(video.widescreen_hack)
 	  << "\nhud = " << to_string(video.hud) << "\ndraw_distance = " << video.draw_distance
@@ -321,7 +323,7 @@ bool Settings::save(const std::string &path) const
 	  << "\nrumble_strength = " << ffb.rumble_strength
 	  << "\n; mode: vanilla (the game's own force only) | modern (adds effects from the game's car state, see [ffb_modern])"
 	  << "\nmode = " << to_string(ffb.mode) << "\n\n"
-	  << "[ffb_modern]\n; strength of each effect in percent of its default, 0 = off\nmaster = " << ffb.fx_master << "\naligning = " << ffb.fx_aligning << "\ncentering = " << ffb.fx_centering << "\narcade = " << ffb.fx_arcade << "\nimpact = " << ffb.fx_impact << "\nsurface = " << ffb.fx_surface
+	  << "[ffb_modern]\n; strength of each effect in percent of its default, 0 = off\nmaster = " << ffb.fx_master << "\naligning = " << ffb.fx_aligning << "\ncentering = " << ffb.fx_centering << "\narcade = " << ffb.fx_menu << "\nimpact = " << ffb.fx_impact << "\nsurface = " << ffb.fx_surface
 	  << "\nkerb = " << ffb.fx_kerb << "\nbump = " << ffb.fx_bump << "\ncollision = " << ffb.fx_collision << "\nspin = " << ffb.fx_spin
 	  << "\nlanding = " << ffb.fx_landing << "\nengine = " << ffb.fx_engine << "\nskid = " << ffb.fx_skid << "\nair = " << ffb.fx_air
 	  << "\nundersteer = " << ffb.fx_understeer << "\n\n";

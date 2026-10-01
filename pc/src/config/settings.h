@@ -28,7 +28,8 @@ struct VideoSettings
 	bool integer_scale = false;
 	bool vsync = true;
 	bool texture_filter = false;              // bilinear texture filtering on the GPU
-	bool export_textures = false;             // write every drawn texture to textures/dump
+	bool export_textures = false;
+	bool export_variants = false;             // one file per palette variant (e.g. every car colour) instead of one per page             // write every drawn texture to textures/dump
 	bool replace_textures = true;             // draw textures from textures/replace when a matching file exists
 	int aa = 0;                               // 0 off, 1..3 FXAA light/normal/strong
 	bool smooth_output = true;                // linear scaling of the final image
@@ -93,7 +94,7 @@ struct FfbSettings
 	// modern effect strengths, percent of their default (0 = off)
 	int fx_master = 100, fx_surface = 100, fx_kerb = 70, fx_bump = 100, fx_collision = 100, fx_spin = 100;
 	int fx_landing = 100, fx_engine = 25, fx_skid = 100, fx_air = 100, fx_understeer = 100;
-	int fx_aligning = 100, fx_centering = 35, fx_arcade = 25, fx_impact = 100;
+	int fx_aligning = 100, fx_centering = 35, fx_menu = 100, fx_impact = 100;
 };
 
 struct OutputSettings
@@ -111,6 +112,7 @@ struct Settings
 	std::string nvram = "cruisn_usa.nv";
 	bool show_launcher = true;
 	bool fast_boot = true;
+	int rubberband = 100;      // opponents' catch-up boost in percent of the original (0 = none)
 
 	VideoSettings video;
 	AudioSettings audio;

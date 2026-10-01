@@ -244,8 +244,11 @@ void page_video(Launcher &L)
 	ImGui::SeparatorText("Textures");
 	ImGui::BeginDisabled(!gpu);
 	edited(L, ImGui::Checkbox("Export textures while playing", &v.export_textures));
-	help("Writes every texture that gets drawn to textures/dump next to the program as a 256 x 256 PNG (tex_<page>_<palette>_<hash>.png). "
+	help("Writes every texture that gets drawn to textures/dump next to the program as a 256 x 256 PNG (tex_<hash>.png; textures that look the same share one file). "
 	     "Upscale them with any tool and keep the names. F11 toggles the export in game.");
+	edited(L, ImGui::Checkbox("Export every palette variant (car colours etc.)", &v.export_variants));
+	help("Off: one file (idx_<hash>.png) per distinct texture page, shown in the first colours seen; a replacement of it is used for all "
+	     "colour variants. On: one file (tex_<hash>.png) for every colour variant, which allows per-colour replacements but exports many more files.");
 	edited(L, ImGui::Checkbox("Use replacement textures", &v.replace_textures));
 	help("PNGs with the same names in textures/replace (square, 256 to 2048 px; all of them are brought to the largest size) are drawn instead "
 	     "of the original textures. Takes effect at the next start of the game.");
@@ -651,10 +654,10 @@ void controls_ffb(Launcher &L)
 			fx("Self-aligning torque", f.fx_aligning, "The core of the model: the front tyres' force from the game's physics. Resists you in corners, "
 			                                       "gets light when the tyres give up, and throws the wheel into counter-steer in slides, spins and after hits.");
 			fx("Self-centring", f.fx_centering, "A light centring force that grows with speed (the aligning torque already centres the wheel while the car grips).");
-			fx("Arcade force share", f.fx_arcade, "How much of the arcade's own position-servo force is mixed in (kerb jerks, off-road jitter, menus use all of it).");
+			fx("Menu effects", f.fx_menu, "Strength of the arcade's own force outside a race (attract mode, selection screens, results). In a race the force comes from the car state only.");
 			fx("Impact kick", f.fx_impact, "Directional kick when the car's direction changes abruptly: a hit from the left jerks the wheel left, "
 			                                   "a car spinning right throws the wheel to the left.");
-			fx("All effects", f.fx_master, "Overall strength of the effects below (vibrations, kicks); the aligning torque has its own slider.");
+			fx("All effects", f.fx_master, "Overall strength of everything the modern model produces (aligning torque, kicks, vibrations). The final Strength slider above scales the sum.");
 			fx("Road surface", f.fx_surface, "Rumble strips, gravel and grass; stronger and faster with speed.");
 			fx("Kerb tug", f.fx_kerb, "A sideways tug when a wheel drops off the edge of the road.");
 			fx("Bumps", f.fx_bump, "Bumps and road seams.");
@@ -668,7 +671,7 @@ void controls_ffb(Launcher &L)
 			if (ImGui::Button("Reset effect strengths"))
 			{
 				f.fx_master = 100; f.fx_surface = 100; f.fx_kerb = 70; f.fx_bump = 100; f.fx_collision = 100; f.fx_spin = 100;
-				f.fx_landing = 100; f.fx_engine = 25; f.fx_aligning = 100; f.fx_centering = 35; f.fx_arcade = 25; f.fx_impact = 100; f.fx_skid = 100; f.fx_air = 100; f.fx_understeer = 100; L.dirty = true;
+				f.fx_landing = 100; f.fx_engine = 25; f.fx_aligning = 100; f.fx_centering = 35; f.fx_menu = 100; f.fx_impact = 100; f.fx_skid = 100; f.fx_air = 100; f.fx_understeer = 100; L.dirty = true;
 			}
 		}
 	}
@@ -728,6 +731,17 @@ void nv_save(Launcher &L)
 void page_game(Launcher &L)
 {
 	if (!L.nv_loaded) nv_load(L);
+	ImGui::SeparatorText("Opponents");
+	{
+		static const int steps[] = {0, 25, 50, 100, 150};
+		static const char *const names[] = {"None (no rubber banding)", "25%", "Reduced (50%)", "Original (100%)", "Stronger (150%)"};
+		int cur = 3;
+		for (int i = 0; i < 5; i++) if (steps[i] == L.s.rubberband) cur = i;
+		if (combo(L, "Rubber banding", cur, names)) L.s.rubberband = steps[cur];
+		help("The game gives the opponents more engine power when they are behind you (at least +20 %, up to +40 %, more the longer you lead) and "
+		     "less when they are ahead. This scales that boost; the random power surges and the driving AI stay as they are. Takes effect at the next start.");
+	}
+	ImGui::SeparatorText("Operator adjustments");
 	ImGui::TextWrapped("The operator adjustments the game's service menu offers, edited directly in the save file so you never need the "
 	                   "service menu. They take effect at the next start. The control calibration is fixed and not listed.");
 	if (L.nv_from_default) ImGui::TextDisabled("No save file yet (or it was rejected): showing the factory values; the file is created when you apply.");

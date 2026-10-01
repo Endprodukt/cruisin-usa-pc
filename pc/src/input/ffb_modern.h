@@ -14,7 +14,7 @@ struct FfbModernConfig
 	float master = 1.0f;      // overall strength of all synthesised parts
 	float aligning = 1.0f;    // self-aligning torque of the front tyres: counter-steer in slides and spins, resistance in corners
 	float centering = 0.35f;  // light speed dependent self-centring on top
-	float arcade = 0.25f;     // share of the arcade's own force (position servo with kerb jerks and off-road jitter)
+	float menu = 1.0f;        // the arcade's own force outside a race (attract, selection screens, results)
 	float impact = 1.0f;      // directional kick when the car's heading or direction changes abruptly (collisions)
 	float surface = 1.0f;     // rumble strips / gravel / grass, scaled by speed
 	float kerb = 1.0f;        // sideways tug when a wheel drops off the road

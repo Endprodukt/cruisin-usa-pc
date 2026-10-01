@@ -61,6 +61,7 @@ int main(int argc, char **argv)
 	if (getenv("PCHIST")) m.m_pchist_on = true;
 	if (const char *wm = getenv("WM")) m.rom_patches.wide_margin = atoi(wm);
 	if (getenv("NORASTER")) m.skip_raster = true;
+	if (const char *rb = getenv("RB")) m.rom_patches.rubberband_pct = atoi(rb);
 	m.reset();
 	if (getenv("DEFAULT_NV")) m.load_default_nvram();
 	if (const char *adj = getenv("ADJ")) { int idx, val, n = 0; const char *q = adj; while (sscanf(q, "%d=%d%n", &idx, &val, &n) == 2) { cmos::set(m.nvram(), idx, uint32_t(val)); q += n; if (*q == ',') q++; } }

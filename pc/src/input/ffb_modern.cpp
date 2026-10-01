@@ -136,7 +136,7 @@ float FfbModern::step(double dt)
 {
 	const float fdt = float(dt);
 	const Telemetry &t = m_t;
-	float out = m_c.arcade * m_arcade;
+	float out = 0;   // in a race the force is synthesised from the car state; the arcade's own force is not mixed in
 	float vib = 0;
 
 	if (t.valid)
@@ -150,7 +150,7 @@ float FfbModern::step(double dt)
 		bool air_front = t.air_front != 0;
 		m_air = smooth(m_air, (air_all || air_front) ? 1.0f : 0.0f, fdt, (air_all || air_front) ? 0.08f : 0.03f);
 		float airs = 1.0f - std::min(0.9f, m_air * std::min(1.0f, m_c.air));
-		out += (m_sat + centre) * airs;
+		out += m_c.master * (m_sat + centre) * airs;
 
 		// directional kick from impacts and spins
 		m_impact *= std::exp(-m_impact_decay * fdt);
@@ -204,7 +204,7 @@ float FfbModern::step(double dt)
 		m_sat = m_surface_amp = m_skid_amp = m_engine_amp = m_air = m_light = 0;
 		m_kick = m_impact = 0;
 		for (Jolt &j : m_jolts) j.amp = 0;
-		out = m_arcade;   // menus: the arcade's own force (attract, track select, results)
+		out = m_c.menu * m_arcade;   // menus: the arcade's own force (attract, track select, results)
 	}
 
 	m_fx = out - m_arcade;

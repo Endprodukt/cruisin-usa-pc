@@ -516,7 +516,7 @@ void Controls::fx_thread_start()
 				out = m_fx->synth.step(dt);
 				m_fx->vibration = m_fx->synth.vibration();
 			}
-			if (m_s.ffb.enabled && m_hub.ffb_active()) m_hub.ffb_set(out * m_fx->invert);
+			if (m_s.ffb.enabled && m_hub.ffb_active()) m_hub.ffb_set(std::clamp(out * m_fx->invert * float(m_s.ffb.strength) / 100.0f, -1.0f, 1.0f));
 			Sleep(4);
 		}
 	});
@@ -539,7 +539,6 @@ void Controls::ffb_update(uint8_t motor, const Telemetry *telemetry)
 {
 	// WHLCTLZ byte: signed force, the game limits it to +/-126
 	float f = float(int8_t(motor)) / 126.0f;
-	f = std::clamp(f * float(m_s.ffb.strength) / 100.0f, -1.0f, 1.0f);
 	const bool modern = m_s.ffb.mode == FfbMode::Modern && m_fx && m_fx->run;
 	float extra = 0;
 	if (modern)
@@ -547,7 +546,7 @@ void Controls::ffb_update(uint8_t motor, const Telemetry *telemetry)
 		const FfbSettings &c = m_s.ffb;
 		FfbModernConfig cfg;
 		auto p = [](int v) { return float(v) / 100.0f; };
-		cfg.aligning = p(c.fx_aligning); cfg.centering = p(c.fx_centering); cfg.arcade = p(c.fx_arcade); cfg.impact = p(c.fx_impact);
+		cfg.aligning = p(c.fx_aligning); cfg.centering = p(c.fx_centering); cfg.menu = p(c.fx_menu); cfg.impact = p(c.fx_impact);
 		cfg.master = p(c.fx_master); cfg.surface = p(c.fx_surface); cfg.kerb = p(c.fx_kerb); cfg.bump = p(c.fx_bump);
 		cfg.collision = p(c.fx_collision); cfg.spin = p(c.fx_spin); cfg.landing = p(c.fx_landing); cfg.engine = p(c.fx_engine);
 		cfg.skid = p(c.fx_skid); cfg.air = p(c.fx_air); cfg.understeer = p(c.fx_understeer);
@@ -559,7 +558,7 @@ void Controls::ffb_update(uint8_t motor, const Telemetry *telemetry)
 	}
 	else
 	{
-		f = std::clamp(f * (m_s.ffb.invert ? -1.0f : 1.0f), -1.0f, 1.0f);
+		f = std::clamp(f * float(m_s.ffb.strength) / 100.0f * (m_s.ffb.invert ? -1.0f : 1.0f), -1.0f, 1.0f);
 		if (m_s.ffb.enabled && m_hub.ffb_active()) m_hub.ffb_set(f);
 	}
 	if (m_s.ffb.enabled && m_s.ffb.rumble)

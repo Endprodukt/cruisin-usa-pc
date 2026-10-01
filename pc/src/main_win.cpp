@@ -265,6 +265,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		return 1;
 	}
 	m.rom_patches.draw_distance_pct = S.video.draw_distance;
+	m.rom_patches.rubberband_pct = S.rubberband;
 	m.rom_patches.wide_margin = S.video.renderer == Renderer::Cpu ? 0 : wide_margin_for(S.video);
 	m.set_wide_margin(m.rom_patches.wide_margin);
 	m.set_hud_spread(S.video.hud == HudPlacement::Edges ? 1.0f : S.video.hud == HudPlacement::Quarter25 ? 0.25f : S.video.hud == HudPlacement::Half50 ? 0.5f : S.video.hud == HudPlacement::Quarter75 ? 0.75f : 0.0f);
@@ -320,6 +321,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		{
 			TexRepl::Config tc;
 			tc.dump = S.video.export_textures;
+			tc.variants = S.video.export_variants;
 			tc.replace = S.video.replace_textures;
 			tc.dump_dir = exe_relative("textures/dump");
 			tc.repl_dir = exe_relative("textures/replace");
@@ -409,7 +411,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 		// hotkeys: F5/F6 internal resolution, F7 texture filter, F8 vsync, F9 output smoothing
 		bool vchanged = false;
-		if (g_pressed[VK_F11] && video) { S.video.export_textures = !S.video.export_textures; TexRepl::Config tc; tc.dump = S.video.export_textures; tc.replace = S.video.replace_textures; tc.dump_dir = exe_relative("textures/dump"); tc.repl_dir = exe_relative("textures/replace"); m.texrepl.configure(tc); }
+		if (g_pressed[VK_F11] && video) { S.video.export_textures = !S.video.export_textures; TexRepl::Config tc; tc.dump = S.video.export_textures; tc.variants = S.video.export_variants; tc.replace = S.video.replace_textures; tc.dump_dir = exe_relative("textures/dump"); tc.repl_dir = exe_relative("textures/replace"); m.texrepl.configure(tc); }
 		if (g_pressed[VK_F3]) { S.video.aa = (S.video.aa + 1) % 4; vchanged = true; }
 		if (g_pressed[VK_F4]) { S.video.shadows = ShadowMode((int(S.video.shadows) + 1) % 3); m.set_shadow_mode(int(S.video.shadows)); vchanged = true; }
 		if (g_pressed[VK_F5]) { S.video.internal_scale = std::max(1, S.video.internal_scale - 1); vchanged = true; }

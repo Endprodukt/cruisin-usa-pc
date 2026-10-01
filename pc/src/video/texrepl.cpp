@@ -39,28 +39,31 @@ std::vector<uint8_t> resample(const std::vector<uint8_t> &src, int sw, int sh, i
 }
 }
 
-// hash of the page bytes and of the palette entries the page actually uses (`used` is filled in)
-uint32_t TexRepl::page_hash(const uint8_t *ram, uint32_t base, const uint32_t *pal, uint32_t pix, bool *used)
+// Identity of a texture = hash of the colours it actually shows (page bytes seen through the palette), so pages that look the same
+// share one file no matter where in texture RAM they sit or which palette range they use. `used` marks the palette entries it reads.
+uint64_t TexRepl::colour_hash(const uint8_t *ram, uint32_t base, const uint32_t *pal, uint32_t pix, bool keyed, bool *used, int *colours, uint64_t *data_hash)
 {
 	uint64_t h = 0x9E3779B97F4A7C15ull;
 	size_t off = size_t(base) * 256 & 0x3fffff, n = std::min<size_t>(65536, 0x400000 - off);
 	const uint8_t *p = ram + off;
 	std::memset(used, 0, 256);
-	for (size_t i = 0; i < n; i++) used[p[i]] = true;
-	for (size_t i = 0; i + 8 <= n; i += 8)
+	uint32_t first = 0xffffffffu;
+	int distinct = 0;
+	uint64_t dh = keyed ? 0x1234567ull : 0x7654321ull;
+	for (size_t i = 0; i < 65536; i++)
 	{
-		uint64_t w;
-		std::memcpy(&w, p + i, 8);
-		h = (h ^ w) * 0xff51afd7ed558ccdull;
-		h ^= h >> 32;
+		uint8_t t = i < n ? p[i] : 0;
+		used[t] = true;
+		uint32_t c = (keyed && t == 0) ? 0xff000000u : (pal[(pix + t) & 0x7fff] & 0xffffffu);
+		if (c != first) { if (first == 0xffffffffu) first = c; else distinct = 1; }
+		h = (h ^ c) * 0xff51afd7ed558ccdull;
+		h ^= h >> 29;
+		dh = (dh ^ t) * 0xc4ceb9fe1a85ec53ull;
+		dh ^= dh >> 31;
 	}
-	for (int i = 0; i < 256; i++)
-		if (used[i])
-		{
-			h = (h ^ (pal[(pix + uint32_t(i)) & 0x7fff] & 0xffffffu) ^ (uint64_t(i) << 40)) * 0xc4ceb9fe1a85ec53ull;
-			h ^= h >> 29;
-		}
-	return uint32_t(h ^ (h >> 32));
+	if (data_hash) *data_hash = dh ? dh : 1;
+	if (colours) *colours = distinct;
+	return h ? h : 1;
 }
 
 int TexRepl::load(std::string &log)
@@ -71,16 +74,18 @@ int TexRepl::load(std::string &log)
 	std::error_code ec;
 	if (!fs::is_directory(m_c.repl_dir, ec)) { log += "replacement folder not found: " + m_c.repl_dir + "\n"; return 0; }
 
-	struct Item { uint32_t base, pix, hash; std::string path; int w = 0, h = 0; std::vector<uint8_t> rgba; };
+	struct Item { uint32_t base, pix, hash; std::string path; uint64_t hash64 = 0; int w = 0, h = 0; std::vector<uint8_t> rgba; };
 	std::vector<Item> items;
 	int maxres = 256;
 	for (auto &de : fs::directory_iterator(m_c.repl_dir, ec))
 	{
 		if (!de.is_regular_file()) continue;
 		std::string name = de.path().filename().string();
-		unsigned b, p, hh;
-		if (std::sscanf(name.c_str(), "tex_%x_%x_%x.png", &b, &p, &hh) != 3) continue;
-		Item it{b, p, hh, de.path().string()};
+		unsigned long long hh;
+		bool is_idx = false;
+		if (std::sscanf(name.c_str(), "tex_%llx.png", &hh) != 1) { if (std::sscanf(name.c_str(), "idx_%llx.png", &hh) != 1) continue; is_idx = true; }
+		Item it{0, 0, 0, de.path().string()};
+		it.hash64 = is_idx ? (hh | (1ull << 63)) : (hh & ~(1ull << 63));
 		std::string err;
 		if (!png_read_rgba(it.path, it.w, it.h, it.rgba, &err)) { log += name + ": " + err + "\n"; continue; }
 		if (it.w < 16 || it.h < 16) continue;
@@ -102,7 +107,7 @@ int TexRepl::load(std::string &log)
 	}
 	for (auto &it : items)
 	{
-		m_table[key3(it.base, it.pix, it.hash)] = int(m_pages.size());
+		m_table[it.hash64] = int(m_pages.size());
 		m_pages.push_back(resample(it.rgba, it.w, it.h, res));
 		it.rgba.clear(); it.rgba.shrink_to_fit();
 	}
@@ -112,14 +117,13 @@ int TexRepl::load(std::string &log)
 	return m_layers;
 }
 
-void TexRepl::write_dump(uint32_t base, uint32_t pix, uint32_t hash, uint32_t mode, const uint8_t *ram, const uint32_t *pal)
+void TexRepl::write_dump(uint32_t base, uint32_t pix, uint64_t hash, const char *prefix, bool keyed, const uint8_t *ram, const uint32_t *pal)
 {
-	if (!m_dumped.insert(key3(base, pix, hash)).second) return;
+	if (!m_dumped.insert(hash).second) return;
 	std::error_code ec;
 	fs::create_directories(m_c.dump_dir, ec);
 	std::vector<uint8_t> rgba(256 * 256 * 4);
 	size_t off = size_t(base) * 256 & 0x3fffff;
-	const bool keyed = (mode == 0x800 || mode == 0xc00);
 	for (int i = 0; i < 65536; i++)
 	{
 		uint8_t t = off + size_t(i) < 0x400000 ? ram[off + size_t(i)] : 0;
@@ -130,25 +134,34 @@ void TexRepl::write_dump(uint32_t base, uint32_t pix, uint32_t hash, uint32_t mo
 		rgba[size_t(i) * 4 + 3] = (keyed && t == 0) ? 0 : 255;
 	}
 	char name[64];
-	std::snprintf(name, sizeof name, "tex_%04X_%04X_%08X.png", base & 0xffff, pix & 0xffff, hash);
+	std::snprintf(name, sizeof name, "%s_%016llX.png", prefix, (unsigned long long)hash);
 	png_write_rgba((fs::path(m_c.dump_dir) / name).string(), 256, 256, rgba.data());
 }
 
 int TexRepl::lookup(uint32_t base, uint32_t pix, uint32_t mode, const uint8_t *ram, const uint32_t *pal, uint64_t tex_gen)
 {
 	if (!m_c.dump && m_layers == 0) return 0;
+	const bool keyed = (mode == 0x800 || mode == 0xc00);
 	Entry &e = m_cache[(base << 16) | (pix & 0xffff)];
-	bool same = e.tex_gen == tex_gen;
+	bool same = e.tex_gen == tex_gen && e.keyed == keyed;
 	if (same)
 		for (int i = 0; i < 256 && same; i++) same = !e.used[i] || e.pal[i] == (pal[(pix + uint32_t(i)) & 0x7fff] & 0xffffffu);
 	if (!same)
 	{
 		e.tex_gen = tex_gen;
-		e.hash = page_hash(ram, base, pal, pix, e.used);
+		e.keyed = keyed;
+		int varied = 0;
+		e.hash = colour_hash(ram, base, pal, pix, keyed, e.used, &varied, &e.dhash);
+		e.hash &= ~(1ull << 63); e.dhash |= (1ull << 63);
 		for (int i = 0; i < 256; i++) e.pal[i] = pal[(pix + uint32_t(i)) & 0x7fff] & 0xffffffu;
-		auto it = m_table.find(key3(base, pix, e.hash));
+		auto it = m_table.find(e.hash);
+		if (it == m_table.end()) it = m_table.find(e.dhash);
 		e.layer = it == m_table.end() ? 0 : it->second + 1;
-		if (m_c.dump) write_dump(base, pix, e.hash, mode, ram, pal);
+		if (m_c.dump && varied)
+		{
+			if (m_c.variants) write_dump(base, pix, e.hash, "tex", keyed, ram, pal);
+			else write_dump(base, pix, e.dhash, "idx", keyed, ram, pal);
+		}   // a page of one flat colour is not worth a file
 	}
 	return e.layer;
 }

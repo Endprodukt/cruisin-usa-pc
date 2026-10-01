@@ -10,6 +10,7 @@
 struct RomPatchOptions
 {
 	int draw_distance_pct = 100;   // 100 = original; <100 culls far objects, >100 pushes level-of-detail switches and traffic further out
+	int rubberband_pct = 100;      // strength of the opponents' catch-up boost relative to the original (0 = none)
 	int wide_margin = 0;           // extra arcade pixels of 3D view on each side of the 512 px wide image (widescreen)
 };
 
