@@ -34,6 +34,7 @@ struct VideoSettings
 	bool replace_textures = true;             // draw textures from textures/replace when a matching file exists
 	int aa = 0;                               // 0 off, 1..3 FXAA light/normal/strong
 	bool smooth_output = true;                // linear scaling of the final image
+	bool hide_mouse = true;                   // no mouse pointer over the game (it is shown while the options menu is open)
 	bool frame_ahead_limit = true;            // the graphics driver may be one frame behind the game, not several (less input lag, steadier pictures)
 
 	// reserved for the widescreen / rendering stage (stored now, applied when implemented)

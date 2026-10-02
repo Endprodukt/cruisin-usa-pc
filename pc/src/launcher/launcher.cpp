@@ -38,6 +38,8 @@ struct Launcher
 	Controls &ctl;
 
 	Page page = P_HOME;
+	bool in_game = false;         // the pause menu of the running game: no Home, Game settings, Network; other buttons
+	int game_action = 0;          // 1 continue, 2 return to attract, 3 exit game
 	bool dirty = false;
 	bool quit = false, play = false;
 	std::string status;
@@ -235,6 +237,7 @@ void page_video(Launcher &L)
 	help("Post-process smoothing of jagged edges. The internal resolution above is true supersampling and works together with it. "
 	     "F3 cycles the mode in game.");
 	edited(L, ImGui::Checkbox("Smooth scaling to the window", &v.smooth_output));
+	edited(L, ImGui::Checkbox("Hide the mouse pointer over the game", &v.hide_mouse));
 	edited(L, ImGui::Checkbox("Integer scaling", &v.integer_scale));
 	edited(L, ImGui::Checkbox("Display sync (smoothest)", &v.display_sync));
 	help("The arcade board draws 57.9 pictures per second, which fits no PC display: with VSync a picture is shown twice about twice a second, "
@@ -560,7 +563,9 @@ void controls_bindings(Launcher &L)
 			if (!present)
 			{
 				size_t bar = c.pad[a.id].rfind('|');
-				present = bar != std::string::npos && L.ctl.binding_device_present(c.pad[a.id].substr(0, bar == 0 ? 0 : bar - 1));
+				std::string dev = bar == std::string::npos ? std::string() : c.pad[a.id].substr(0, bar);
+				while (!dev.empty() && (dev.back() == ' ' || dev.back() == '\t')) dev.pop_back();
+				present = !dev.empty() && L.ctl.binding_device_present(dev);
 			}
 			if (ImGui::Button((pl + "##p").c_str(), ImVec2(260, 0))) start_capture(L, Launcher::Cap::Pad, a.id);
 			if (!present) { ImGui::SameLine(); ImGui::TextDisabled("(not attached)"); }
@@ -1036,7 +1041,193 @@ void apply_style()
 	c[ImGuiCol_PlotHistogram] = ImVec4(0.30f, 0.60f, 0.95f, 1);
 }
 
+void load_font(float scale)
+{
+	ImGuiIO &io = ImGui::GetIO();
+	io.IniFilename = nullptr;
+	if (FILE *f = std::fopen("C:/Windows/Fonts/segoeui.ttf", "rb")) { std::fclose(f); io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/segoeui.ttf", 16.0f * scale); }
+	else { ImFontConfig fc; fc.SizePixels = 15.0f * scale; io.Fonts->AddFontDefault(&fc); }
+}
+
+// the navigation column and the page beside it: the launcher's window and the game's pause menu
+void draw_ui(Launcher &L, float scale, GLuint logo, int logo_w, int logo_h, HWND hwnd)
+{
+	ImGui::BeginChild("nav", ImVec2(250 * scale, 0), true);
+	if (logo)
+	{
+		const float lw = ImGui::GetContentRegionAvail().x * 0.86f, lh = lw * float(logo_h) / float(logo_w);
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - lw) * 0.5f);
+		ImGui::Image(ImTextureID(intptr_t(logo)), ImVec2(lw, lh));
+	}
+	else ImGui::TextDisabled("CRUIS'N USA");
+	ImGui::Separator();
+	for (int i = 0; i < P_COUNT; i++)
+	{
+		if (L.in_game && (i == P_HOME || i == P_GAME || i == P_NETWORK)) continue;
+		if (ImGui::Selectable(kPageNames[i], L.page == i, 0, ImVec2(0, 30 * scale))) L.page = Page(i);
+	}
+	// the buttons at the bottom: PLAY / SAVE / QUIT, in the game CONTINUE / SAVE / RETURN TO ATTRACT / EXIT GAME
+	const int nb = L.in_game ? 4 : 3;
+	const float bh = 36 * scale, gap = ImGui::GetStyle().ItemSpacing.y;
+	ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), ImGui::GetWindowHeight() - nb * (bh + gap) - 2 * ImGui::GetTextLineHeightWithSpacing() - ImGui::GetStyle().WindowPadding.y));
+	if (L.dirty) ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "unsaved changes");
+	else if (!L.status.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", L.status.c_str()); ImGui::PopTextWrapPos(); }
+	else ImGui::TextUnformatted("");
+	ImGui::SetCursorPosY(ImGui::GetWindowHeight() - nb * (bh + gap) - ImGui::GetStyle().WindowPadding.y);
+	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.45f, 0.26f, 1));
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.58f, 0.33f, 1));
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.24f, 0.70f, 0.40f, 1));
+	if (L.in_game)
+	{
+		if (ImGui::Button("CONTINUE", ImVec2(-1, bh))) L.game_action = 1;
+	}
+	else if (ImGui::Button("PLAY", ImVec2(-1, bh)))
+	{
+		if (L.s.rom.empty() || GetFileAttributesA(exe_relative(L.s.rom).c_str()) == INVALID_FILE_ATTRIBUTES)
+		{
+			std::string pth = L.s.rom;
+			if (browse_rom(hwnd, pth)) { L.s.rom = pth; L.dirty = true; L.play = true; }
+			else { L.page = P_HOME; L.status = "Set the ROM zip first."; }
+		}
+		else L.play = true;
+	}
+	ImGui::PopStyleColor(3);
+	if (ImGui::Button("SAVE", ImVec2(-1, bh)))
+	{
+		L.dirty = false;
+		if (!L.in_game) nv_save(L);
+		L.status = L.s.save(L.ini_path) ? "Saved." : "Saving failed.";
+	}
+	if (L.in_game)
+	{
+		if (ImGui::Button("RETURN TO ATTRACT", ImVec2(-1, bh))) L.game_action = 2;
+		if (ImGui::Button("EXIT GAME", ImVec2(-1, bh))) L.game_action = 3;
+	}
+	else if (ImGui::Button("QUIT", ImVec2(-1, bh))) L.quit = true;
+	ImGui::EndChild();
+	ImGui::SameLine();
+	ImGui::BeginChild("page", ImVec2(0, 0), true);
+	if (L.in_game && L.page == P_VIDEO)
+		ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "Renderer, monitor, aspect ratio, draw distance, display sync and textures: from the next start. The rest applies at once.");
+	switch (L.page)
+	{
+	case P_HOME: page_home(L); break;
+	case P_VIDEO: page_video(L); break;
+	case P_AUDIO: page_audio(L); break;
+	case P_CONTROLS: page_controls(L); break;
+	case P_GAME: page_game(L); break;
+	case P_DIP: page_dip(L); break;
+	case P_OUTPUTS: page_outputs(L); break;
+	case P_NETWORK: page_network(L); break;
+	case P_ABOUT: page_about(L); break;
+	default: break;
+	}
+	ImGui::EndChild();
+}
+
 } // namespace
+
+// ---- the pause menu of the running game -----------------------------------------------------------------------------
+
+struct GameMenu::Impl
+{
+	Launcher L;
+	HWND hwnd = nullptr;
+	float scale = 1.0f;
+	GLuint logo = 0;
+	int logo_w = 0, logo_h = 0;
+	Impl(Settings &s, const std::string &ini, InputHub &hub, Controls &ctl) : L(s, ini, hub, ctl) {}
+};
+
+bool GameMenu::init(void *hwnd_, Settings &settings, const std::string &ini_path, InputHub &hub, Controls &controls)
+{
+	if (m_impl) return true;
+	HWND hwnd = static_cast<HWND>(hwnd_);
+	UINT dpi = 96;
+	if (HDC dc = GetDC(nullptr)) { dpi = UINT(GetDeviceCaps(dc, LOGPIXELSX)); ReleaseDC(nullptr, dc); }
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	m_impl = new Impl(settings, ini_path, hub, controls);
+	m_impl->hwnd = hwnd;
+	m_impl->scale = float(dpi) / 96.0f;
+	load_font(m_impl->scale);
+	apply_style();
+	ImGui::GetStyle().ScaleAllSizes(m_impl->scale);
+	if (!ImGui_ImplWin32_Init(hwnd) || !ImGui_ImplOpenGL3_Init("#version 330 core"))
+	{
+		ImGui::DestroyContext();
+		delete m_impl; m_impl = nullptr;
+		return false;
+	}
+	m_impl->logo = load_picture("LOGO", m_impl->logo_w, m_impl->logo_h);
+	m_impl->L.in_game = true;
+	m_impl->L.page = P_VIDEO;
+	return true;
+}
+
+void GameMenu::shutdown()
+{
+	if (!m_impl) return;
+	if (m_impl->logo) glDeleteTextures(1, &m_impl->logo);
+	ImGui_ImplOpenGL3_Shutdown();
+	ImGui_ImplWin32_Shutdown();
+	ImGui::DestroyContext();
+	delete m_impl; m_impl = nullptr;
+	m_open = false;
+}
+
+void GameMenu::open()
+{
+	if (!m_impl) return;
+	m_open = true;
+	m_impl->L.game_action = 0;
+	m_impl->L.status.clear();
+}
+
+void GameMenu::close()
+{
+	if (!m_impl || !m_open) return;
+	m_open = false;
+	end_capture(m_impl->L);
+	if (m_impl->L.dirty) { m_impl->L.s.save(m_impl->L.ini_path); m_impl->L.dirty = false; }
+}
+
+bool GameMenu::capturing() const { return m_impl && m_impl->L.cap != Launcher::Cap::None; }
+
+bool GameMenu::message(void *hwnd, unsigned msg, unsigned long long wp, long long lp)
+{
+	if (!m_impl || !m_open) return false;
+	return ImGui_ImplWin32_WndProcHandler(static_cast<HWND>(hwnd), msg, WPARAM(wp), LPARAM(lp)) != 0;
+}
+
+GameMenu::Action GameMenu::frame()
+{
+	if (!m_impl || !m_open) return Action::None;
+	Launcher &L = m_impl->L;
+	L.hub.tick();
+	ImGui_ImplOpenGL3_NewFrame();
+	ImGui_ImplWin32_NewFrame();
+	ImGui::NewFrame();
+	ImGuiViewport *vp = ImGui::GetMainViewport();
+	// the game's picture stays behind the menu, darkened; the menu itself is as large as the launcher's window
+	ImGui::GetBackgroundDrawList()->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), IM_COL32(6, 8, 12, 150));
+	const ImVec2 size(std::min(vp->Size.x, 1240.0f * m_impl->scale), std::min(vp->Size.y, 840.0f * m_impl->scale));
+	ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + (vp->Size.x - size.x) * 0.5f, vp->Pos.y + (vp->Size.y - size.y) * 0.5f));
+	ImGui::SetNextWindowSize(size);
+	ImGui::Begin("##game_menu", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+	draw_ui(L, m_impl->scale, m_impl->logo, m_impl->logo_w, m_impl->logo_h, m_impl->hwnd);
+	ImGui::End();
+	ImGui::Render();
+	const int a = L.game_action;
+	L.game_action = 0;
+	return a == 1 ? Action::Continue : a == 2 ? Action::Attract : a == 3 ? Action::Exit : Action::None;
+}
+
+void GameMenu::render()
+{
+	if (!m_impl || !m_open) return;
+	if (ImDrawData *dd = ImGui::GetDrawData()) ImGui_ImplOpenGL3_RenderDrawData(dd);
+}
 
 bool browse_rom(void *owner_hwnd, std::string &path)
 {
@@ -1102,10 +1293,7 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
-	ImGuiIO &io = ImGui::GetIO();
-	io.IniFilename = nullptr;
-	if (FILE *f = std::fopen("C:/Windows/Fonts/segoeui.ttf", "rb")) { std::fclose(f); io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/segoeui.ttf", 16.0f * scale); }
-	else { ImFontConfig fc; fc.SizePixels = 15.0f * scale; io.Fonts->AddFontDefault(&fc); }
+	load_font(scale);
 	apply_style();
 	ImGui::GetStyle().ScaleAllSizes(scale);
 	ImGui_ImplWin32_Init(hwnd);
@@ -1152,62 +1340,7 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 			ImGui::GetBackgroundDrawList()->AddImage(ImTextureID(intptr_t(backdrop)), vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), uv0, uv1);
 		}
 
-		ImGui::BeginChild("nav", ImVec2(250 * scale, 0), true);
-		if (logo)
-		{
-			const float lw = ImGui::GetContentRegionAvail().x * 0.86f, lh = lw * float(logo_h) / float(logo_w);
-			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - lw) * 0.5f);
-			ImGui::Image(ImTextureID(intptr_t(logo)), ImVec2(lw, lh));
-		}
-		else ImGui::TextDisabled("CRUIS'N USA");
-		ImGui::Separator();
-		for (int i = 0; i < P_COUNT; i++)
-			if (ImGui::Selectable(kPageNames[i], L.page == i, 0, ImVec2(0, 30 * scale))) L.page = Page(i);
-		// PLAY / SAVE / QUIT at the bottom
-		const float bh = 36 * scale, gap = ImGui::GetStyle().ItemSpacing.y;
-		ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), ImGui::GetWindowHeight() - 3 * (bh + gap) - 2 * ImGui::GetTextLineHeightWithSpacing() - ImGui::GetStyle().WindowPadding.y));
-		if (L.dirty) ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "unsaved changes");
-		else if (!L.status.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextDisabled("%s", L.status.c_str()); ImGui::PopTextWrapPos(); }
-		else ImGui::TextUnformatted("");
-		ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 3 * (bh + gap) - ImGui::GetStyle().WindowPadding.y);
-		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.45f, 0.26f, 1));
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.58f, 0.33f, 1));
-		ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.24f, 0.70f, 0.40f, 1));
-		if (ImGui::Button("PLAY", ImVec2(-1, bh)))
-		{
-			if (L.s.rom.empty() || GetFileAttributesA(exe_relative(L.s.rom).c_str()) == INVALID_FILE_ATTRIBUTES)
-			{
-				std::string pth = L.s.rom;
-				if (browse_rom(hwnd, pth)) { L.s.rom = pth; L.dirty = true; L.play = true; }
-				else { L.page = P_HOME; L.status = "Set the ROM zip first."; }
-			}
-			else L.play = true;
-		}
-		ImGui::PopStyleColor(3);
-		if (ImGui::Button("SAVE", ImVec2(-1, bh)))
-		{
-			L.dirty = false;
-			nv_save(L);
-			L.status = L.s.save(L.ini_path) ? "Saved." : "Saving failed.";
-		}
-		if (ImGui::Button("QUIT", ImVec2(-1, bh))) L.quit = true;
-		ImGui::EndChild();
-		ImGui::SameLine();
-		ImGui::BeginChild("page", ImVec2(0, 0), true);
-		switch (L.page)
-		{
-		case P_HOME: page_home(L); break;
-		case P_VIDEO: page_video(L); break;
-		case P_AUDIO: page_audio(L); break;
-		case P_CONTROLS: page_controls(L); break;
-		case P_GAME: page_game(L); break;
-		case P_DIP: page_dip(L); break;
-		case P_OUTPUTS: page_outputs(L); break;
-		case P_NETWORK: page_network(L); break;
-		case P_ABOUT: page_about(L); break;
-		default: break;
-		}
-		ImGui::EndChild();
+		draw_ui(L, scale, logo, logo_w, logo_h, hwnd);
 		ImGui::End();
 
 		ImGui::Render();

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -80,6 +81,9 @@ public:
 	virtual void clear_margins(int page) { (void)page; }
 	// widescreen: show only the arcade's 4:3 picture, black bars beside it (menus and 2D screens)
 	virtual void set_pillarbox(bool on) { (void)on; }
+	// something of the application's own drawn over the finished picture, right before the buffer swap (the options menu;
+	// OpenGL only: false = not supported)
+	virtual bool set_overlay(std::function<void()> draw) { (void)draw; return false; }
 	virtual void flush() {}                                // hand everything issued so far to the GPU now (no present follows)
 	virtual void set_profiling(bool on) { (void)on; }      // measure GPU and swap time (--perf)
 	virtual void set_debug(int flags) { (void)flags; }     // experiments for the profiler. OpenGL: 1 = glFinish before the swap, 2 = glFlush, 64 = extra GPU load (flags >> 8 full-window passes). Vulkan: 16 = two frames in flight

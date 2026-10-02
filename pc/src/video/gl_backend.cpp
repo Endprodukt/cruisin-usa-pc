@@ -454,6 +454,7 @@ public:
 		if (m_debug & 64) for (int k = m_debug >> 8; k > 0; k--) glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
 		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
 		q_end();
+		if (m_overlay) { CallPhase po("overlay"); m_overlay(); }
 		if (m_prof && ((m_ts_head + 1) % kTs) != m_ts_tail)
 		{
 			// the moment the GPU has finished this frame's last call
@@ -596,6 +597,8 @@ public:
 		m_ts_qpc0 = (a + perf_now_ms()) * 0.5;
 	}
 	void set_debug(int flags) override { m_debug = flags; }
+	bool set_overlay(std::function<void()> draw) override { m_overlay = std::move(draw); return true; }
+	std::function<void()> m_overlay;
 	void flush() override { CallPhase ph("flush"); glFlush(); }
 	int m_debug = 0;
 	void *m_fence = nullptr;

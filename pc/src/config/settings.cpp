@@ -201,6 +201,7 @@ bool Settings::load(const std::string &path)
 	r.boolean("video", "texture_filter", video.texture_filter);
 	r.boolean("video", "smooth_output", video.smooth_output);
 	r.boolean("video", "frame_ahead_limit", video.frame_ahead_limit);
+	r.boolean("video", "hide_mouse", video.hide_mouse);
 	r.integer("video", "aa", video.aa, 0, 3);
 	r.boolean("video", "export_textures", video.export_textures);
 	r.boolean("video", "export_variants", video.export_variants);
@@ -295,6 +296,7 @@ bool Settings::save(const std::string &path) const
 	  << "\n; aa: 0 off | 1..3 FXAA light/normal/strong (post filter; internal_scale above 1 is supersampling)\naa = " << video.aa << "\n; textures: export_textures writes every drawn texture to textures/dump (tex_<hash>.png); files with the same\n; name in textures/replace are drawn instead (any square size up to 2048)\nexport_textures = " << b(video.export_textures) << "\nexport_variants = " << b(video.export_variants) << "\nreplace_textures = " << b(video.replace_textures)
 	  << "\ntexture_filter = " << b(video.texture_filter) << "\nsmooth_output = " << b(video.smooth_output)
 	  << "\n; the graphics driver may be at most one frame behind the game (false: it queues several, which adds about 35 ms of input lag)\nframe_ahead_limit = " << b(video.frame_ahead_limit)
+	  << "\n; no mouse pointer over the game window\nhide_mouse = " << b(video.hide_mouse)
 	  << "\n; reserved for the widescreen / rendering stage\nwidescreen_hack = " << b(video.widescreen_hack)
 	  << "\nhud = " << to_string(video.hud) << "\ndraw_distance = " << video.draw_distance
 	  << "\n; shadows: original (the arcade's dithered quads) | modern (soft blended) | off\nshadows = " << to_string(video.shadows)

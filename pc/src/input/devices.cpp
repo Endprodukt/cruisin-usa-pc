@@ -256,7 +256,13 @@ void InputHub::refresh()
 				return DIENUM_CONTINUE;
 			}
 			Dev d;
-			d.info.name = d.info.base = inst->tszProductName;
+			// (trimmed: cheap encoder boards report "Generic   USB  Joystick  " with spaces at the end, and a binding is
+			// "<name> | <button>" with the name trimmed when it is read: the device was found when binding and not when playing)
+			{
+				std::string nm = inst->tszProductName;
+				const size_t a = nm.find_first_not_of(" \t"), e = nm.find_last_not_of(" \t");
+				d.info.name = d.info.base = a == std::string::npos ? std::string("device") : nm.substr(a, e - a + 1);
+			}
 			d.info.backend = Backend::DInput;
 			d.guid = inst->guidInstance;
 			d.di = dev;

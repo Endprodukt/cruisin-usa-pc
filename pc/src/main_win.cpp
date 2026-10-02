@@ -45,17 +45,25 @@ bool g_keys[256];
 bool g_pressed[256];           // edge-triggered key presses
 bool g_quit = false;
 bool g_toggle_fs = false;
+bool g_hide_mouse = true;      // no pointer over the game's picture
+bool g_menu_esc = false;       // Esc while the options menu is open: closes it
+GameMenu *g_menu = nullptr;    // the options menu of the running game, while it exists
 int  g_size_w = 0, g_size_h = 0;
 
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
+	const bool menu_open = g_menu && g_menu->is_open();
+	if (menu_open && g_menu->message(h, m, w, l)) return 1;
 	switch (m)
 	{
+	case WM_SETCURSOR:
+		if (LOWORD(l) == HTCLIENT && g_hide_mouse && !menu_open) { SetCursor(nullptr); return TRUE; }
+		break;
 	case WM_KEYDOWN:
 	case WM_SYSKEYDOWN:
 		if (w < 256) { if (!g_keys[w]) g_pressed[w] = true; g_keys[w] = true; }
 		if (w == VK_F11 || (w == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000))) g_toggle_fs = true;
-		if (w == VK_ESCAPE) g_quit = true;
+		if (w == VK_ESCAPE) { if (menu_open) g_menu_esc = true; else g_quit = true; }
 		return 0;
 	case WM_KEYUP:
 	case WM_SYSKEYUP:
@@ -624,6 +632,36 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	double fps_t = 0; int fps_n = 0; int shot_count = 0;
 	bool fullscreen_now = S.video.window_mode == WindowMode::Fullscreen;
 	PauseMenu pause;
+	// the options menu inside the game (OpenGL): the launcher's pages over the picture
+	GameMenu menu;
+	if (video && shot.empty() && video->set_overlay([&menu] { menu.render(); }))
+	{
+		if (menu.init(hwnd, S, ini, hub, controls)) g_menu = &menu;
+		else video->set_overlay(nullptr);
+	}
+	g_hide_mouse = S.video.hide_mouse;
+	// settings the menu changed, applied while it is open (the game keeps the margin and aspect it was started with)
+	const VideoOptions vopt_start = vopt;
+	auto apply_live = [&]() {
+		VideoOptions o = make_video_options(S.video);
+		o.wide_margin = vopt_start.wide_margin; o.aspect = vopt_start.aspect; o.keep_aspect = vopt_start.keep_aspect;
+		if (sync_k && fake_hz <= 0) o.vsync = true;
+		if (std::memcmp(&o, &vopt, sizeof(o)) != 0) { vopt = o; if (video) video->set_options(vopt); else cpu.opt = vopt; }
+		m.set_shadow_mode(int(S.video.shadows));
+		m.set_hud_spread(S.video.hud == HudPlacement::Edges ? 1.0f : S.video.hud == HudPlacement::Quarter25 ? 0.25f : S.video.hud == HudPlacement::Half50 ? 0.5f : S.video.hud == HudPlacement::Quarter75 ? 0.75f : 0.0f);
+		audio.set_volume(float(S.audio.volume) / 100.0f);
+		audio.set_latency_ms(S.audio.latency_ms);
+		m.inputs.dsw = S.dsw;
+		m.steady_cadence = S.steady_cadence ? 1 : 0;
+		g_hide_mouse = S.video.hide_mouse;
+		static WindowMode shown_mode = S.video.window_mode;
+		if (S.video.window_mode != shown_mode)
+		{
+			shown_mode = S.video.window_mode;
+			fullscreen_now = shown_mode == WindowMode::Fullscreen;
+			apply_window_mode(hwnd, S.video, shown_mode);
+		}
+	};
 	bool pause_held = false, pause_sel_held = false;
 	int pause_zone = 0;
 	while (!g_quit)
@@ -642,64 +680,94 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		}
 		if (g_size_w > 0) { if (video) video->resize(g_size_w, g_size_h); g_size_w = 0; sync_clock = false; sync_fast = 0; }   // (another display, perhaps: look again whether the swap waits)
 
-		// ---- pause (the "pause" action, P by default): the machine stands still, no sound, no force. The menu is steered with
-		// the arrow keys or the wheel (left = up, right = down) and chosen with Enter, Start or the accelerator; pause again continues.
-		if (!pause.is_open())
+		// ---- pause (the "pause" action, P by default): the machine stands still, no sound, no force. With OpenGL the launcher's
+		// options are shown over the picture and what is changed there applies at once; the other backends show the small
+		// menu drawn with the game's font (continue, return to attract, exit).
+		if (!pause.is_open() && !menu.is_open())
 		{
-			// (testing: --pause-at <frame> opens the menu by itself, --pause-sel <n> moves the selection down n times)
+			// (testing: --pause-at <frame> opens the menu by itself, --pause-sel <n> moves the small menu's selection down n times)
 			static const int pause_at = arg_value(a, "--pause-at").empty() ? 0 : std::atoi(arg_value(a, "--pause-at").c_str());
 			static int pause_frames = 0;
 			const bool pause_test = pause_at > 0 && ++pause_frames == pause_at;
 			const bool ph = controls.action_active("pause");
 			if ((ph && !pause_held) || pause_test)
 			{
-				pause.open(m);
-				if (pause_test) for (int k = std::atoi(arg_value(a, "--pause-sel").c_str()); k > 0; k--) pause.update(m, false, true, false);
+				if (menu.available()) { menu.open(); SetCursor(LoadCursor(nullptr, IDC_ARROW)); }
+				else
+				{
+					pause.open(m);
+					if (pause_test) for (int k = std::atoi(arg_value(a, "--pause-sel").c_str()); k > 0; k--) pause.update(m, false, true, false);
+				}
 				audio.clear();
 				controls.ffb_update(0, nullptr);
 				pause_sel_held = true;                                    // a pedal that is down has to come up first
 				pause_zone = m.inputs.wheel < 88 ? -1 : m.inputs.wheel > 168 ? 1 : 0;
+				g_menu_esc = false;
 			}
 			pause_held = ph;
 		}
-		if (pause.is_open())
+		if (pause.is_open() || menu.is_open())
 		{
 			MachineInputs pin;
 			controls.update(pin, GetForegroundWindow() == hwnd);
 			const bool ph = controls.action_active("pause");
-			const int zone = pin.wheel < 88 ? -1 : pin.wheel > 168 ? 1 : (pin.wheel > 108 && pin.wheel < 148) ? 0 : pause_zone;
-			const bool up = g_pressed[VK_UP] || (zone == -1 && pause_zone != -1), down = g_pressed[VK_DOWN] || (zone == 1 && pause_zone != 1);
-			pause_zone = zone;
-			const bool sel_now = !(pin.in0 & in0bit::START) || pin.accel > 160;
-			const bool select = (g_pressed[VK_RETURN] && !(GetKeyState(VK_MENU) & 0x8000)) || (sel_now && !pause_sel_held);
-			pause_sel_held = sel_now;
-			PauseMenu::Choice choice = pause.update(m, up, down, select);
-			if (ph && !pause_held) choice = PauseMenu::Continue;
+			int choice = 0;   // 1 continue, 2 return to attract, 3 exit
+			if (menu.is_open())
+			{
+				const GameMenu::Action act = menu.frame();
+				choice = act == GameMenu::Action::Continue ? 1 : act == GameMenu::Action::Attract ? 2 : act == GameMenu::Action::Exit ? 3 : 0;
+				if (!menu.capturing() && ((ph && !pause_held) || g_menu_esc)) choice = 1;
+				g_menu_esc = false;
+				apply_live();
+			}
+			else
+			{
+				const int zone = pin.wheel < 88 ? -1 : pin.wheel > 168 ? 1 : (pin.wheel > 108 && pin.wheel < 148) ? 0 : pause_zone;
+				const bool up = g_pressed[VK_UP] || (zone == -1 && pause_zone != -1), down = g_pressed[VK_DOWN] || (zone == 1 && pause_zone != 1);
+				pause_zone = zone;
+				const bool sel_now = !(pin.in0 & in0bit::START) || pin.accel > 160;
+				const bool select = (g_pressed[VK_RETURN] && !(GetKeyState(VK_MENU) & 0x8000)) || (sel_now && !pause_sel_held);
+				pause_sel_held = sel_now;
+				const PauseMenu::Choice pc = pause.update(m, up, down, select);
+				choice = pc == PauseMenu::Continue ? 1 : pc == PauseMenu::Attract ? 2 : pc == PauseMenu::Exit ? 3 : 0;
+				if (ph && !pause_held) choice = 1;
+			}
 			{   // (testing: --pause-do continue|attract|exit chooses by itself two seconds after --pause-at opened the menu)
 				static const std::string pause_do = arg_value(a, "--pause-do");
 				static int pause_open_frames = 0;
-				if (!pause_do.empty() && ++pause_open_frames == 120) choice = pause_do == "attract" ? PauseMenu::Attract : pause_do == "exit" ? PauseMenu::Exit : PauseMenu::Continue;
+				if (!pause_do.empty() && ++pause_open_frames == 120) choice = pause_do == "attract" ? 2 : pause_do == "exit" ? 3 : 1;
 			}
 			pause_held = ph;
 			std::fill(std::begin(g_pressed), std::end(g_pressed), false);
-			if (choice == PauseMenu::None)
+			if (choice == 0)
 			{
 				present();
 				if (!video || !S.video.vsync) Sleep(10);
 				continue;
 			}
+			const bool was_menu = menu.is_open();
+			menu.close();
 			pause.close();
-			if (choice == PauseMenu::Exit) { g_quit = true; continue; }
-			if (choice == PauseMenu::Attract)
+			if (choice == 3) { g_quit = true; continue; }
+			if (was_menu)
+			{
+				// what the menu may have changed and the game does not read every frame: the wheel's motor, the cabinet outputs
+				controls.ffb_stop();
+				controls.ffb_start(hwnd);
+				outputs.stop();
+				if (S.outputs.mode != OutputMode::Off) outputs.start(S.outputs);
+			}
+			if (choice == 2)
 			{
 				m.save_nvram(exe_relative(S.nvram));
 				m.reset();
+				m.inputs.dsw = S.dsw;
 				boot_to_attract();
 				hook_audio(true);
 			}
 			// back to the game: the pacing starts from now
 			next_frame = now_sec() - t_start;
-			sync_last = now_sec(); sync_done = 0; sync_fast = 0;
+			sync_last = now_sec(); sync_done = 0; sync_fast = 0; sync_emu_t = 0;
 			prof_last = 0;
 			continue;
 		}
@@ -953,6 +1021,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		stallwatch::stop();
 		g_calltrace.close();
 	}
+	g_menu = nullptr;
+	if (video) video->set_overlay(nullptr);
+	menu.shutdown();
 	controls.ffb_stop();
 	outputs.stop();
 	audio.stop();
