@@ -156,7 +156,7 @@ bool Controls::pad_down(const std::string &binding) const
 	for (int i = 0; i < m_hub.count(); i++)
 	{
 		const DeviceInfo &di = m_hub.info(i);
-		if (!iequals(di.name, device) || size_t(i) >= m_states.size()) continue;
+		if ((!iequals(di.name, device) && !iequals(di.base, device)) || size_t(i) >= m_states.size()) continue;
 		const DeviceState &st = m_states[size_t(i)];
 		if (hat >= 0) { if (pov_matches(st.pov, hat)) return true; }
 		else if (n >= 1 && n <= int(st.button.size()) && st.button[size_t(n - 1)]) return true;
@@ -236,7 +236,7 @@ void Controls::update(MachineInputs &out, bool focused)
 	auto axis_value = [&](const AxisBinding &b, bool &ok) -> float {
 		ok = false;
 		if (!b.bound()) return 0.0f;
-		int dev = m_hub.find(b.device);
+		int dev = m_hub.find_axis(b.device, b.axis);
 		if (dev < 0 || size_t(dev) >= m_states.size()) return 0.0f;
 		int ai = InputHub::axis_index(m_hub.info(dev), b.axis);
 		if (ai < 0 || size_t(ai) >= m_states[size_t(dev)].axis.size()) return 0.0f;
@@ -449,22 +449,35 @@ std::string Controls::axis_label(const AxisBinding &b) const
 
 // ---- force feedback --------------------------------------------------------------------------------------------
 
-int Controls::ffb_target_device() const
+std::vector<int> Controls::ffb_candidates() const
 {
 	const FfbSettings &f = m_s.ffb;
-	auto usable = [&](int i) { return i >= 0 && m_hub.info(i).backend == Backend::DInput && m_hub.info(i).ffb; };
-	// the motor may only act on a wheel that actually steers the game: the device the steering axis is bound to,
-	// or one chosen explicitly
-	if (!f.device.empty())
-	{
-		int i = m_hub.find(f.device);
-		if (usable(i)) return i;
-	}
-	if (m_s.controls.steer.bound())
-	{
-		int i = m_hub.find(m_s.controls.steer.device);
-		if (usable(i)) return i;
-	}
+	// the device chosen explicitly, else the one the steering axis is bound to, else (nothing bound: every device's default
+	// axes steer) the first that reports a motor
+	int first = -1;
+	if (!f.device.empty()) first = m_hub.find(f.device);
+	if (first < 0 && m_s.controls.steer.bound()) first = m_hub.find_axis(m_s.controls.steer.device, m_s.controls.steer.axis);
+	if (first < 0 && !m_s.controls.steer.bound())
+		for (int i = 0; i < m_hub.count() && first < 0; i++)
+			if (m_hub.info(i).backend == Backend::DInput && m_hub.info(i).ffb) first = i;
+	std::vector<int> out;
+	if (first < 0 || m_hub.info(first).backend != Backend::DInput) return out;
+	// among that device and the others of the same hardware: those that report a motor first, then the rest (a device that
+	// does not report one is still asked: creating the effect is the real test)
+	for (int pass = 0; pass < 2; pass++)
+		for (int k = -1; k < m_hub.count(); k++)
+		{
+			const int i = k < 0 ? first : k;
+			if (k >= 0 && (i == first || !m_hub.same_hardware(first, i))) continue;
+			if (m_hub.info(i).ffb == (pass == 0)) out.push_back(i);
+		}
+	return out;
+}
+
+int Controls::ffb_target_device() const
+{
+	for (int i : ffb_candidates())
+		if (m_hub.info(i).ffb) return i;
 	return -1;
 }
 
@@ -474,14 +487,23 @@ std::string Controls::ffb_start(HWND game_window)
 	m_hub.ffb_end();
 	m_ffb_dev = -1;
 	if (!m_s.ffb.enabled) return m_ffb_status = "disabled";
-	int dev = ffb_target_device();
-	if (dev < 0) return m_ffb_status = m_s.controls.steer.bound() ? "steering device has no motor" : "bind the wheel's steering axis to enable force feedback";
-	std::string axis = m_s.controls.steer.bound() && iequals(m_s.controls.steer.device, m_hub.info(dev).name) ? m_s.controls.steer.axis : "";
-	std::string err;
-	if (!m_hub.ffb_begin(dev, axis, m_s.ffb.device_gain, game_window, err)) return m_ffb_status = "failed: " + err;
-	m_ffb_dev = dev;
-	if (m_s.ffb.mode == FfbMode::Modern) fx_thread_start();
-	return m_ffb_status = "active on " + m_hub.info(dev).name + (m_s.ffb.mode == FfbMode::Modern ? " (modern effects)" : "");
+	const std::vector<int> cand = ffb_candidates();
+	if (cand.empty()) return m_ffb_status = m_s.controls.steer.bound() ? "steering device not attached" : "no wheel with a motor found";
+	const int steer_dev = m_s.controls.steer.bound() ? m_hub.find_axis(m_s.controls.steer.device, m_s.controls.steer.axis) : -1;
+	std::string err, tried;
+	for (int dev : cand)
+	{
+		const std::string axis = dev == steer_dev ? m_s.controls.steer.axis : "";
+		if (!m_hub.ffb_begin(dev, axis, m_s.ffb.device_gain, game_window, err))
+		{
+			tried += (tried.empty() ? "" : "; ") + m_hub.info(dev).name + ": " + err;
+			continue;
+		}
+		m_ffb_dev = dev;
+		if (m_s.ffb.mode == FfbMode::Modern) fx_thread_start();
+		return m_ffb_status = "active on " + m_hub.info(dev).name + (m_s.ffb.mode == FfbMode::Modern ? " (modern effects)" : "");
+	}
+	return m_ffb_status = "no motor found (" + tried + ")";
 }
 
 // ---- modern effects: synthesised at ~250 Hz on their own thread, fed once per emulated frame --------------------

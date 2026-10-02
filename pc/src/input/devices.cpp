@@ -104,9 +104,13 @@ void dword_prop(IDirectInputDevice8A *dev, DWORD obj, REFGUID prop, DWORD value)
 	dev->SetProperty(prop, &dw.diph);
 }
 
+struct AxisEnum { IDirectInputDevice8A *dev; DWORD ff_type; };
+
 BOOL CALLBACK enum_axis_cb(LPCDIDEVICEOBJECTINSTANCEA obj, LPVOID ctx)
 {
-	auto *dev = static_cast<IDirectInputDevice8A *>(ctx);
+	auto *ae = static_cast<AxisEnum *>(ctx);
+	auto *dev = ae->dev;
+	if ((obj->dwFlags & DIDOI_FFACTUATOR) && !ae->ff_type) ae->ff_type = obj->dwType;   // the axis the motor acts on
 	DIPROPRANGE range{};
 	range.diph.dwSize = sizeof(range);
 	range.diph.dwHeaderSize = sizeof(range.diph);
@@ -177,7 +181,8 @@ struct InputHub::Impl
 	IDirectInputEffect *effect = nullptr;
 	IDirectInputEffect *damper = nullptr;
 	float last_damper = -1.0f;
-	DWORD ffb_axis_offset = 0;
+	DWORD ffb_axis_offset = 0;        // the axis the effects act on: an object id (DIEFF_OBJECTIDS) or a data format offset
+	DWORD ffb_axis_flags = 0;
 	float last_force = 2.0f;
 	// test pulse
 	int test_dev = -1;
@@ -251,11 +256,13 @@ void InputHub::refresh()
 				return DIENUM_CONTINUE;
 			}
 			Dev d;
-			d.info.name = inst->tszProductName;
+			d.info.name = d.info.base = inst->tszProductName;
 			d.info.backend = Backend::DInput;
 			d.guid = inst->guidInstance;
 			d.di = dev;
-			dev->EnumObjects(enum_axis_cb, dev, DIDFT_AXIS);
+			AxisEnum ae{dev, 0};
+			dev->EnumObjects(enum_axis_cb, &ae, DIDFT_AXIS);
+			d.ff_axis_type = ae.ff_type;
 			for (int s = S_X; s < S_COUNT; s++)
 			{
 				DIPROPRANGE r{};
@@ -276,7 +283,7 @@ void InputHub::refresh()
 			{
 				d.info.buttons = int(std::min<DWORD>(caps.dwButtons, 128));
 				d.info.hat = caps.dwPOVs > 0;
-				d.info.ffb = (caps.dwFlags & DIDC_FORCEFEEDBACK) != 0;
+				d.info.ffb = (caps.dwFlags & DIDC_FORCEFEEDBACK) != 0 || d.ff_axis_type != 0;
 			}
 			dev->Acquire();
 			hub->m_dev.push_back(std::move(d));
@@ -285,33 +292,27 @@ void InputHub::refresh()
 		m_impl->di->EnumDevices(DI8DEVCLASS_GAMECTRL, cb, &ctx, DIEDFL_ATTACHEDONLY);
 	}
 
-	// A composite device (a Fanatec base is the usual case) enumerates as several entries with the same
-	// name. Keep one per name: the one with the motor, then the most axes, then the most buttons.
-	if (!m_impl->allow_dupes)
+	// One piece of hardware can be several DirectInput devices with the same product name: a Fanatec base is two "FANATEC
+	// Wheel"s, one with the steering axis and one for what is plugged into the wheel, and the motor is on one of them (not
+	// necessarily the one that steers). All of them are kept; they are told apart by their shape, so that a binding means one
+	// of them whatever order Windows lists them in: "FANATEC Wheel [A8 B108]". The force feedback then looks for the motor
+	// among the devices of the same name (Controls::ffb_start).
+	for (size_t i = 0; i < m_dev.size(); i++)
 	{
-		std::vector<Dev> kept;
-		for (Dev &d : m_dev)
-		{
-			auto same = std::find_if(kept.begin(), kept.end(), [&](const Dev &k) { return iequals(k.info.name, d.info.name); });
-			if (same == kept.end()) { kept.push_back(std::move(d)); continue; }
-			auto score = [](const Dev &x) { return int(x.info.ffb) * 10000 + int(x.info.axes.size()) * 100 + x.info.buttons; };
-			if (score(d) > score(*same))
-			{
-				int merged = same->info.duplicates_merged + 1;
-				auto *old = static_cast<IDirectInputDevice8A *>(same->di);
-				if (old) { old->Unacquire(); old->Release(); }
-				*same = std::move(d);
-				same->info.duplicates_merged = merged;
-			}
-			else
-			{
-				same->info.duplicates_merged++;
-				auto *dev = static_cast<IDirectInputDevice8A *>(d.di);
-				if (dev) { dev->Unacquire(); dev->Release(); }
-				d.di = nullptr;
-			}
-		}
-		m_dev = std::move(kept);
+		int same = 0;
+		for (size_t k = 0; k < m_dev.size(); k++) same += k != i && iequals(m_dev[k].info.base, m_dev[i].info.base);
+		m_dev[i].info.siblings = same;
+	}
+	for (size_t i = 0; i < m_dev.size(); i++)
+	{
+		Dev &d = m_dev[i];
+		if (!d.info.siblings) continue;
+		char tag[40];
+		std::snprintf(tag, sizeof(tag), " [A%zu B%d]", d.info.axes.size(), d.info.buttons);
+		d.info.name = d.info.base + tag;
+		int n = 1;
+		for (size_t k = 0; k < i; k++) n += iequals(m_dev[k].info.name, d.info.name) || m_dev[k].info.name.rfind(d.info.name + " #", 0) == 0;
+		if (n > 1) d.info.name += " #" + std::to_string(n);   // the same shape twice: two wheels of one kind
 	}
 	int di_index = 0;
 	for (Dev &d : m_dev) d.info.index = di_index++;
@@ -344,7 +345,25 @@ int InputHub::find(const std::string &name) const
 {
 	for (size_t i = 0; i < m_dev.size(); i++)
 		if (iequals(m_dev[i].info.name, name)) return int(i);
+	for (size_t i = 0; i < m_dev.size(); i++)
+		if (iequals(m_dev[i].info.base, name)) return int(i);
 	return -1;
+}
+
+int InputHub::find_axis(const std::string &name, const std::string &axis) const
+{
+	for (size_t i = 0; i < m_dev.size(); i++)
+		if (iequals(m_dev[i].info.name, name)) return int(i);
+	for (size_t i = 0; i < m_dev.size(); i++)
+		if (iequals(m_dev[i].info.base, name) && axis_index(m_dev[i].info, axis) >= 0) return int(i);
+	return find(name);
+}
+
+bool InputHub::same_hardware(int a, int b) const
+{
+	if (a < 0 || b < 0 || a >= count() || b >= count()) return false;
+	const DeviceInfo &x = m_dev[size_t(a)].info, &y = m_dev[size_t(b)].info;
+	return x.backend == Backend::DInput && y.backend == Backend::DInput && !x.base.empty() && iequals(x.base, y.base);
 }
 
 bool InputHub::poll(int i, DeviceState &out)
@@ -405,7 +424,7 @@ bool InputHub::ffb_begin(int device, const std::string &steer_axis, int gain_pct
 	ffb_end();
 	if (device < 0 || device >= count()) { err = "no device"; return false; }
 	Dev &d = m_dev[size_t(device)];
-	if (d.info.backend != Backend::DInput || !d.di || !d.info.ffb) { err = "device has no force-feedback motor"; return false; }
+	if (d.info.backend != Backend::DInput || !d.di) { err = "device has no force-feedback motor"; return false; }
 	auto *dev = static_cast<IDirectInputDevice8A *>(d.di);
 
 	// the motor pushes along the steering axis: the bound one, else x, else the first axis
@@ -413,8 +432,15 @@ bool InputHub::ffb_begin(int device, const std::string &steer_axis, int gain_pct
 	for (int s = S_X; s < S_COUNT; s++)
 		if (d.present[s] && kSlotName[s] == steer_axis) slot = s;
 	if (slot == S_NONE) slot = d.present[S_X] ? S_X : (d.present[S_EXTRA0] ? S_EXTRA0 : S_NONE);
-	if (slot == S_NONE) { err = "device has no axis to push on"; return false; }
-	m_impl->ffb_axis_offset = slot_offset(slot);
+	// ...but when the device says which axis its motor is on, that one. (On a wheel base that is two devices the motor can
+	// be on the part that does not steer, where the steering binding's axis means nothing.) Always ONE axis: an effect across
+	// every force-feedback axis a device reports is refused by some bases.
+	// Both are tried, the motor's own axis first.
+	struct AxisSpec { DWORD flags, axis; };
+	std::vector<AxisSpec> specs;
+	if (d.ff_axis_type) specs.push_back({DIEFF_OBJECTIDS, d.ff_axis_type});
+	if (slot != S_NONE) specs.push_back({DIEFF_OBJECTOFFSETS, slot_offset(slot)});
+	if (specs.empty()) { err = "device has no axis to push on"; return false; }
 
 	dev->Unacquire();
 	HWND w = game_window ? game_window : m_impl->owner;
@@ -440,25 +466,35 @@ bool InputHub::ffb_begin(int device, const std::string &steer_axis, int gain_pct
 
 	DICONSTANTFORCE cf{};
 	LONG dir = 0;
-	DIEFFECT eff{};
-	eff.dwSize = sizeof(eff);
-	eff.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
-	eff.dwDuration = INFINITE;
-	eff.dwGain = DI_FFNOMINALMAX;
-	eff.dwTriggerButton = DIEB_NOTRIGGER;
-	eff.cAxes = 1;
-	eff.rgdwAxes = &m_impl->ffb_axis_offset;
-	eff.rglDirection = &dir;
-	eff.cbTypeSpecificParams = sizeof(cf);
-	eff.lpvTypeSpecificParams = &cf;
-	HRESULT hr = dev->CreateEffect(GUID_ConstantForce, &eff, &m_impl->effect, nullptr);
-	if (FAILED(hr) || !m_impl->effect || FAILED(m_impl->effect->Start(1, 0)))
+	HRESULT hr = E_FAIL;
+	for (const AxisSpec &sp : specs)
 	{
+		m_impl->ffb_axis_offset = sp.axis;
+		m_impl->ffb_axis_flags = sp.flags;
+		DIEFFECT eff{};
+		eff.dwSize = sizeof(eff);
+		eff.dwFlags = DIEFF_CARTESIAN | sp.flags;
+		eff.dwDuration = INFINITE;
+		eff.dwGain = DI_FFNOMINALMAX;
+		eff.dwTriggerButton = DIEB_NOTRIGGER;
+		eff.cAxes = 1;
+		eff.rgdwAxes = &m_impl->ffb_axis_offset;
+		eff.rglDirection = &dir;
+		eff.cbTypeSpecificParams = sizeof(cf);
+		eff.lpvTypeSpecificParams = &cf;
+		m_impl->effect = nullptr;
+		hr = dev->CreateEffect(GUID_ConstantForce, &eff, &m_impl->effect, nullptr);
+		if (SUCCEEDED(hr) && m_impl->effect && SUCCEEDED(m_impl->effect->Start(1, 0))) break;
 		if (m_impl->effect) { m_impl->effect->Release(); m_impl->effect = nullptr; }
+	}
+	if (!m_impl->effect)
+	{
 		dev->Unacquire();
 		dev->SetCooperativeLevel(m_impl->owner, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
 		dev->Acquire();
-		err = "constant-force effect could not be created";
+		char code[40];
+		std::snprintf(code, sizeof(code), " (0x%08lX)", (unsigned long)hr);
+		err = std::string(d.info.ffb ? "constant-force effect could not be created" : "no force-feedback motor") + code;
 		return false;
 	}
 	m_impl->ffb_dev = device;
@@ -469,7 +505,7 @@ bool InputHub::ffb_begin(int device, const std::string &steer_axis, int gain_pct
 		DICONDITION cond{};
 		DIEFFECT de{};
 		de.dwSize = sizeof(de);
-		de.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
+		de.dwFlags = DIEFF_CARTESIAN | m_impl->ffb_axis_flags;
 		de.dwDuration = INFINITE;
 		de.dwGain = DI_FFNOMINALMAX;
 		de.dwTriggerButton = DIEB_NOTRIGGER;
@@ -568,7 +604,7 @@ void InputHub::rumble_all(float left, float right)
 
 bool InputHub::test_pulse(int device)
 {
-	if (device < 0 || device >= count() || !m_dev[size_t(device)].info.ffb) return false;
+	if (device < 0 || device >= count()) return false;
 	const Dev &d = m_dev[size_t(device)];
 	m_impl->test_end = GetTickCount() + 850;
 	m_impl->test_toggle = GetTickCount() + 65;

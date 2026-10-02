@@ -422,11 +422,11 @@ void capture_popup(Launcher &L)
 
 void controls_devices(Launcher &L)
 {
-	ImGui::TextWrapped("Every attached controller is read at once, alongside the keyboard. A composite device that enumerates twice "
-	                   "(a Fanatec base, for example) is shown once.");
+	ImGui::TextWrapped("Every attached controller is read at once, alongside the keyboard. A wheel base that Windows lists as two "
+	                   "devices (Fanatec: one steers, the other carries what is plugged into the wheel) is shown with both, told apart by "
+	                   "their axis and button counts. Bind the steering by turning the wheel: the device that moves is taken, and the "
+	                   "motor is found on whichever of the two has it.");
 	if (ImGui::Button("Refresh devices")) L.hub.refresh();
-	ImGui::SameLine();
-	edited(L, ImGui::Checkbox("Keep duplicate entries", &L.s.controls.allow_duplicate_devices));
 	ImGui::SetNextItemWidth(260);
 	if (edited(L, ImGui::InputText("Ignore (names, comma separated)", L.ignore_buf, sizeof(L.ignore_buf)))) L.s.controls.ignore_devices = L.ignore_buf;
 	ImGui::SameLine();
@@ -439,7 +439,7 @@ void controls_devices(Launcher &L)
 		ImGui::TableSetupColumn("Axes");
 		ImGui::TableSetupColumn("Buttons");
 		ImGui::TableSetupColumn("Motor");
-		ImGui::TableSetupColumn("Merged");
+		ImGui::TableSetupColumn("Part of");
 		ImGui::TableHeadersRow();
 		for (int i = 0; i < L.hub.count(); i++)
 		{
@@ -451,7 +451,7 @@ void controls_devices(Launcher &L)
 			ImGui::TableNextColumn(); ImGui::Text("%zu", d.axes.size());
 			ImGui::TableNextColumn(); ImGui::Text("%d%s", d.buttons, d.hat ? " + hat" : "");
 			ImGui::TableNextColumn(); ImGui::TextUnformatted(d.ffb ? (d.backend == Backend::XInput ? "rumble" : "force feedback") : "-");
-			ImGui::TableNextColumn(); if (d.duplicates_merged) ImGui::Text("%d", d.duplicates_merged); else ImGui::TextDisabled("-");
+			ImGui::TableNextColumn(); if (d.siblings) ImGui::Text("%s (%d devices)", d.base.c_str(), d.siblings + 1); else ImGui::TextDisabled("-");
 		}
 		ImGui::EndTable();
 	}

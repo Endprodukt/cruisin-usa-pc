@@ -56,6 +56,9 @@ public:
 	bool ffb_detect_direction(HWND owner, bool &invert_out, std::string &msg);   // wheel must be free to move
 	const std::string &ffb_status() const { return m_ffb_status; }
 	int ffb_target_device() const;
+	// the devices the motor is looked for on, best first: the chosen or the steering device, then the other devices of the
+	// same hardware (a wheel base that is two devices: the motor can be on the part that does not steer)
+	std::vector<int> ffb_candidates() const;
 	~Controls();
 
 private:

@@ -331,7 +331,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 				const DeviceInfo &d = hub.info(i);
 				std::fprintf(f, "%s | %s | axes:", d.name.c_str(), d.backend == Backend::XInput ? "XInput" : "DirectInput");
 				for (auto &ax : d.axes) std::fprintf(f, " %s", ax.c_str());
-				std::fprintf(f, " | buttons %d | ffb %d | merged %d\n", d.buttons, d.ffb ? 1 : 0, d.duplicates_merged);
+				std::fprintf(f, " | buttons %d | ffb %d | same hardware %d\n", d.buttons, d.ffb ? 1 : 0, d.siblings);
 			}
 			std::fclose(f);
 		}

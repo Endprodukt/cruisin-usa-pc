@@ -16,14 +16,16 @@ enum class Backend { DInput, XInput };
 
 struct DeviceInfo
 {
-	std::string name;                 // product name; "XInput" for every Xbox pad
+	std::string name;                 // unique name used in bindings: the product name, plus "[A<axes> B<buttons>]" when several
+	                                  // devices share it (one wheel base can be two devices); "XInput" for every Xbox pad
+	std::string base;                 // the product name alone: devices with the same base belong together
 	Backend backend = Backend::DInput;
 	int index = 0;                    // DirectInput list index / XInput user slot
 	bool ffb = false;                 // has a force-feedback motor
 	std::vector<std::string> axes;    // axis names present, e.g. x y z rx ry rz slider0 slider1 extra0 extra1 / lx ly rx ry lt rt
 	int buttons = 0;
 	bool hat = false;
-	int duplicates_merged = 0;        // other enumerations of the same physical device that were folded into this one
+	int siblings = 0;                 // other devices with the same product name (parts of the same hardware)
 };
 
 struct DeviceState
@@ -40,7 +42,7 @@ public:
 	~InputHub();
 
 	// owner: window used for DirectInput cooperative levels. ignore: comma separated name fragments.
-	bool init(HWND owner, const std::string &ignore, bool allow_duplicates);
+	bool init(HWND owner, const std::string &ignore, bool unused_allow_duplicates = false);
 	void shutdown();
 	void refresh();                   // re-enumerate (hot-plug)
 
@@ -49,7 +51,11 @@ public:
 	bool poll(int i, DeviceState &out);
 
 	// resolve a stored device name; XInput matches any connected pad. -1 if not attached.
+	// (a name stored before devices sharing a product name were told apart matches the first of them)
 	int find(const std::string &name) const;
+	// the device a stored axis binding means: the named one, else the first with that product name that has the axis
+	int find_axis(const std::string &name, const std::string &axis) const;
+	bool same_hardware(int a, int b) const;   // same product name (two parts of one wheel base)
 	static int axis_index(const DeviceInfo &d, const std::string &axis);   // -1 if absent
 
 	// ---- force feedback (DirectInput constant force) and rumble (XInput) ---------------------------
@@ -75,6 +81,7 @@ private:
 		bool present[12] = {};              // DirectInput axis slots (see di_axes)
 		LONG lmin[12] = {}, lmax[12] = {};
 		int slot_of_axis[12] = {};          // index into DeviceInfo::axes per slot
+		DWORD ff_axis_type = 0;             // object id of the axis the motor acts on (the device's force-feedback actuator), 0 = none reported
 	};
 	std::vector<Dev> m_dev;
 	std::unique_ptr<Impl> m_impl;
