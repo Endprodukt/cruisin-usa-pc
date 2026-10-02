@@ -20,6 +20,7 @@
 #include "machine/telemetry.h"
 #include "outputs/outputs.h"
 #include "platform/audio_wasapi.h"
+#include "platform/splash.h"
 #include "video/video_backend.h"
 
 #pragma comment(lib, "winmm.lib")
@@ -421,9 +422,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	};
 
 	MSG msg;
-	// ---- fast boot: run the boot/self tests unthrottled until the attract mode starts rendering
+	// ---- The arcade board's power-up tests (ROM checksums, RAM, sound board, then the result screens with their fixed waits)
+	// are part of the game program and take about 1300 frames. They are run unthrottled, silent and unseen behind a loading
+	// picture (about two seconds), until the attract mode draws its first picture.
 	if (S.fast_boot)
 	{
+		Splash splash;
+		if (shot.empty()) splash.show(hwnd, "LOADING ...");
 		hook_audio(false);
 		for (int f = 0; f < 6000 && !g_quit; f++)
 		{
@@ -432,14 +437,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			m.run_frame();
 			if (f > 400 && m.quads_last_frame > 50) break;
 			if (f % 45 == 0)
-			{
-				present();
 				while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
-				char t[96]; std::snprintf(t, sizeof(t), "Cruis'n USA (PC) - booting... %d%%", std::min(99, f * 100 / 1400));
-				SetWindowTextA(hwnd, t);
-			}
 		}
 		audio.clear();
+		if (video) video->set_pillarbox(!m.world_shown());
+		present();          // the game's first picture is in the window before the loading picture goes
+		splash.hide();
+		SetForegroundWindow(hwnd);
 	}
 	hook_audio(true);
 	std::fill(std::begin(g_pressed), std::end(g_pressed), false);

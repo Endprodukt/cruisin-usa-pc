@@ -153,7 +153,8 @@ void page_home(Launcher &L)
 	ImGui::SetNextItemWidth(-140);
 	if (edited(L, ImGui::InputText("Save file (CMOS)", nv, sizeof(nv)))) L.s.nvram = nv;
 	help("High scores, audits and operator settings. The control calibration is fixed by design.");
-	edited(L, ImGui::Checkbox("Fast boot (run the self tests unthrottled)", &L.s.fast_boot));
+	edited(L, ImGui::Checkbox("Hide the power-up tests (loading picture, about two seconds)", &L.s.fast_boot));
+	help("The arcade board tests its ROMs, RAM and sound board at every start and shows the results. On: they run unseen at full speed behind a loading picture. Off: they are shown as on the machine (about 25 seconds).");
 	edited(L, ImGui::Checkbox("Show this launcher at startup", &L.s.show_launcher));
 	help("Turn off to start the game directly. Hold Shift while starting, or pass --launcher, to open it again.");
 
