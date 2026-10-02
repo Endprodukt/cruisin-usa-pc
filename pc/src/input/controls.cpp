@@ -164,6 +164,25 @@ bool Controls::pad_down(const std::string &binding) const
 	return false;
 }
 
+Controls::MenuNav Controls::menu_nav() const
+{
+	MenuNav n;
+	for (int i = 0; i < m_hub.count() && size_t(i) < m_states.size(); i++)
+	{
+		const DeviceState &st = m_states[size_t(i)];
+		n.up |= pov_matches(st.pov, 0); n.right |= pov_matches(st.pov, 9000);
+		n.down |= pov_matches(st.pov, 18000); n.left |= pov_matches(st.pov, 27000);
+		const DeviceInfo &di = m_hub.info(i);
+		if (di.backend != Backend::XInput) continue;
+		const int lx = InputHub::axis_index(di, "lx"), ly = InputHub::axis_index(di, "ly");
+		if (lx >= 0 && size_t(lx) < st.axis.size()) { n.left |= st.axis[size_t(lx)] < -0.6f; n.right |= st.axis[size_t(lx)] > 0.6f; }
+		if (ly >= 0 && size_t(ly) < st.axis.size()) { n.up |= st.axis[size_t(ly)] < -0.6f; n.down |= st.axis[size_t(ly)] > 0.6f; }
+	}
+	n.accept = action_active("menu_accept");
+	n.back = action_active("menu_back");
+	return n;
+}
+
 bool Controls::action_active(const std::string &id) const
 {
 	return std::find(m_active.begin(), m_active.end(), id) != m_active.end();
@@ -194,7 +213,9 @@ void Controls::update(MachineInputs &out, bool focused)
 	hold0(active("test"), in0bit::TEST);
 	hold0(active("vol_down"), in0bit::VOLDN);
 	hold0(active("vol_up"), in0bit::VOLUP);
-	active("pause");   // (not a cabinet input: the frame loop asks action_active("pause"))
+	active("pause");   // (not cabinet inputs: the frame loop asks action_active("pause"), the menu menu_nav())
+	active("menu_accept");
+	active("menu_back");
 	hold1(active("radio"), in1bit::RADIO);
 	hold1(active("view1"), in1bit::VIEW1);
 	hold1(active("view2"), in1bit::VIEW2);

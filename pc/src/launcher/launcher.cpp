@@ -40,6 +40,10 @@ struct Launcher
 	Page page = P_HOME;
 	bool in_game = false;         // the pause menu of the running game: no Home, Game settings, Network; other buttons
 	int game_action = 0;          // 1 continue, 2 return to attract, 3 exit game
+	// keyboard / pad operation: which of the two columns has the focus, a request to move it (1 the list, 2 the page), the
+	// Tab key, and whether something is open that "back" belongs to (a popup, a field being edited)
+	bool nav_focused = false, page_focused = false, tab = false, busy = false, back_held = false;
+	int focus_req = 1;
 	bool dirty = false;
 	bool quit = false, play = false;
 	std::string status;
@@ -1006,8 +1010,11 @@ GLuint load_picture(const char *name, int &w, int &h)
 
 // ---- window ----------------------------------------------------------------------------------------------------------
 
+bool *g_launcher_tab = nullptr;   // the launcher's "Tab was pressed", for its window procedure
+
 LRESULT CALLBACK launcher_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
+	if ((msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR) && wp == VK_TAB && g_launcher_tab) { if (msg == WM_KEYDOWN) *g_launcher_tab = true; return 1; }
 	if (ImGui_ImplWin32_WndProcHandler(h, msg, wp, lp)) return 1;
 	switch (msg)
 	{
@@ -1041,10 +1048,37 @@ void apply_style()
 	c[ImGuiCol_PlotHistogram] = ImVec4(0.30f, 0.60f, 0.95f, 1);
 }
 
+// Keyboard and pad operation. ImGui's own navigation does the work (arrow keys / d-pad move, accept activates, back
+// cancels); it is fed here from the game's input layer, so that every device's hat counts and accept / back are the bound
+// actions. Call before ImGui::NewFrame. Returns true when "back" was pressed with nothing open that it would close.
+bool feed_nav(Launcher &L)
+{
+	ImGuiIO &io = ImGui::GetIO();
+	Controls::MenuNav n;
+	if (L.cap == Launcher::Cap::None) n = L.ctl.menu_nav();      // (while a button is being learnt it belongs to that)
+	if (io.WantTextInput) n.accept = n.back = false;             // typing: Enter and Backspace are the text field's
+	io.AddKeyEvent(ImGuiKey_GamepadDpadUp, n.up);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadDown, n.down);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, n.left);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadRight, n.right);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceDown, n.accept);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceRight, n.back);
+	const bool esc = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0 && GetForegroundWindow() == GetActiveWindow();
+	const bool back = n.back || esc;
+	const bool edge = back && !L.back_held;
+	L.back_held = back;
+	if (L.tab) { L.tab = false; if (L.cap == Launcher::Cap::None) L.focus_req = L.page_focused ? 1 : 2; }
+	if (!edge || L.busy || L.cap != Launcher::Cap::None) return false;
+	if (L.page_focused) { L.focus_req = 1; return false; }      // from the page back to the list
+	return true;                                                 // from the list: out of the menu
+}
+
 void load_font(float scale)
 {
 	ImGuiIO &io = ImGui::GetIO();
 	io.IniFilename = nullptr;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+	io.BackendFlags |= ImGuiBackendFlags_HasGamepad;            // (fed by feed_nav, not by the backend's own XInput code)
 	if (FILE *f = std::fopen("C:/Windows/Fonts/segoeui.ttf", "rb")) { std::fclose(f); io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/segoeui.ttf", 16.0f * scale); }
 	else { ImFontConfig fc; fc.SizePixels = 15.0f * scale; io.Fonts->AddFontDefault(&fc); }
 }
@@ -1052,7 +1086,9 @@ void load_font(float scale)
 // the navigation column and the page beside it: the launcher's window and the game's pause menu
 void draw_ui(Launcher &L, float scale, GLuint logo, int logo_w, int logo_h, HWND hwnd)
 {
-	ImGui::BeginChild("nav", ImVec2(250 * scale, 0), true);
+	ImGui::BeginChild("nav", ImVec2(250 * scale, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
+	if (L.focus_req == 1) { ImGui::SetWindowFocus(); ImGui::SetNavCursorVisible(true); }
+	L.nav_focused = ImGui::IsWindowFocused();
 	if (logo)
 	{
 		const float lw = ImGui::GetContentRegionAvail().x * 0.86f, lh = lw * float(logo_h) / float(logo_w);
@@ -1064,7 +1100,10 @@ void draw_ui(Launcher &L, float scale, GLuint logo, int logo_w, int logo_h, HWND
 	for (int i = 0; i < P_COUNT; i++)
 	{
 		if (L.in_game && (i == P_HOME || i == P_GAME || i == P_NETWORK)) continue;
-		if (ImGui::Selectable(kPageNames[i], L.page == i, 0, ImVec2(0, 30 * scale))) L.page = Page(i);
+		if (L.focus_req == 1 && L.page == i) ImGui::SetKeyboardFocusHere();
+		if (ImGui::Selectable(kPageNames[i], L.page == i, 0, ImVec2(0, 30 * scale))) { L.page = Page(i); if (!ImGui::IsMouseReleased(0)) L.focus_req = 2; }
+		// moving through the list with the keys or the pad shows each page as it is passed; accept goes into it
+		if (L.focus_req == 0 && ImGui::IsItemFocused() && !ImGui::IsMouseDown(0) && L.page != i) L.page = Page(i);
 	}
 	// the buttons at the bottom: PLAY / SAVE / QUIT, in the game CONTINUE / SAVE / RETURN TO ATTRACT / EXIT GAME
 	const int nb = L.in_game ? 4 : 3;
@@ -1106,7 +1145,9 @@ void draw_ui(Launcher &L, float scale, GLuint logo, int logo_w, int logo_h, HWND
 	else if (ImGui::Button("QUIT", ImVec2(-1, bh))) L.quit = true;
 	ImGui::EndChild();
 	ImGui::SameLine();
-	ImGui::BeginChild("page", ImVec2(0, 0), true);
+	ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
+	if (L.focus_req == 2) { ImGui::SetWindowFocus(); ImGui::SetNavCursorVisible(true); }
+	L.page_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
 	if (L.in_game && L.page == P_VIDEO)
 		ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "Renderer, monitor, aspect ratio, draw distance, display sync and textures: from the next start. The rest applies at once.");
 	switch (L.page)
@@ -1123,6 +1164,8 @@ void draw_ui(Launcher &L, float scale, GLuint logo, int logo_w, int logo_h, HWND
 	default: break;
 	}
 	ImGui::EndChild();
+	L.focus_req = 0;
+	L.busy = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) || ImGui::IsAnyItemActive();
 }
 
 } // namespace
@@ -1182,6 +1225,8 @@ void GameMenu::open()
 	m_open = true;
 	m_impl->L.game_action = 0;
 	m_impl->L.status.clear();
+	m_impl->L.focus_req = 1;          // the list of pages has the focus: the menu can be worked without the mouse
+	m_impl->L.back_held = true;       // (a back button that is down while the menu opens has to come up first)
 }
 
 void GameMenu::close()
@@ -1197,6 +1242,8 @@ bool GameMenu::capturing() const { return m_impl && m_impl->L.cap != Launcher::C
 bool GameMenu::message(void *hwnd, unsigned msg, unsigned long long wp, long long lp)
 {
 	if (!m_impl || !m_open) return false;
+	// Tab jumps between the list of pages and the page (ImGui would walk through the fields with it)
+	if ((msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR) && wp == VK_TAB) { if (msg == WM_KEYDOWN) m_impl->L.tab = true; return true; }
 	return ImGui_ImplWin32_WndProcHandler(static_cast<HWND>(hwnd), msg, WPARAM(wp), LPARAM(lp)) != 0;
 }
 
@@ -1205,6 +1252,7 @@ GameMenu::Action GameMenu::frame()
 	if (!m_impl || !m_open) return Action::None;
 	Launcher &L = m_impl->L;
 	L.hub.tick();
+	if (feed_nav(L)) L.game_action = 1;        // back, with the focus on the list of pages: continue the game
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
@@ -1309,6 +1357,7 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 	if (const char *pg = std::getenv("CRUISN_PAGE")) L.page = Page(std::clamp(std::atoi(pg), 0, int(P_COUNT) - 1));      // testing aid
 	if (const char *tb = std::getenv("CRUISN_TAB")) L.ctl_tab = std::atoi(tb);
 	MachineInputs scratch;
+	g_launcher_tab = &L.tab;
 	bool running = true;
 	while (running && !L.quit && !L.play)
 	{
@@ -1321,6 +1370,7 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 		}
 		controls.update(scratch, GetForegroundWindow() == hwnd);
 		hub.tick();
+		feed_nav(L);
 
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplWin32_NewFrame();
@@ -1354,6 +1404,7 @@ LauncherResult launcher_run(Settings &settings, const std::string &ini_path, Inp
 		Sleep(8);
 	}
 
+	g_launcher_tab = nullptr;
 	nv_save(L);
 	if (L.dirty || L.play) L.s.save(L.ini_path);
 	if (logo) glDeleteTextures(1, &logo);

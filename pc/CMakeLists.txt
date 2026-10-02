@@ -37,7 +37,7 @@ add_library(imgui STATIC
   third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
   third_party/imgui/imgui_impl_win32.cpp third_party/imgui/imgui_impl_opengl3.cpp)
 target_include_directories(imgui PUBLIC third_party/imgui)
-target_compile_definitions(imgui PRIVATE IMGUI_DISABLE_WIN32_DEFAULT_CLIPBOARD_FUNCTIONS=0)
+target_compile_definitions(imgui PRIVATE IMGUI_DISABLE_WIN32_DEFAULT_CLIPBOARD_FUNCTIONS=0 IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
 
 add_executable(cruisn_usa WIN32
   src/main_win.cpp

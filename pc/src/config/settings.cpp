@@ -221,6 +221,8 @@ bool Settings::load(const std::string &path)
 	{
 		r.str("digital", a.id, controls.key[a.id]);
 		r.str("gamepad", a.id, controls.pad[a.id]);
+		// (a file from before the menu had its own actions: its empty "pause" button gets the default, the pad's Home)
+		if (std::string(a.id) == "pause" && controls.pad[a.id].empty() && !r.get("gamepad", "menu_accept")) controls.pad[a.id] = a.def_pad;
 	}
 	if (auto v = r.get("analog", "steer_axis")) controls.steer = parse_axis(*v);
 	if (auto v = r.get("analog", "accel_axis")) controls.accel = parse_axis(*v);

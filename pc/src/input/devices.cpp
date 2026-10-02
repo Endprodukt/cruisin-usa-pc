@@ -167,6 +167,19 @@ bool iequals(const std::string &a, const std::string &b)
 
 const char *const kXiAxes[6] = {"lx", "ly", "rx", "ry", "lt", "rt"};
 
+// XInputGetState does not report the Home (Guide) button; the same call under ordinal 100 of xinput1_4.dll does
+// (undocumented, in every Windows since Vista and used the same way by SDL and Steam). Falls back to the documented call.
+DWORD xi_get_state(DWORD index, XINPUT_STATE &xs)
+{
+	using Fn = DWORD(WINAPI *)(DWORD, XINPUT_STATE *);
+	static Fn ex = [] {
+		HMODULE h = LoadLibraryA("xinput1_4.dll");
+		if (!h) h = LoadLibraryA("xinput1_3.dll");
+		return h ? reinterpret_cast<Fn>(GetProcAddress(h, reinterpret_cast<LPCSTR>(100))) : nullptr;
+	}();
+	return ex ? ex(index, &xs) : XInputGetState(index, &xs);
+}
+
 } // namespace
 
 struct InputHub::Impl
@@ -334,7 +347,7 @@ void InputHub::refresh()
 		d.info.index = int(i);
 		d.info.ffb = true;           // rumble
 		for (const char *a : kXiAxes) d.info.axes.push_back(a);
-		d.info.buttons = 10;
+		d.info.buttons = 11;         // ...the eleventh is Home
 		d.info.hat = true;
 		m_dev.push_back(std::move(d));
 	}
@@ -383,7 +396,7 @@ bool InputHub::poll(int i, DeviceState &out)
 	if (d.info.backend == Backend::XInput)
 	{
 		XINPUT_STATE xs{};
-		if (XInputGetState(DWORD(d.info.index), &xs) != ERROR_SUCCESS) return false;
+		if (xi_get_state(DWORD(d.info.index), xs) != ERROR_SUCCESS) return false;
 		const XINPUT_GAMEPAD &g = xs.Gamepad;
 		auto norm = [](SHORT v) { return float(v) / (v < 0 ? 32768.0f : 32767.0f); };
 		out.axis[0] = norm(g.sThumbLX);
@@ -392,10 +405,10 @@ bool InputHub::poll(int i, DeviceState &out)
 		out.axis[3] = -norm(g.sThumbRY);
 		out.axis[4] = float(g.bLeftTrigger) / 255.0f * 2.0f - 1.0f;
 		out.axis[5] = float(g.bRightTrigger) / 255.0f * 2.0f - 1.0f;
-		static const WORD btn[10] = {XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
+		static const WORD btn[11] = {XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
 		                             XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_BACK,
-		                             XINPUT_GAMEPAD_START, XINPUT_GAMEPAD_LEFT_THUMB, XINPUT_GAMEPAD_RIGHT_THUMB};
-		for (int b = 0; b < 10; b++) out.button[size_t(b)] = (g.wButtons & btn[b]) ? 1 : 0;
+		                             XINPUT_GAMEPAD_START, XINPUT_GAMEPAD_LEFT_THUMB, XINPUT_GAMEPAD_RIGHT_THUMB, 0x0400 /* Home */};
+		for (int b = 0; b < 11 && size_t(b) < out.button.size(); b++) out.button[size_t(b)] = (g.wButtons & btn[b]) ? 1 : 0;
 		if (g.wButtons & XINPUT_GAMEPAD_DPAD_UP) out.pov = 0;
 		else if (g.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) out.pov = 9000;
 		else if (g.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) out.pov = 18000;

@@ -22,6 +22,10 @@ Keys in the game (defaults)
   outputs can be changed there and apply at once (a few video settings need a restart and say so). CONTINUE, P or Esc go
   back to the game; RETURN TO ATTRACT and EXIT GAME are there too. The pause button can be bound to a wheel or pad button
   (Controls). With the Vulkan or CPU renderer a small menu (continue, return to attract, exit game) is shown instead.
+  The menu works without the mouse: arrow keys or any device's hat / d-pad move, Enter (pad: A) accepts, Esc or Backspace
+  (pad: B) goes back, from the list of pages out of the menu; Tab jumps between the list of pages and the page. The Xbox
+  pad's Home button opens the menu (Windows' Game Bar also listens to that button unless it is turned off in Windows).
+  Pause, accept and back can be bound to other keys and buttons under Controls (group "Menu").
   The mouse pointer is hidden over the game (Video > "Hide the mouse pointer"); it is there while the options are open.
   F3 anti-aliasing, F4 shadow style, F5 / F6 internal resolution, F7 texture filter, F8 VSync, F9 smooth scaling.
   Wheels, pedals, shifters and pads are bound in the launcher under Controls.

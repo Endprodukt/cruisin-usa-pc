@@ -30,6 +30,10 @@ public:
 	float accel_value() const { return m_accel_out; }
 	float brake_value() const { return m_brake_out; }
 	bool action_active(const std::string &id) const;
+	// what moves the options menu, from the last update(): the hat / d-pad of every attached device and an Xbox pad's left
+	// stick for the directions, the "menu_accept" and "menu_back" actions (keyboard or button, as bound)
+	struct MenuNav { bool up = false, down = false, left = false, right = false, accept = false, back = false; };
+	MenuNav menu_nav() const;
 	const DeviceState *device_state(int i) const { return i >= 0 && i < int(m_states.size()) ? &m_states[size_t(i)] : nullptr; }
 
 	// ---- binding capture (launcher) -------------------------------------------------------------

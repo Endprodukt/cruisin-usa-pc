@@ -5,7 +5,9 @@
  * `id` is the ini key in both [digital] (keyboard) and [gamepad] (device-bound button).
  * Keyboard defaults: MAME's for coin/start/service/volume, steering and pedals; the cabinet buttons and the sequential
  * shifter have keys of their own (MAME's defaults put two actions on one key: Left Ctrl was accelerator and radio); the pad defaults target an Xbox pad ("XInput | n", 1-based:
- * A=1 B=2 X=3 Y=4 LB=5 RB=6 Back=7 Start=8 LStick=9 RStick=10).
+ * A=1 B=2 X=3 Y=4 LB=5 RB=6 Back=7 Start=8 LStick=9 RStick=10 Home=11).
+ * The menu is moved in with the arrow keys and with every device's hat / d-pad (not bound: all of them work); Esc is
+ * always "back" as well.
  */
 ACTION(coin1,      "Coin 1",                 "5",        "XInput | 7", Operator)
 ACTION(coin2,      "Coin 2",                 "6",        "",           Operator)
@@ -14,7 +16,9 @@ ACTION(service,    "Service credit",         "9",        "",           Operator)
 ACTION(test,       "Test / Enter (operator)","F2",       "",           Operator)
 ACTION(vol_down,   "Volume down",            "MINUS",    "",           Operator)
 ACTION(vol_up,     "Volume up",              "EQUALS",   "",           Operator)
-ACTION(pause,      "Pause menu",             "P",        "",           Operator)
+ACTION(pause,      "Pause / options menu",   "P",        "XInput | 11", Menu)
+ACTION(menu_accept,"Menu: accept",           "ENTER",    "XInput | 1", Menu)
+ACTION(menu_back,  "Menu: back",             "BACKSPACE","XInput | 2", Menu)
 
 ACTION(steer_left, "Steer left",             "LEFT",     "",           Driving)
 ACTION(steer_right,"Steer right",            "RIGHT",    "",           Driving)

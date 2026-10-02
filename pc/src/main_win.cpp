@@ -63,7 +63,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 	case WM_SYSKEYDOWN:
 		if (w < 256) { if (!g_keys[w]) g_pressed[w] = true; g_keys[w] = true; }
 		if (w == VK_F11 || (w == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000))) g_toggle_fs = true;
-		if (w == VK_ESCAPE) { if (menu_open) g_menu_esc = true; else g_quit = true; }
+		if (w == VK_ESCAPE && !menu_open) g_quit = true;   // (in the options menu Esc is "back")
 		return 0;
 	case WM_KEYUP:
 	case WM_SYSKEYUP:
@@ -716,21 +716,25 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			{
 				const GameMenu::Action act = menu.frame();
 				choice = act == GameMenu::Action::Continue ? 1 : act == GameMenu::Action::Attract ? 2 : act == GameMenu::Action::Exit ? 3 : 0;
-				if (!menu.capturing() && ((ph && !pause_held) || g_menu_esc)) choice = 1;
-				g_menu_esc = false;
+				if (!menu.capturing() && ph && !pause_held) choice = 1;
 				apply_live();
 			}
 			else
 			{
-				const int zone = pin.wheel < 88 ? -1 : pin.wheel > 168 ? 1 : (pin.wheel > 108 && pin.wheel < 148) ? 0 : pause_zone;
+				// the wheel, every hat / d-pad and the arrow keys move; accept, Start or the accelerator choose; back continues
+				const Controls::MenuNav nav = controls.menu_nav();
+				const int zone = (pin.wheel < 88 || nav.up) ? -1 : (pin.wheel > 168 || nav.down) ? 1 : (pin.wheel > 108 && pin.wheel < 148) ? 0 : pause_zone;
 				const bool up = g_pressed[VK_UP] || (zone == -1 && pause_zone != -1), down = g_pressed[VK_DOWN] || (zone == 1 && pause_zone != 1);
 				pause_zone = zone;
-				const bool sel_now = !(pin.in0 & in0bit::START) || pin.accel > 160;
+				const bool sel_now = !(pin.in0 & in0bit::START) || pin.accel > 160 || nav.accept;
+				static bool small_back = false;
+				const bool back_edge = nav.back && !small_back;
+				small_back = nav.back;
 				const bool select = (g_pressed[VK_RETURN] && !(GetKeyState(VK_MENU) & 0x8000)) || (sel_now && !pause_sel_held);
 				pause_sel_held = sel_now;
 				const PauseMenu::Choice pc = pause.update(m, up, down, select);
 				choice = pc == PauseMenu::Continue ? 1 : pc == PauseMenu::Attract ? 2 : pc == PauseMenu::Exit ? 3 : 0;
-				if (ph && !pause_held) choice = 1;
+				if ((ph && !pause_held) || back_edge) choice = 1;
 			}
 			{   // (testing: --pause-do continue|attract|exit chooses by itself two seconds after --pause-at opened the menu)
 				static const std::string pause_do = arg_value(a, "--pause-do");
