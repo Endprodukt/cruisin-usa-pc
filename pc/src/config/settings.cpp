@@ -193,6 +193,7 @@ bool Settings::load(const std::string &path)
 	r.integer("video", "window_width", video.window_w, 320, 16384);
 	r.integer("video", "window_height", video.window_h, 240, 16384);
 	r.integer("video", "monitor", video.monitor, 0, 15);
+	r.str("video", "monitor_device", video.monitor_device);
 	r.integer("video", "internal_scale", video.internal_scale, 1, 8);
 	r.choice("video", "aspect", video.aspect, kAspect);
 	r.boolean("video", "integer_scale", video.integer_scale);
@@ -291,7 +292,7 @@ bool Settings::save(const std::string &path) const
 
 	o << "[video]\n; renderer: cpu | opengl | vulkan      window_mode: window | borderless | fullscreen\n"
 	  << "renderer = " << to_string(video.renderer) << "\nwindow_mode = " << to_string(video.window_mode)
-	  << "\nwindow_width = " << video.window_w << "\nwindow_height = " << video.window_h << "\nmonitor = " << video.monitor
+	  << "\nwindow_width = " << video.window_w << "\nwindow_height = " << video.window_h << "\n; monitor: position in the launcher's list; monitor_device (\\\\.\\DISPLAYn) wins when that monitor is attached\nmonitor = " << video.monitor << "\nmonitor_device = " << video.monitor_device
 	  << "\n; internal_scale 1..8 x the arcade's 512x400\ninternal_scale = " << video.internal_scale
 	  << "\n; aspect: 4:3 | 16:9 | 21:9 | stretch\naspect = " << to_string(video.aspect)
 	  << "\ninteger_scale = " << b(video.integer_scale) << "\nvsync = " << b(video.vsync) << "\n; one game frame per display refresh: smoothest picture, the game runs at the display's pace (60 Hz: 3.6 % faster than the arcade's 57.9 Hz)\ndisplay_sync = " << b(video.display_sync)

@@ -22,7 +22,8 @@ struct VideoSettings
 	Renderer renderer = Renderer::OpenGL;
 	WindowMode window_mode = WindowMode::Window;
 	int window_w = 1280, window_h = 960;     // client size in window / borderless mode
-	int monitor = 0;                          // which monitor for borderless / fullscreen (0 = primary)
+	int monitor = 0;                          // which monitor: position in the launcher's list (platform/monitors.h)
+	std::string monitor_device;               // ...and its device name (\\.\DISPLAYn), which wins when that monitor is attached
 	int internal_scale = 1;                   // 1..8 x the arcade's 512x400
 	AspectMode aspect = AspectMode::Native43;
 	bool integer_scale = false;

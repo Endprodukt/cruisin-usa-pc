@@ -23,6 +23,7 @@
 #include "perf.h"
 #include "pause_menu.h"
 #include "calltrace.h"
+#include "platform/monitors.h"
 #include "platform/stall_watch.h"
 #include "platform/vblank_clock.h"
 #include "machine/midvunit.h"
@@ -87,28 +88,18 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 
 // ---- monitors / window modes -----------------------------------------------------------------------------
 
-struct Mon { RECT rc; };
-BOOL CALLBACK mon_cb(HMONITOR m, HDC, LPRECT, LPARAM d)
+// the monitor chosen in the launcher (the same list, platform/monitors.h)
+RECT monitor_rect(const VideoSettings &v)
 {
-	MONITORINFO mi{sizeof(mi)};
-	GetMonitorInfo(m, &mi);
-	auto *v = reinterpret_cast<std::vector<Mon> *>(d);
-	if (mi.dwFlags & MONITORINFOF_PRIMARY) v->insert(v->begin(), Mon{mi.rcMonitor}); else v->push_back(Mon{mi.rcMonitor});
-	return TRUE;
-}
-
-RECT monitor_rect(int index)
-{
-	std::vector<Mon> mons;
-	EnumDisplayMonitors(nullptr, nullptr, mon_cb, reinterpret_cast<LPARAM>(&mons));
+	const std::vector<MonitorDesc> mons = list_monitors();
 	if (mons.empty()) return RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
-	return mons[size_t(std::clamp(index, 0, int(mons.size()) - 1))].rc;
+	return mons[size_t(find_monitor(mons, v.monitor_device, v.monitor))].rc;
 }
 
 // applies the window mode to an existing window
 void apply_window_mode(HWND hwnd, const VideoSettings &v, WindowMode mode)
 {
-	RECT mon = monitor_rect(v.monitor);
+	RECT mon = monitor_rect(v);
 	int mw = mon.right - mon.left, mh = mon.bottom - mon.top;
 	if (mode == WindowMode::Fullscreen)
 	{

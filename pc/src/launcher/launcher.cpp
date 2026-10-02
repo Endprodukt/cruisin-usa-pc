@@ -15,6 +15,7 @@
 #include "../machine/cmos.h"
 #include "../machine/default_nvram.h"
 #include "../outputs/outputs.h"
+#include "../platform/monitors.h"
 #include "../video/png_io.h"
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -114,23 +115,6 @@ bool vulkan_available()
 	return true;
 }
 
-struct MonitorList
-{
-	std::vector<std::string> names;
-};
-BOOL CALLBACK monitor_cb(HMONITOR mon, HDC, LPRECT, LPARAM data)
-{
-	auto *l = reinterpret_cast<MonitorList *>(data);
-	MONITORINFOEXA mi{};
-	mi.cbSize = sizeof(mi);
-	GetMonitorInfoA(mon, &mi);
-	char buf[128];
-	std::snprintf(buf, sizeof(buf), "Monitor %zu  %ldx%ld%s", l->names.size() + 1, mi.rcMonitor.right - mi.rcMonitor.left,
-	              mi.rcMonitor.bottom - mi.rcMonitor.top, (mi.dwFlags & MONITORINFOF_PRIMARY) ? "  (primary)" : "");
-	l->names.push_back(buf);
-	return TRUE;
-}
-
 // ---- pages ------------------------------------------------------------------------------------------------
 
 void page_home(Launcher &L)
@@ -181,16 +165,22 @@ void page_video(Launcher &L)
 	static const char *const modes[] = {"Window", "Borderless window", "Fullscreen (borderless, desktop resolution)"};
 	int m = int(v.window_mode);
 	if (combo(L, "Mode", m, modes)) v.window_mode = WindowMode(m);
-	static MonitorList mons;
-	mons.names.clear();
-	EnumDisplayMonitors(nullptr, nullptr, monitor_cb, reinterpret_cast<LPARAM>(&mons));
-	if (!mons.names.empty())
+	// the list the game opens its window from (platform/monitors.h), refreshed twice a second (monitors come and go)
+	static std::vector<MonitorDesc> mons;
+	static double mons_at = -1;
+	if (mons_at < 0 || ImGui::GetTime() - mons_at > 0.5) { mons = list_monitors(); mons_at = ImGui::GetTime(); }
+	if (!mons.empty())
 	{
-		v.monitor = std::clamp(v.monitor, 0, int(mons.names.size()) - 1);
-		if (ImGui::BeginCombo("Monitor", mons.names[size_t(v.monitor)].c_str()))
+		const int cur = find_monitor(mons, v.monitor_device, v.monitor);
+		if (ImGui::BeginCombo("Monitor", monitor_label(mons[size_t(cur)], cur).c_str()))
 		{
-			for (size_t i = 0; i < mons.names.size(); i++)
-				if (ImGui::Selectable(mons.names[i].c_str(), int(i) == v.monitor)) { v.monitor = int(i); L.dirty = true; }
+			for (size_t i = 0; i < mons.size(); i++)
+				if (ImGui::Selectable(monitor_label(mons[i], int(i)).c_str(), int(i) == cur))
+				{
+					v.monitor = int(i);
+					v.monitor_device = mons[i].device;
+					L.dirty = true;
+				}
 			ImGui::EndCombo();
 		}
 	}
