@@ -297,12 +297,17 @@ public:
 		int x0 = std::clamp(int(std::floor(minx * sc - radius - 2)), 0, pw), x1 = std::clamp(int(std::ceil(maxx * sc + radius + 2)), 0, pw);
 		int y0 = std::clamp(int(std::floor(miny * sc - radius - 2)), 0, sz), y1 = std::clamp(int(std::ceil(maxy * sc + radius + 2)), 0, sz);
 		if (x1 <= x0 || y1 <= y0) return;
+		// The mask is only cleared and drawn where it is needed, and the blur reads up to `radius` pixels beside the pixel it
+		// shades. So the cleared part must reach a radius further than the part that is shaded: otherwise the outermost
+		// pixels read what an earlier shadow left in the mask, which showed as thin dark lines along the rectangle's edges.
+		const int grow = int(std::ceil(radius)) + 2;
+		const int mx0 = std::max(0, x0 - grow), mx1 = std::min(pw, x1 + grow), my0 = std::max(0, y0 - grow), my1 = std::min(sz, y1 + grow);
 
 		// 1. hard coverage of the shadow quads into the mask
 		glBindFramebuffer(GL_FRAMEBUFFER, m_mask_fbo);
 		glViewport(0, 0, pw, sz);
 		glEnable(GL_SCISSOR_TEST);
-		glScissor(x0, y0, x1 - x0, y1 - y0);
+		glScissor(mx0, my0, mx1 - mx0, my1 - my0);
 		glClearColor(0, 0, 0, 0);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glUseProgram(m_prog_smask);
