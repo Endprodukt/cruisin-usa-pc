@@ -22,9 +22,9 @@ Needs Windows 10 / 11 (64 bit) and a graphics card with OpenGL 4.5. Wheels, peda
 **Works**
 
 - All 14 tracks and the complete "Cruise the USA" tour, with sound; high scores and operator settings are saved
-- OpenGL renderer at up to 8x the arcade resolution, in 4:3, 16:9 and 21:9
+- OpenGL and Vulkan renderer at up to 8x the arcade resolution, in 4:3, 16:9 and 21:9
 - Keyboard, Xbox pads with rumble, DirectInput wheels, pedals and shifters, several devices at once
-- Force feedback on wheels (developed on a Fanatec ClubSport base)
+- Force feedback on wheels
 - Options menu inside the game, usable with keyboard, pad or wheel alone
 
 **Does not work yet**
@@ -32,14 +32,6 @@ Needs Windows 10 / 11 (64 bit) and a graphics card with OpenGL 4.5. Wheels, peda
 - Link play (Head 2 Head): the network transport is missing
 - Texture export and texture packs: unfinished, switched off in the menu
 - Higher frame rates: a race is drawn at the arcade's rate of about 29 pictures per second; there is no 60 fps mode
-- Vulkan and the CPU renderer run, but are less tested and get a small pause menu instead of the options
-- ROM revisions other than 4.5 can be selected but are largely untested
-- Motion cabinet hardware, other V-Unit games (Cruis'n World, Off Road Challenge, War Gods), other operating systems
-
-**Known problems**
-
-- NVIDIA cards at 2x-4x internal resolution: now and then a picture arrives one refresh late (0.1-0.4 %)
-- Not yet run on real hardware: pad-only menu operation, displays above 60 Hz, AMD and Intel graphics
 
 ## What the port adds
 
