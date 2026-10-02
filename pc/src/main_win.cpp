@@ -242,6 +242,16 @@ std::string exe_dir()
 
 int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 {
+	// real pixels on every monitor, before any window exists: otherwise Windows reports a scaled display smaller than it is (a 4K TV
+	// at 200 % as 1920 x 1080) and stretches the picture. Per monitor, because a TV often has another scaling than the desktop.
+	using SetDpiCtx = BOOL(WINAPI *)(HANDLE);
+	if (auto set_ctx = reinterpret_cast<SetDpiCtx>(GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext")))
+	{
+		if (!set_ctx(reinterpret_cast<HANDLE>(-4)))   // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (Windows 10 1703+)
+			set_ctx(reinterpret_cast<HANDLE>(-3));     // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE
+	}
+	else SetProcessDPIAware();
+
 	std::string a = cmdline;
 	std::string dir = exe_dir();
 	std::string ini = dir + "cruisn.ini";

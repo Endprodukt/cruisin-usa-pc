@@ -1190,8 +1190,12 @@ bool GameMenu::init(void *hwnd_, Settings &settings, const std::string &ini_path
 {
 	if (m_impl) return true;
 	HWND hwnd = static_cast<HWND>(hwnd_);
+	// the scaling of the monitor the game is on (a TV next to the desktop monitor often has a different one)
 	UINT dpi = 96;
-	if (HDC dc = GetDC(nullptr)) { dpi = UINT(GetDeviceCaps(dc, LOGPIXELSX)); ReleaseDC(nullptr, dc); }
+	using DpiForWindow = UINT(WINAPI *)(HWND);
+	if (auto dfw = reinterpret_cast<DpiForWindow>(GetProcAddress(GetModuleHandleA("user32.dll"), "GetDpiForWindow"))) dpi = dfw(hwnd);
+	else if (HDC dc = GetDC(nullptr)) { dpi = UINT(GetDeviceCaps(dc, LOGPIXELSX)); ReleaseDC(nullptr, dc); }
+	if (dpi < 48) dpi = 96;
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	m_impl = new Impl(settings, ini_path, hub, controls);
@@ -1317,7 +1321,7 @@ bool create_default_save(const std::string &path)
 
 LauncherResult launcher_run(Settings &settings, const std::string &ini_path, InputHub &hub, Controls &controls)
 {
-	SetProcessDPIAware();
+	// (the process is made DPI aware per monitor at the start of WinMain)
 	HINSTANCE hi = GetModuleHandle(nullptr);
 	WNDCLASSA wc{};
 	wc.lpfnWndProc = launcher_proc;
