@@ -39,7 +39,6 @@ Needs Windows 10 / 11 (64 bit) and a graphics card with OpenGL 4.5. Wheels, peda
 **Known problems**
 
 - NVIDIA cards at 2x-4x internal resolution: now and then a picture arrives one refresh late (0.1-0.4 %)
-- Modern shadows: a dark box can show around the flag girl
 - Not yet run on real hardware: pad-only menu operation, displays above 60 Hz, AMD and Intel graphics
 
 ## What the port adds
@@ -124,7 +123,6 @@ The port lives in [`pc/`](pc). Everything else in this repository is the game's 
 - **[Dear ImGui](https://github.com/ocornut/imgui)** by Omar Cornut (menus),
   **[miniz](https://github.com/richgel999/miniz)** by Rich Geldreich (zip, PNG),
   **[volk](https://github.com/zeux/volk)** by Arseny Kapoulkine and the Khronos **Vulkan headers**.
-- **MameHooker** by Howard Casto and **Hook Of The Reaper** by 6Bolt, whose output protocols the port speaks.
 - Port by **Endprodukt**, 2026, written with [Claude Code](https://claude.com/claude-code).
 
 ## Licence
