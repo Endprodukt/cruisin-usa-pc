@@ -12,7 +12,7 @@ options menu around it. No MAME installation needed.
 1. Download `Cruis'n Windows.zip` from [Releases](https://github.com/Endprodukt/cruisin-usa-pc/releases) and unpack it anywhere.
 2. Get your own `crusnusa.zip` (the MAME ROM set). **It is not included.**
 3. Run `cruisn_usa.exe`, point it to the zip when asked, press **PLAY**.
-4. `5` coin, `1` start, arrow keys steer, `Left Ctrl` gas, `Left Alt` brake, `Z X C V` gears, `P` options, `Esc` quit.
+4. Setup controls and enjoy!
 
 Needs Windows 10 / 11 (64 bit) and a graphics card with OpenGL 4.5. Wheels, pedals, shifters and pads are bound under
 **Controls**.
