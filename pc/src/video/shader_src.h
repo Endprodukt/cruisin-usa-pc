@@ -330,9 +330,9 @@ void main()
 }
 )GLSL";
 
-// ---- shadow composite: blurred mask darkens the page -----------------------------------------------------
-// Params.pc = (strength, radius in target pixels, 1/width, 1/height); pa/pb place the rect (whole page, uv 0..1)
-static const char *const kShadowCompFrag = R"GLSL(
+// ---- shadow blur: the mask, blurred, into a second mask of the same (low) resolution ---------------------
+// Params.pc = (unused, radius in mask pixels, 1/width, 1/height); pa/pb place the rect (whole mask, uv 0..1)
+static const char *const kShadowBlurFrag = R"GLSL(
 layout(location = 0) in vec2 v_uv;
 layout(BIND(0)) uniform sampler2D u_mask;
 layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; vec4 pc; } u_par;
@@ -352,7 +352,20 @@ void main()
 			acc += w * texture(u_mask, v_uv + d * texel).r;
 			wsum += w;
 		}
-	float a = acc / wsum * u_par.pc.x;
+	o_color = vec4(acc / wsum);
+}
+)GLSL";
+
+// ---- shadow composite: the blurred mask darkens the page (one filtered sample per pixel) -----------------
+// Params.pc.x = strength; pa/pb place the rect (whole page, uv 0..1)
+static const char *const kShadowCompFrag = R"GLSL(
+layout(location = 0) in vec2 v_uv;
+layout(BIND(0)) uniform sampler2D u_mask;
+layout(std140, BIND(3)) uniform Params { vec4 pa; vec4 pb; vec4 pc; } u_par;
+layout(location = 0) out vec4 o_color;
+void main()
+{
+	float a = texture(u_mask, v_uv).r * u_par.pc.x;
 	if (a <= 0.002) discard;
 	o_color = vec4(0.0, 0.0, 0.0, a);
 }

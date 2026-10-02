@@ -32,6 +32,7 @@ jobs = [
     ("present_frag", "frag", grab("kPresentFrag")),
     ("overlay_frag", "frag", grab("kOverlayFrag")),
     ("shadow_mask_frag", "frag", grab("kShadowMaskFrag")),
+    ("shadow_blur_frag", "frag", grab("kShadowBlurFrag")),
     ("shadow_comp_frag", "frag", grab("kShadowCompFrag")),
 ]
 

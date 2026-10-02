@@ -125,6 +125,7 @@ struct Settings
 	bool fast_boot = true;
 	bool smooth_frames = false; // experimental, command line only (--smooth 1): frame governor off, breaks the game's timing
 	int rubberband = 100;      // opponents' catch-up boost in percent of the original (0 = none)
+	bool steady_cadence = true; // give the emulated CPU what a game frame still needs before its vblank (no third vblank per picture)
 	int dsp_thread = 0;        // sound DSP on its own thread: -1 auto (4+ hardware threads), 0 off (default, see PERFORMANCE.md), 1 on
 
 	VideoSettings video;

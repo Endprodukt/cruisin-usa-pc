@@ -66,6 +66,7 @@ public:
 	// At the end of a race the road map unfolds over the picture; once it is open the game loads other palettes (the trophy
 	// girls') and sometimes another backdrop behind it, which shows in the margins. From then on: 4:3 with black bars.
 	bool world_shown() const { const uint32_t m = m_ram0[0xC8F5]; return (m & 0xf) == 4 || ((m & 0xf) == 5 && !m_map_full) || ((m & 0xf) == 2 && (m & 0x200)) || m_garage; }
+	uint32_t m_activehi_addr = 0;          // ACTIVEHI1 / ACTIVEHI in RAM (the object lists' active window), see run_frame
 	bool m_map_full = false;               // the road map of the bonus screen is fully unfolded
 	bool m_garage = false;                 // the car selection is on screen (updated once per frame)   // _MODE == MATTR: the attract mode (nobody is playing)
 	uint64_t palette_queue_overflows = 0;  // times the palette transfer queue was full and was flushed by the host
@@ -75,6 +76,15 @@ public:
 	bool auto_overclock = true;            // raise the CPU clock while a longer draw distance needs it (see update_clock)
 	int cpu_overclock = 1;                 // 1..4: more main CPU instructions per emulated time (the game's heavy frames finish sooner)
 	bool skip_raster = false;              // benchmarking: do not rasterise quads on the CPU
+	int clock_q4() const { return m_oc_q4; }
+	bool steady_cadence = true;            // give the CPU what a game frame still needs before the vblank (catch_up)
+	double steady_budget_ms = 10.0;        // ...within this much host time per display frame (0 = no limit: benchmarks, headless)
+	uint64_t catchups = 0, catchup_fails = 0;   // due game frames finished that way / frames that were late even so
+	void catch_up();
+	uint32_t m_mwait0_pc = 0;              // MWAIT0 in the main loop (the frame's work is done, the governor holds it)
+	double m_frame_cpu0 = 0;               // interpreter time (without the time spent in the video backend) at the start of run_frame   // emulated CPU clock, in quarters of the original
+	bool quad_stats = false;               // diagnostics: screen area of the quads' bounding boxes and of the quads themselves
+	double stat_bbox = 0, stat_poly = 0; uint64_t stat_quads = 0;
 	uint64_t page_flips = 0;               // displayed page changes = new pictures shown (game frame rate)
 	int dcs_thread = 0;                    // sound DSP on its own thread: -1 auto (4+ hardware threads), 0 off, 1 on
 	bool idle_skip = true;                 // fast-forward the game's wait loops (see setup_idle_hooks)

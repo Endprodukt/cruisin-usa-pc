@@ -59,6 +59,9 @@ int main(int argc, char **argv)
 	if (!m.load_roms(rom, ver, err)) { fprintf(stderr, "ROM error: %s\n", err.c_str()); return 1; }
 	std::vector<int16_t> pcm; double rate = 0; int blocks = 0;
 	m.on_audio = [&](const int16_t *b, int n, double r) { pcm.insert(pcm.end(), b, b + n); if (rate == 0) rate = r; blocks++; };
+	if (const char *sc = getenv("STEADY")) m.steady_cadence = atoi(sc) != 0;
+	m.quad_stats = getenv("QUADSTAT") != nullptr;
+	m.steady_budget_ms = getenv("STEADY_MS") ? atof(getenv("STEADY_MS")) : 0.0;   // headless runs are not paced: no host time limit
 	if (const char *dd = getenv("DD")) m.rom_patches.draw_distance_pct = atoi(dd);
 	if (getenv("PCHIST")) m.m_pchist_on = true;
 	if (const char *wm = getenv("WM")) m.rom_patches.wide_margin = atoi(wm);
@@ -300,7 +303,8 @@ int main(int argc, char **argv)
 				if (t.speed != lastspd) { hist[std::min<uint32_t>(nf, 4)]++; lastspd = t.speed; }
 				(void)same; (void)last_inf;
 			}
-			if (f % 600 == 599 && nf_addr) { fprintf(stderr, "FRAMRATE=%u ", m.ram_word(0xC961)); fprintf(stderr, "NFRAMES hist 1:%d 2:%d 3:%d 4+:%d%c", hist[1], hist[2], hist[3], hist[4], 10); for (int &h : hist) h = 0; }
+			if (f % 600 == 599 && nf_addr && getenv("NFLOG")) fprintf(stderr, "CATCHUP %llu finished, %llu late%c", (unsigned long long)m.catchups, (unsigned long long)m.catchup_fails, 10);
+		if (f % 600 == 599 && nf_addr) { fprintf(stderr, "FRAMRATE=%u ", m.ram_word(0xC961)); fprintf(stderr, "NFRAMES hist 1:%d 2:%d 3:%d 4+:%d%c", hist[1], hist[2], hist[3], hist[4], 10); for (int &h : hist) h = 0; }
 		}
 		if (getenv("COLLOG"))
 		{   // object hits and spins, with the modern force feedback's output over the frame
@@ -331,6 +335,8 @@ int main(int argc, char **argv)
 		if (f % 60 == 0) fprintf(stderr, "frame %d free=%d mode=%X pc=%06X quads=%llu vis=%dx%d\n", f, m.free_objects(), m.ram_word(0xC8F5) | (m.ram_word(0xE49C) << 16), m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
 	if (const uint64_t *h = m.cpu_hits()) { std::vector<std::pair<uint64_t, int>> v; uint64_t tot = 0; for (int i = 0; i < 2048; i++) { v.push_back({h[i], i}); tot += h[i]; } std::sort(v.rbegin(), v.rend()); fprintf(stderr, "OPS total %llu%c", (unsigned long long)tot, 10); for (int i = 0; i < 25; i++) fprintf(stderr, "OP %03X %llu (%.1f%%)%c", v[i].second, (unsigned long long)v[i].first, 100.0 * v[i].first / double(tot), 10); }
+	if (m.quad_stats) fprintf(stderr, "QUADSTAT %llu quads, bounding boxes %.0f px, polygons %.0f px (%.1f %% of the boxes), per frame %.2f screens of boxes%c", (unsigned long long)m.stat_quads, m.stat_bbox, m.stat_poly,
+		100.0 * m.stat_poly / std::max(1.0, m.stat_bbox), m.stat_bbox / (512.0 * 400.0) / std::max(1, frames / 2), 10);
 	if (getenv("PROFILE")) prof.stop_and_report();
 	if (getenv("CPUTIME")) fprintf(stderr, "CPUTIME main cpu %.1f ms, dsp %.1f ms over %d frames (%.3f ms/frame)%c", m.perf_cpu_ms, m.perf_dcs_ms, frames, m.perf_cpu_ms / frames, 10);
 	if (getenv("RAMUSE")) m.debug_ram_usage();

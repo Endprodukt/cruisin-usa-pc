@@ -147,6 +147,7 @@ public:
 		vkDestroyPipeline(m_dev, m_pipe_ovl, nullptr);
 		vkDestroyPipeline(m_dev, m_pipe_smask, nullptr);
 		vkDestroyPipeline(m_dev, m_pipe_scomp, nullptr);
+		vkDestroyPipeline(m_dev, m_pipe_sblur, nullptr);
 		vkDestroyRenderPass(m_dev, m_rp_mask, nullptr);
 		vkDestroyPipelineLayout(m_dev, m_pl, nullptr);
 		vkDestroyDescriptorPool(m_dev, m_dpool, nullptr);
@@ -174,7 +175,7 @@ public:
 	void set_options(const VideoOptions &o) override
 	{
 		std::string err;
-		bool rescale = std::clamp(o.scale, 1, 8) != m_opt.scale || o.wide_margin != m_opt.wide_margin;
+		bool rescale = std::clamp(o.scale, 1, 8) != m_opt.scale || o.wide_margin != m_opt.wide_margin || mask_scale(o) != mask_scale(m_opt);
 		bool revsync = o.vsync != m_opt.vsync;
 		bool resamp = (o.smooth_output || o.aa > 0) != (m_opt.smooth_output || m_opt.aa > 0);
 		m_opt = o;
@@ -314,9 +315,15 @@ public:
 	{
 		if (count <= 0) return;
 		begin_cb();
+		// Soft shadows in three small steps instead of one large one. Before, every pixel of the batch's rectangle on the page
+		// read the mask 49 times: at 6x and with a few cars near the camera that alone took longer than a display refresh
+		// (15-20 ms on the GPU, the cause of the hitches in traffic). Now the mask is drawn at no more than twice the arcade
+		// resolution (a soft shadow has no finer detail), blurred there into a second mask, and the page reads that one once
+		// per pixel. Each step only touches the batch's rectangle; the first reaches a radius further than the second, so
+		// that the blur never reads what an earlier shadow left in the mask.
 		const int sz = page_h(), pw = page_w();
-		const float sc = float(m_opt.scale);
-		const float radius = std::max(0.5f, m_opt.shadow_soft * sc);
+		const int ms = mask_scale(m_opt), mw = mask_w(), mh = mask_h();
+		const float sc = float(m_opt.scale), radius = std::max(0.5f, m_opt.shadow_soft);   // in arcade pixels
 		float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
 		for (int i = 0; i < count; i++)
 			for (int k = 0; k < 4; k++)
@@ -324,19 +331,21 @@ public:
 				minx = std::min(minx, q[i].p[k * 2]); maxx = std::max(maxx, q[i].p[k * 2]);
 				miny = std::min(miny, q[i].p[k * 2 + 1]); maxy = std::max(maxy, q[i].p[k * 2 + 1]);
 			}
-		int x0 = std::clamp(int(std::floor(minx * sc - radius - 2)), 0, pw), x1 = std::clamp(int(std::ceil(maxx * sc + radius + 2)), 0, pw);
-		int y0 = std::clamp(int(std::floor(miny * sc - radius - 2)), 0, sz), y1 = std::clamp(int(std::ceil(maxy * sc + radius + 2)), 0, sz);
-		if (x1 <= x0 || y1 <= y0) return;
-		// The mask is only cleared and drawn where it is needed, and the blur reads up to `radius` pixels beside the pixel it
-		// shades. So the cleared part must reach a radius further than the part that is shaded: otherwise the outermost
-		// pixels read what an earlier shadow left in the mask, which showed as thin dark lines along the rectangle's edges.
-		const int grow = int(std::ceil(radius)) + 2;
-		const int mx0 = std::max(0, x0 - grow), mx1 = std::min(pw, x1 + grow), my0 = std::max(0, y0 - grow), my1 = std::min(sz, y1 + grow);
+		// the batch's rectangle in arcade pixels, grown by `g` radii, in pixels of a target that is `k` times the arcade size
+		auto rect = [&](float g, float k, int w, int h, VkRect2D &r) {
+			const int x0 = std::clamp(int(std::floor((minx - radius * g - 1) * k)), 0, w), x1 = std::clamp(int(std::ceil((maxx + radius * g + 1) * k)), 0, w);
+			const int y0 = std::clamp(int(std::floor((miny - radius * g - 1) * k)), 0, h), y1 = std::clamp(int(std::ceil((maxy + radius * g + 1) * k)), 0, h);
+			r = {{x0, y0}, {uint32_t(std::max(0, x1 - x0)), uint32_t(std::max(0, y1 - y0))}};
+			return x1 > x0 && y1 > y0;
+		};
+		VkRect2D rm, rb, rp;
+		if (!rect(2, float(ms), mw, mh, rm) || !rect(1, float(ms), mw, mh, rb) || !rect(1, sc, pw, sz, rp)) return;
+		const VkViewport mvp{0, 0, float(mw), float(mh), 0, 1};
 
 		const size_t stride = sizeof(GpuQuad);
 		for (int done = 0; done < count;)
 		{
-			// 1. hard coverage into the mask (cleared per batch; the blur pass follows right away)
+			// 1. hard coverage into the mask (the render pass clears its area)
 			size_t room = (m_inst_end - m_instbuf_off) / stride;
 			if (room < 256) { submit_wait(); begin_cb(); continue; }
 			int n = int(std::min<size_t>(size_t(count - done), room));
@@ -344,17 +353,15 @@ public:
 
 			Params pm{{0, page_w_px(), 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
 			uint32_t dyn = write_params(pm);
+			VkClearValue clear{};
 			{
-				VkClearValue clear{};
-				VkRenderPassBeginInfo rb{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-				rb.renderPass = m_rp_mask; rb.framebuffer = m_mask_fb;
-				rb.renderArea = {{mx0, my0}, {uint32_t(mx1 - mx0), uint32_t(my1 - my0)}};   // only the part the blur reads is cleared and drawn
-				rb.clearValueCount = 1; rb.pClearValues = &clear;
-				vkCmdBeginRenderPass(m_cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
-				VkViewport vp{0, 0, float(pw), float(sz), 0, 1};
-				VkRect2D scr{{mx0, my0}, {uint32_t(mx1 - mx0), uint32_t(my1 - my0)}};
-				vkCmdSetViewport(m_cb, 0, 1, &vp);
-				vkCmdSetScissor(m_cb, 0, 1, &scr);
+				VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+				rbi.renderPass = m_rp_mask; rbi.framebuffer = m_mask_fb;
+				rbi.renderArea = rm;
+				rbi.clearValueCount = 1; rbi.pClearValues = &clear;
+				vkCmdBeginRenderPass(m_cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+				vkCmdSetViewport(m_cb, 0, 1, &mvp);
+				vkCmdSetScissor(m_cb, 0, 1, &rm);
 				vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_smask);
 				vkCmdBindDescriptorSets(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pl, 0, 1, &m_set_quad, 1, &dyn);
 				VkDeviceSize off = m_instbuf_off;
@@ -365,14 +372,30 @@ public:
 			m_instbuf_off += size_t(n) * stride;
 			done += n;
 
-			// 2. the blurred mask darkens the page
-			Params pc{{-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, radius, 1.0f / float(pw), 1.0f / float(sz)}};
+			// 2. blurred into the second mask
+			{
+				Params pb{{-1, -1, 1, 1}, {0, 0, 1, 1}, {0, radius * float(ms), 1.0f / float(mw), 1.0f / float(mh)}};
+				uint32_t dynb = write_params(pb);
+				VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+				rbi.renderPass = m_rp_mask; rbi.framebuffer = m_mask2_fb;
+				rbi.renderArea = rb;
+				rbi.clearValueCount = 1; rbi.pClearValues = &clear;
+				vkCmdBeginRenderPass(m_cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+				vkCmdSetViewport(m_cb, 0, 1, &mvp);
+				vkCmdSetScissor(m_cb, 0, 1, &rb);
+				vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_sblur);
+				vkCmdBindDescriptorSets(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pl, 0, 1, &m_set_shadow, 1, &dynb);
+				vkCmdDraw(m_cb, 4, 1, 0, 0);
+				vkCmdEndRenderPass(m_cb);
+			}
+
+			// 3. the blurred mask darkens the page
+			Params pc{{-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, 0, 0, 0}};
 			uint32_t dyn2 = write_params(pc);
 			begin_page_pass(page);
-			VkRect2D scr{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
-			vkCmdSetScissor(m_cb, 0, 1, &scr);
+			vkCmdSetScissor(m_cb, 0, 1, &rp);
 			vkCmdBindPipeline(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipe_scomp);
-			vkCmdBindDescriptorSets(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pl, 0, 1, &m_set_shadow, 1, &dyn2);
+			vkCmdBindDescriptorSets(m_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pl, 0, 1, &m_set_shadow2, 1, &dyn2);
 			vkCmdDraw(m_cb, 4, 1, 0, 0);
 			vkCmdEndRenderPass(m_cb);
 		}
@@ -495,6 +518,10 @@ public:
 
 private:
 	int m_ovl_off[3] = {0, 0, 0};
+	// resolution of the shadow masks, as a multiple of the arcade's: a soft shadow needs no more than twice, a hard one the page's
+	static int mask_scale(const VideoOptions &o) { const int sc = std::clamp(o.scale, 1, 8); return o.shadow_soft >= 1.0f ? std::min(sc, 2) : sc; }
+	int mask_w() const { return (512 + 2 * m_opt.wide_margin) * mask_scale(m_opt); }
+	int mask_h() const { return 512 * mask_scale(m_opt); }
 	int page_w() const { return (512 + 2 * m_opt.wide_margin) * m_opt.scale; }
 	int page_h() const { return 512 * m_opt.scale; }
 	float page_w_px() const { return float(512 + 2 * m_opt.wide_margin); }
@@ -828,16 +855,16 @@ private:
 		pli.setLayoutCount = 1; pli.pSetLayouts = &m_dsl;
 		VKCHECK(vkCreatePipelineLayout(m_dev, &pli, nullptr, &m_pl), "pipeline layout");
 
-		VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 5}};
+		VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 24}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 6}};
 		VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-		pi.maxSets = 5; pi.poolSizeCount = 2; pi.pPoolSizes = ps;
+		pi.maxSets = 6; pi.poolSizeCount = 2; pi.pPoolSizes = ps;
 		VKCHECK(vkCreateDescriptorPool(m_dev, &pi, nullptr, &m_dpool), "descriptor pool");
-		VkDescriptorSetLayout layouts[5] = {m_dsl, m_dsl, m_dsl, m_dsl, m_dsl};
-		VkDescriptorSet sets[5];
+		VkDescriptorSetLayout layouts[6] = {m_dsl, m_dsl, m_dsl, m_dsl, m_dsl, m_dsl};
+		VkDescriptorSet sets[6];
 		VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-		ai.descriptorPool = m_dpool; ai.descriptorSetCount = 5; ai.pSetLayouts = layouts;
+		ai.descriptorPool = m_dpool; ai.descriptorSetCount = 6; ai.pSetLayouts = layouts;
 		VKCHECK(vkAllocateDescriptorSets(m_dev, &ai, sets), "vkAllocateDescriptorSets");
-		m_set_quad = sets[0]; m_set_ovl = sets[1]; m_set_present[0] = sets[2]; m_set_present[1] = sets[3]; m_set_shadow = sets[4];
+		m_set_quad = sets[0]; m_set_ovl = sets[1]; m_set_present[0] = sets[2]; m_set_present[1] = sets[3]; m_set_shadow = sets[4]; m_set_shadow2 = sets[5];
 
 		write_set(m_set_quad, m_tex_ram.view, m_samp_nearest, m_tex_pal.view, m_samp_nearest);
 		write_set(m_set_ovl, m_tex_ovl.view, m_samp_nearest, m_tex_pal.view, m_samp_nearest);
@@ -870,6 +897,7 @@ private:
 	{
 		VkSampler s = (m_opt.smooth_output || m_opt.aa > 0) ? m_samp_linear : m_samp_nearest;
 		if (m_mask.view) write_set(m_set_shadow, m_mask.view, m_samp_linear, m_tex_pal.view, m_samp_nearest);
+		if (m_mask2.view) write_set(m_set_shadow2, m_mask2.view, m_samp_linear, m_tex_pal.view, m_samp_nearest);
 		if (m_disp.view) write_set(m_set_present[0], m_disp.view, s, m_tex_pal.view, m_samp_nearest);
 	}
 
@@ -936,12 +964,14 @@ private:
 		VkShaderModule of = make_module(spv_overlay_frag, sizeof(spv_overlay_frag));
 		VkShaderModule sm = make_module(spv_shadow_mask_frag, sizeof(spv_shadow_mask_frag));
 		VkShaderModule sc = make_module(spv_shadow_comp_frag, sizeof(spv_shadow_comp_frag));
+		VkShaderModule sb = make_module(spv_shadow_blur_frag, sizeof(spv_shadow_blur_frag));
 		bool ok = make_pipeline(m_pipe_quad, m_rp_page, qv, qf, true, err) &&
 		          make_pipeline(m_pipe_smask, m_rp_mask, qv, sm, true, err) &&
 		          make_pipeline(m_pipe_scomp, m_rp_page, rv, sc, false, err, true) &&
+		          make_pipeline(m_pipe_sblur, m_rp_mask, rv, sb, false, err) &&
 		          make_pipeline(m_pipe_ovl, m_rp_page, rv, of, false, err) &&
 		          make_pipeline(m_pipe_present, m_rp_swap, rv, pf, false, err);
-		for (VkShaderModule m : {qv, qf, rv, pf, of, sm, sc}) vkDestroyShaderModule(m_dev, m, nullptr);
+		for (VkShaderModule m : {qv, qf, rv, pf, of, sm, sc, sb}) vkDestroyShaderModule(m_dev, m, nullptr);
 		return ok;
 	}
 
@@ -962,12 +992,15 @@ private:
 		if (!make_image(m_disp, pw, sz, VK_FORMAT_R8G8B8A8_UNORM,
 		                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, err))
 			return false;
-		if (!make_image(m_mask, pw, sz, VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, err)) return false;
+		// the two shadow masks (see draw_shadows)
+		for (int i = 0; i < 2; i++)
 		{
+			Img &img = i ? m_mask2 : m_mask;
+			if (!make_image(img, mask_w(), mask_h(), VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, err)) return false;
 			VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-			fi.renderPass = m_rp_mask; fi.attachmentCount = 1; fi.pAttachments = &m_mask.view;
-			fi.width = uint32_t(pw); fi.height = uint32_t(sz); fi.layers = 1;
-			VKCHECK(vkCreateFramebuffer(m_dev, &fi, nullptr, &m_mask_fb), "framebuffer (mask)");
+			fi.renderPass = m_rp_mask; fi.attachmentCount = 1; fi.pAttachments = &img.view;
+			fi.width = uint32_t(mask_w()); fi.height = uint32_t(mask_h()); fi.layers = 1;
+			VKCHECK(vkCreateFramebuffer(m_dev, &fi, nullptr, i ? &m_mask2_fb : &m_mask_fb), "framebuffer (mask)");
 		}
 		begin_cb();
 		{
@@ -1002,7 +1035,9 @@ private:
 			destroy_img(m_page[i]);
 		}
 		if (m_mask_fb) { vkDestroyFramebuffer(m_dev, m_mask_fb, nullptr); m_mask_fb = VK_NULL_HANDLE; }
+		if (m_mask2_fb) { vkDestroyFramebuffer(m_dev, m_mask2_fb, nullptr); m_mask2_fb = VK_NULL_HANDLE; }
 		destroy_img(m_mask);
+		destroy_img(m_mask2);
 		destroy_img(m_disp);
 	}
 
@@ -1117,11 +1152,11 @@ private:
 	VkPipelineLayout m_pl = VK_NULL_HANDLE;
 	VkDescriptorPool m_dpool = VK_NULL_HANDLE;
 	VkDescriptorSet m_set_quad = VK_NULL_HANDLE, m_set_ovl = VK_NULL_HANDLE, m_set_present[2] = {};
-	VkPipeline m_pipe_smask = VK_NULL_HANDLE, m_pipe_scomp = VK_NULL_HANDLE;
+	VkPipeline m_pipe_smask = VK_NULL_HANDLE, m_pipe_scomp = VK_NULL_HANDLE, m_pipe_sblur = VK_NULL_HANDLE;
 	VkRenderPass m_rp_mask = VK_NULL_HANDLE;
-	VkFramebuffer m_mask_fb = VK_NULL_HANDLE;
-	Img m_mask;
-	VkDescriptorSet m_set_shadow = VK_NULL_HANDLE;
+	VkFramebuffer m_mask_fb = VK_NULL_HANDLE, m_mask2_fb = VK_NULL_HANDLE;
+	Img m_mask, m_mask2;
+	VkDescriptorSet m_set_shadow = VK_NULL_HANDLE, m_set_shadow2 = VK_NULL_HANDLE;
 	VkPipeline m_pipe_quad = VK_NULL_HANDLE, m_pipe_present = VK_NULL_HANDLE, m_pipe_ovl = VK_NULL_HANDLE;
 
 	VkSwapchainKHR m_sc = VK_NULL_HANDLE;

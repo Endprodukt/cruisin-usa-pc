@@ -301,11 +301,60 @@ void MidVUnit::update_clock()
 		if (groups > 0 && groups <= 20)
 		{
 			const bool governed = m_framrate_addr && m_ram0[m_framrate_addr] >= 1 && m_ram0[m_framrate_addr] <= 4;
-			const int want = governed ? (dd >= 300 ? 12 : 8) : 4 + (dd - 100) / 100;
+			// governed (races, attract drive): catch_up() finishes each frame in time, so only as much clock as keeps the
+			// frame's work from piling up at the vblank; ungoverned: in proportion to the draw distance
+			// governed (races, attract drive): catch_up() gives each frame what it needs; ungoverned: in proportion to the distance
+			const int want = governed ? (steady_cadence ? 4 : (dd >= 300 ? 12 : 8)) : 4 + (dd - 100) / 100;
 			q = std::max(q, want);
 		}
 	}
 	m_oc_q4 = q;
+}
+
+namespace {
+double host_ms()
+{
+	static LARGE_INTEGER f = [] { LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x; }();
+	LARGE_INTEGER t; QueryPerformanceCounter(&t);
+	return double(t.QuadPart) * 1000.0 / double(f.QuadPart);
+}
+}
+
+// The game shows a new picture every FRAMRATE + 1 vblanks at best (two in a race: FRAMRATE 1). Its main loop does the frame's
+// work, waits at MWAIT0 until INFRAMES, the vblanks counted since the last picture, has reached FRAMRATE, sets CLEARRDY, and the
+// next vblank interrupt swaps the pages. When the work is not done in time the picture comes a vblank later: three vblanks
+// instead of two, and the motion stutters. The arcade CPU is just fast enough for the original scenery; with a longer draw
+// distance it is not (San Francisco at 400 %: most frames).
+// So before every vblank the CPU is given the instructions the frame's work still needs, in no emulated time (as an overclock
+// does), until the main loop waits: the game computes the same frames, only never late. Its speed does not change, since it
+// scales every movement by the vblanks that passed. What limits this is the host: the work is done within steady_budget_ms of
+// real time per display frame, so that the emulation itself never makes a display frame late; what does not fit is finished
+// before the next vblank (and if the host is too slow altogether, the picture comes a vblank later, as on the machine).
+void MidVUnit::catch_up()
+{
+	if (!steady_cadence || !m_framrate_addr || !m_idle_flag_addr || !m_mwait0_pc) return;
+	const uint32_t rate = m_ram0[m_framrate_addr];
+	if (rate < 1 || rate > 4) return;                             // no governor: the pace is the CPU's own (selection screens, logos)
+	auto waiting = [&] {
+		if (m_ram0[m_idle_flag_addr] != 0) return true;           // CLEARRDY: the swap is requested
+		const uint32_t pc = m_cpu->pc();
+		return pc >= m_mwait0_pc && pc <= m_mwait0_pc + 2;        // MWAIT0: done, held by the governor
+	};
+	if (waiting()) return;
+	const bool due = m_ram0[m_framrate_addr - 1] >= rate;         // INFRAMES: the picture is due at this vblank
+	// the budget counts the interpreter's own time only: what the video backend takes inside the CPU's hooks (handing over
+	// polygons, and with Vulkan the wait for the display) is not load
+	const double spent0 = (perf_cpu_ms - perf_feed_ms) - m_frame_cpu0, t0 = host_ms(), feed0 = perf_feed_ms;
+	PerfTimer pt(perf_cpu_ms);
+	const int chunk = 3000;
+	int budget = int(double(CPU_HZ) / m_refresh_hz) * 8;
+	while (budget > 0 && !waiting())
+	{
+		if (steady_budget_ms > 0 && spent0 + (host_ms() - t0) - (perf_feed_ms - feed0) > steady_budget_ms + (due ? 2.0 : 0.0)) break;
+		m_cpu->run(chunk);
+		budget -= chunk;
+	}
+	if (due) { if (waiting()) catchups++; else catchup_fails++; }
 }
 
 int MidVUnit::run_cpu(int cycles)
@@ -703,6 +752,20 @@ void MidVUnit::dma_trigger()
 {
 	VQuad q;
 	std::memcpy(q.dma, m_dma_data, sizeof(q.dma));
+	if (quad_stats)
+	{
+		// both clipped to the screen roughly (the bounding box exactly, the polygon by the box's share that is on screen)
+		float x[4], y[4];
+		for (int i = 0; i < 4; i++) { x[i] = float(int16_t(q.dma[2 + i * 2])); y[i] = float(int16_t(q.dma[3 + i * 2])); }
+		const float x0 = std::min(std::min(x[0], x[1]), std::min(x[2], x[3])), x1 = std::max(std::max(x[0], x[1]), std::max(x[2], x[3])) + 1;
+		const float y0 = std::min(std::min(y[0], y[1]), std::min(y[2], y[3])), y1 = std::max(std::max(y[0], y[1]), std::max(y[2], y[3])) + 1;
+		const float cw = std::max(0.0f, std::min(x1, 512.0f) - std::max(x0, 0.0f)), ch = std::max(0.0f, std::min(y1, 400.0f) - std::max(y0, 0.0f));
+		const float box = (x1 - x0) * (y1 - y0), vis = cw * ch;
+		float a = 0;
+		for (int i = 0; i < 4; i++) { const int j = (i + 1) & 3; a += x[i] * y[j] - x[j] * y[i]; }
+		const float poly = std::min(box, std::fabs(a) * 0.5f + 0.5f * ((x1 - x0) + (y1 - y0)));   // plus the edge pixels
+		if (box > 0) { stat_bbox += vis; stat_poly += poly * vis / box; stat_quads++; }
+	}
 	q.page = (m_page_control & 4) ? 1 : 0;
 	if (m_gpu)
 	{
@@ -1020,10 +1083,21 @@ void MidVUnit::draw_quad(const VQuad &q)
 bool MidVUnit::run_frame()
 {
 	quads_last_frame = 0;
+	m_frame_cpu0 = perf_cpu_ms - perf_feed_ms;
 	update_clock();
 	// the garage of the car selection: mode MINTRO with the selectable cars (object ids 0x481..0x484, INTRO.ASM ROUNDER)
 	// on one of the object lists
 	m_garage = false;
+	// The longer active window of the object lists must not apply while the car drives out of the garage (mode MINTRO,
+	// INTRO.ASM ZOOMTOCAR / MOVELOOP): the game steers it like a drone to the first road piece, and in Chicago, where streets
+	// lie close together, the wider window puts other streets' pieces under the car: it never arrives and the race never
+	// starts. The window is the original one until the race mode is set.
+	if (m_activehi_addr)
+	{
+		const double k = (m_ram0[0xC8F5] & 0xf) == 3 ? 1.0 : double(rom_patches.draw_distance_pct) / 100.0;
+		m_ram0[m_activehi_addr] = uint32_t(75000 * k);
+		m_ram0[m_activehi_addr + 1] = uint32_t(80000 * k);
+	}
 	// the map stays open through the initials and the continue screen, until the next race (or the attract mode) starts
 	{ const uint32_t mm = m_ram0[0xC8F5] & 0xf; if (mm == 4 || mm == 2 || mm == 1) m_map_full = false; }
 	if (m_wide && (m_ram0[0xC8F5] & 0xf) == 3)
@@ -1075,6 +1149,7 @@ bool MidVUnit::run_frame()
 		// scanline interrupt (level triggered, released ~40 ns later)
 		if (m_vpos == m_irq_line)
 		{
+			catch_up();
 			m_cpu->set_input(0, ASSERT_LINE);
 			m_slice_len = 2;
 			run_cpu(2);
@@ -1511,6 +1586,15 @@ void MidVUnit::setup_idle_hooks()
 	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0, wdog_pc = ~0u, palq_pc = ~0u, palq_free = 0, palq_active = 0, hit_pc = ~0u, text_pc = ~0u, textend_pc = ~0u, carhit_pc = ~0u, mapfull_pc = ~0u;
 	m_ofree_addr = 0;
 	m_wreck_addr = 0;
+	m_activehi_addr = 0;
+	if (rom_patches.draw_distance_pct > 100)
+	{
+		// ACTIVEHI1 / ACTIVEHI as the draw distance patch left them (75000 and 80000 times the same factor)
+		const double k = double(rom_patches.draw_distance_pct) / 100.0;
+		const uint32_t a1 = uint32_t(75000 * k), a2 = uint32_t(80000 * k);
+		for (uint32_t i = 0; i + 1 < 0x20000; i++)
+			if (c[i] == a1 && c[i + 1] == a2) { m_activehi_addr = i; break; }
+	}
 	for (uint32_t i = 0; i + 8 < 0x20000; i++)
 	{
 		// (a)
@@ -1530,7 +1614,10 @@ void MidVUnit::setup_idle_hooks()
 		}
 		// MWAIT0 in the main loop: LDI (INFRAMES),R0 / CMPI (FRAMRATE),R0 / BLT MWAIT0  -> the frame governor's address
 		if ((c[i] & 0xffff0000u) == 0x08200000u && (c[i + 1] & 0xffff0000u) == 0x04A00000u && c[i + 2] == 0x6A07FFFDu && m_framrate_addr == 0)
+		{
 			m_framrate_addr = c[i + 1] & 0xffff;
+			m_mwait0_pc = i;
+		}
 		// (c) BGD_WATCHER "activate the next scenery section":  CMPF (DACT_DIST),R0 / BGT NOACT / LDI AR0,AR2 / CALL activate /
 		//     LDI (DGROUP_COUNT),AR1 / MPYI 5,AR1. With a longer view distance more sections are wanted than the 20-entry section table
 		//     holds, so the activation is held back while the table is nearly full.
@@ -1875,6 +1962,8 @@ void MidVUnit::setup_idle_hooks()
 						// car: a section that is much nearer in a straight line than along the road has curled back towards
 						// the camera and waits until the car has gone far enough round to see it from the other side
 						if (path > 100000.0 && dist < path * 0.6) hold = true;
+						if (debug_routines && (m_frame_count % 120) == 0)
+							std::fprintf(stderr, "DACT frame %llu groups %u own %d path %.0f straight %.0f hold %d mode %X\n", (unsigned long long)m_frame_count, groups, own, path, dist, int(hold), m_ram0[0xC8F5]);
 					}
 				}
 				if (!hold && ((routine >= 32 && routine <= 45) || routine == 19)) m_finish_loaded = true;   // this section may load

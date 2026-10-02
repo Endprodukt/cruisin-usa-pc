@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <mmsystem.h>
 #include <objbase.h>
+#include <dwmapi.h>
 #include <shlobj.h>
 
 #include <algorithm>
@@ -28,6 +29,7 @@
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "uuid.lib")
 
@@ -246,6 +248,16 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	PerfStats perf;
 	const bool bench = a.find("--bench") != std::string::npos;
 	if (a.find("--perf") != std::string::npos) { perf.on = true; perf.log_path = exe_relative("perf.log"); }
+	// --perf also records every frame: perf_spikes.log gets each slow frame with its neighbours and, at the end, the percentiles;
+	// --perf-spike <ms> sets the limit (default 1.5 x median), --perf-csv <file> writes all frames, --perf-seconds <n> quits after n s
+	FrameProf prof;
+	prof.on = perf.on;
+	prof.spike_path = exe_relative("perf_spikes.log");
+	if (std::string v = arg_value(a, "--perf-spike"); !v.empty()) prof.spike_ms = std::atof(v.c_str());
+	if (std::string v = arg_value(a, "--perf-csv"); !v.empty()) prof.csv_path = v;
+	if (std::string v = arg_value(a, "--perf-log"); !v.empty()) prof.spike_path = v;
+	double perf_seconds = 0;
+	if (std::string v = arg_value(a, "--perf-seconds"); !v.empty()) perf_seconds = std::atof(v.c_str());
 	if (std::string v = arg_value(a, "--rom"); !v.empty()) S.rom = v;
 	if (std::string v = arg_value(a, "--version"); !v.empty()) S.version = v;
 	if (std::string v = arg_value(a, "--nvram"); !v.empty()) S.nvram = v;
@@ -342,6 +354,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	m.rom_patches.smooth_frames = S.smooth_frames;
 	m.cpu_overclock = S.smooth_frames ? 2 : 1;   // a frame per vblank needs the frame's work done within one vblank
 	m.dcs_thread = S.dsp_thread;
+	m.steady_cadence = S.steady_cadence;
+	m.steady_budget_ms = bench ? 0.0 : 10.0;   // of the 16.7 ms of a display frame; the rest is for the GPU hand-over and the swap
 	if (std::string v = arg_value(a, "--dcs-thread"); !v.empty()) m.dcs_thread = std::atoi(v.c_str());   // -1 auto, 0 off, 1 on
 	m.rom_patches.wide_margin = S.video.renderer == Renderer::Cpu ? 0 : wide_margin_for(S.video);
 	m.set_wide_margin(m.rom_patches.wide_margin);
@@ -502,16 +516,24 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		}
 	};
 	if (sync_k) { S.video.vsync = true; vopt = make_video_options(S.video); if (video) video->set_options(vopt); }
-	int sync_phase = 0;
-	double sync_last = 0;
+	int sync_phase = 0, sync_fast = 0;
+	double sync_last = 0, sync_done = 0;
+	bool sync_clock = false;   // display sync paced by the clock because the swap does not wait
 
+	if (video) video->set_profiling(prof.on);
+	double prof_last = 0;
+	uint64_t prof_flips = m.page_flips, prof_late = m.catchup_fails;
+	uint32_t prof_n = 0;
 	double t_start = now_sec();
 	double next_frame = 0;
 	double fps_t = 0; int fps_n = 0; int shot_count = 0;
 	bool fullscreen_now = S.video.window_mode == WindowMode::Fullscreen;
 	while (!g_quit)
 	{
+		FrameRec rec;
+		const double pr0 = prof.on ? perf_now_ms() : 0.0;
 		while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
+		if (prof.on) rec.msg = float(perf_now_ms() - pr0);
 		if (g_toggle_fs)
 		{
 			g_toggle_fs = false;
@@ -519,7 +541,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			WindowMode back = S.video.window_mode == WindowMode::Fullscreen ? WindowMode::Window : S.video.window_mode;
 			apply_window_mode(hwnd, S.video, fullscreen_now ? WindowMode::Fullscreen : back);
 		}
-		if (g_size_w > 0) { if (video) video->resize(g_size_w, g_size_h); g_size_w = 0; }
+		if (g_size_w > 0) { if (video) video->resize(g_size_w, g_size_h); g_size_w = 0; sync_clock = false; sync_fast = 0; }   // (another display, perhaps: look again whether the swap waits)
 
 		double t = now_sec() - t_start;
 
@@ -546,8 +568,10 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		const bool sync_due = sync_k && (sync_phase++ % sync_k) == 0;
 		for (int guard = 0; (sync_k ? (sync_due && guard == 0) : t >= next_frame) && guard < (bench ? 1 : 3); guard++)
 		{
+			const double pi0 = prof.on ? perf_now_ms() : 0.0;
 			bool focused = GetForegroundWindow() == hwnd;
 			controls.update(m.inputs, focused);
+			if (prof.on) rec.input += float(perf_now_ms() - pi0);
 			if (autoplay)
 			{
 				static int af = 0; af++;
@@ -566,12 +590,22 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 					m.inputs.wheel = uint8_t(menu_wheel[std::min(menu_wheel.size() - 1, size_t(std::max(0, af - 560) / 60))]);
 					if (menu_wheel.size() > 1) m.inputs.in0 |= in0bit::START;
 				}
+				// --track n (0..13): that race is chosen whatever the selection screen shows (testing)
+				static const int test_track = [&] { std::string v = arg_value(a, "--track"); return v.empty() ? -1 : std::atoi(v.c_str()); }();
+				static bool rolling = false;
+				if (test_track >= 0 && !rolling)
+				{
+					m.ram_poke(0xE664, uint32_t(test_track));   // CHOSEN_RACE
+					Telemetry t;
+					if (m.read_telemetry(t) && t.speed > 30) rolling = true;
+				}
 				if (autopilot)
 				{
 					static float prev = 0, dfilt = 0;
 					Telemetry t;
 					if (m.read_telemetry(t))
 					{
+						if (m.ram_peek(0xE634) < 40) m.ram_poke(0xE634, 60);   // _countdown: the time limit does not end the test
 						const float d = t.dist_to_center;
 						if (d != prev) { dfilt = dfilt * 0.6f + (d - prev) * 0.4f; prev = d; }
 						m.inputs.wheel = uint8_t(std::clamp(128.0f + std::clamp(0.10f * d + 1.2f * dfilt, -100.0f, 100.0f), 16.0f, 240.0f));
@@ -581,12 +615,15 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 				}
 			}
 			std::fill(std::begin(g_pressed), std::end(g_pressed), false);
+			const double pe0 = prof.on ? perf_now_ms() : 0.0;
 			m.run_frame();
+			const double pe1 = prof.on ? perf_now_ms() : 0.0;
 			Telemetry tele;
 			const bool tele_ok = m.read_telemetry(tele);
 			// no force while the attract mode runs: the game keeps its wheel servo on there, which is felt as a constant drag
 			controls.ffb_update(m.in_attract() ? uint8_t(0) : m.wheel_motor, tele_ok ? &tele : nullptr);
 			outputs.update(m.lamps, m.wheel_motor);
+			if (prof.on) { rec.emu += float(pe1 - pe0); rec.ffb += float(perf_now_ms() - pe1); rec.ran++; }
 			next_frame += 1.0 / m.refresh_hz();
 			ran = true;
 		}
@@ -596,19 +633,33 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		if (perf.on && ran) perf.emulated(perf_now_ms() - perf_t0, m.perf_feed_ms - feed0, m.perf_draws - draws0, m.perf_quads - quads0, m.perf_cpu_ms - cpu0, m.perf_dcs_ms - dcs0);
 		bool vsync = video ? S.video.vsync : false;
 		if (!sync_k && !ran && !vsync) { wait_until(t_start + next_frame); continue; }
+		const double pw0 = prof.on ? perf_now_ms() : 0.0;
+		const double sync_period = sync_k ? 1.0 / (m.refresh_hz() * sync_speed) / sync_k : 0.0;
 		if (sync_k)
 		{
-			// should the driver not wait for the vblank (VSync forced off, window on another display), keep the pace by the clock
-			const double period = 1.0 / (m.refresh_hz() * sync_speed) / sync_k;
-			if (sync_last > 0 && now_sec() - sync_last < period * 0.6) wait_until(sync_last + period);
+			// The buffer swap waits for the display's vblank, and that wait is the pace: every picture is shown for exactly one
+			// refresh. (A timer set to the nominal refresh rate, as before, drifts against the real one: every 15 to 20 seconds
+			// the two cross, and for a moment pictures are shown for 10 and 22 ms in turn.) Only when the swap turns out not
+			// to wait (VSync forced off in the driver, window on a faster display) the clock paces instead.
+			if (sync_clock) wait_until(sync_last + sync_period);
 			sync_last = now_sec();
 			next_frame = now_sec() - t_start;   // keeps the clock mode's bookkeeping current for a switch (F8)
 		}
+		if (prof.on) rec.wait = float(perf_now_ms() - pw0);
 		const double perf_p0 = perf.on ? perf_now_ms() : 0.0;
 		if (video) video->set_pillarbox(!m.world_shown());   // menus and 2D screens: the arcade's 4:3 picture, black bars beside it
 		present();
 		if (perf.on && video) perf.gpu(video->last_gpu_ms());
 		if (perf.on) { perf.presented(perf_now_ms() - perf_p0); if (!perf.summary().empty()) SetWindowTextA(hwnd, ("Cruis'n USA (PC) - " + perf.summary()).c_str()); }
+		const double pp1 = prof.on ? perf_now_ms() : 0.0;
+		if (sync_k && !sync_clock)
+		{
+			// eight pictures in a row faster than three quarters of a refresh: nothing waits for the display
+			const double done = now_sec();
+			sync_fast = (sync_done > 0 && done - sync_done < sync_period * 0.75) ? sync_fast + 1 : 0;
+			sync_done = done;
+			if (sync_fast >= 8) sync_clock = true;
+		}
 
 		if (ran && !shot.empty() && ++shot_count >= shot_frames && (shot_count - shot_frames) % shot_step == 0)
 		{
@@ -641,8 +692,44 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			if ((shot_count - shot_frames) / shot_step + 1 >= shot_seq) g_quit = true;
 		}
 
+		if (prof.on)
+		{
+			const double pend = perf_now_ms();
+			rec.frame = prof_n++;
+			rec.present = float(pp1 - perf_p0);
+			rec.swap = video ? float(video->last_swap_ms()) : -1.0f;
+			rec.gpu = video ? float(video->last_gpu_ms()) : -1.0f;
+			rec.cpu = float(m.perf_cpu_ms - cpu0); rec.dsp = float(m.perf_dcs_ms - dcs0); rec.feed = float(m.perf_feed_ms - feed0) - rec.present;
+			if (rec.feed < 0) rec.feed = 0;
+			rec.quads = uint32_t(m.perf_quads - quads0); rec.draws = uint32_t(m.perf_draws - draws0);
+			rec.mode = m.ram_word(0xC8F5);
+			rec.flips = uint8_t(std::min<uint64_t>(255, m.page_flips - prof_flips)); prof_flips = m.page_flips;
+			rec.clock_q4 = uint8_t(m.clock_q4());
+			rec.late = uint8_t(std::min<uint64_t>(255, m.catchup_fails - prof_late)); prof_late = m.catchup_fails;
+			rec.audio_ms = float(audio.latency_ms());
+			{
+				DWM_TIMING_INFO ti{};
+				ti.cbSize = sizeof(ti);
+				if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &ti)) && ti.qpcRefreshPeriod)
+				{
+					// refreshes since the reported vblank are added, so that the count is the one at the moment the swap returned
+					LARGE_INTEGER nowq; QueryPerformanceCounter(&nowq);
+					const long long since = nowq.QuadPart - (long long)ti.qpcVBlank;
+					const long long per = (long long)ti.qpcRefreshPeriod;
+					const long long extra = since >= 0 ? since / per : -((-since + per - 1) / per);   // floor: the reported vblank may lie ahead
+					rec.refresh = uint32_t(ti.cRefresh + extra);
+					rec.phase = float(double(since - extra * (long long)ti.qpcRefreshPeriod) * 1000.0 / double(qf.QuadPart));
+				}
+			}
+			rec.dt = prof_last > 0 ? float(pp1 - prof_last) : 0.0f;
+			rec.other = float(pend - pr0) - rec.msg - rec.input - rec.emu - rec.ffb - rec.wait - rec.present;
+			prof_last = pp1;
+			if (prof_last > 0 && rec.frame > 0) prof.add(rec);
+			if (perf_seconds > 0 && t > perf_seconds) g_quit = true;
+		}
 		if (ran) fps_n++;
-		if (t - fps_t >= 1.0)
+		if (t - fps_t >= 1.0 && !prof.on && fullscreen_now) { fps_n = 0; fps_t = t; }   // no title bar to write to
+		if (t - fps_t >= 1.0 && !prof.on)
 		{
 			char title[256];
 			const char *rn = video ? video->name() : "CPU";
@@ -655,6 +742,12 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		}
 	}
 
+	{
+		char title[200];
+		std::snprintf(title, sizeof(title), "%s %dx, draw distance %d%%, %s%s", video ? video->name() : "CPU", S.video.internal_scale, S.video.draw_distance,
+		              sync_k ? "display sync" : (S.video.vsync ? "vsync" : "no vsync"), bench ? ", bench" : "");
+		prof.finish(title);
+	}
 	controls.ffb_stop();
 	outputs.stop();
 	audio.stop();

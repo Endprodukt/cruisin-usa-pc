@@ -89,3 +89,157 @@ private:
 	std::vector<float> m_ft;
 	std::string m_summary;
 };
+
+// Per-frame recorder (--perf): every displayed frame with the time of each phase, kept in a ring. A frame that takes longer
+// than the limit is written to perf_spikes.log together with the frames before and after it, so that a hitch can be traced to
+// its phase. --perf-csv <file> additionally writes every frame for offline analysis.
+struct FrameRec
+{
+	uint32_t frame = 0;
+	float dt = 0;          // from the end of the previous present to the end of this one: what the eye sees
+	float msg = 0;         // window messages
+	float input = 0;       // keyboard / wheel / pad polling
+	float emu = 0;         // the whole emulated frame...
+	float cpu = 0, dsp = 0, feed = 0;   // ...of which: main CPU, sound DSP, handing polygons to the GPU driver
+	float ffb = 0;         // telemetry, force feedback, cabinet outputs
+	float wait = 0;        // the pacing wait
+	float present = 0;     // final blit and buffer swap (with VSync: includes waiting for the display)
+	float swap = 0;        // of which the swap call itself
+	float gpu = 0;         // GPU time of a recent frame (-1: not measured)
+	float other = 0;       // window title, bookkeeping
+	float audio_ms = 0;    // sound queued in the output buffer
+	uint32_t quads = 0, draws = 0;
+	uint32_t mode = 0;     // the game's mode word
+	uint8_t flips = 0;     // new game pictures shown in this frame (page flips)
+	uint8_t clock_q4 = 4;  // emulated CPU clock in quarters
+	uint8_t ran = 0;       // emulated frames run in this display frame
+	uint8_t late = 0;      // game pictures that were due in this frame but not finished (host time budget used up)
+	uint32_t refresh = 0;  // the display's refresh count (desktop compositor) when the swap returned: the picture shows from the next one
+	float phase = 0;       // ms since the display's last vblank at that moment
+};
+
+class FrameProf
+{
+public:
+	bool on = false;
+	double spike_ms = 0;          // 0 = automatic: 1.5 x the median frame time
+	std::string spike_path, csv_path;
+
+	void add(const FrameRec &r)
+	{
+		if (!on) return;
+		m_all.push_back(r);
+		const size_t n = m_all.size();
+		if (n < 240) return;                                    // start-up is not judged
+		if (n % 120 == 0 || m_median <= 0)
+		{
+			std::vector<float> s;
+			for (size_t i = n - 240; i < n; i++) s.push_back(m_all[i].dt);
+			std::nth_element(s.begin(), s.begin() + 120, s.end());
+			m_median = s[120];
+		}
+		const double limit = spike_ms > 0 ? spike_ms : double(m_median) * 1.5;
+		if (r.dt > limit && n - m_last_spike > 8) { m_pending.push_back(n - 1); m_last_spike = n - 1; m_spikes++; }
+		while (!m_pending.empty() && n - 1 >= m_pending.front() + 6) { write_spike(m_pending.front(), limit); m_pending.erase(m_pending.begin()); }
+	}
+
+	// percentiles and the cadence of the game's own pictures, then the csv
+	void finish(const char *title)
+	{
+		if (!on || m_all.size() < 300) return;
+		std::vector<float> dt;
+		for (size_t i = 240; i < m_all.size(); i++) dt.push_back(m_all[i].dt);
+		std::sort(dt.begin(), dt.end());
+		auto pct = [&](double q) { return dt[std::min(dt.size() - 1, size_t(q * double(dt.size())))]; };
+		const float med = pct(0.5);
+		size_t over125 = 0, over150 = 0, over200 = 0;
+		for (float v : dt) { over125 += v > med * 1.25f; over150 += v > med * 1.5f; over200 += v > med * 2.0f; }
+		// cadence: display frames per game picture
+		uint32_t hist[8] = {};
+		int since = 0;
+		for (size_t i = 240; i < m_all.size(); i++)
+		{
+			since++;
+			if (m_all[i].flips) { hist[std::min(since, 7)]++; since = 0; }
+		}
+		double sum[9] = {}; float mx[9] = {};
+		uint32_t late = 0, race = 0, race_h[5] = {};
+		int rsince = 0;
+		// what the display shows: refreshes each presented frame stays up (0 = replaced before it was ever shown), and refreshes
+		// between two new game pictures in the race (2 = the game's own pace; anything else is a visible hitch)
+		uint32_t shown[5] = {}, pic[8] = {};
+		uint32_t pic_ref = 0; bool pic_have = false;
+		for (size_t i = 241; i < m_all.size(); i++)
+		{
+			const FrameRec &r = m_all[i], &q = m_all[i - 1];
+			if (!r.refresh || !q.refresh) continue;
+			shown[std::min<uint32_t>(r.refresh - q.refresh, 4)]++;
+			if ((r.mode & 0xf) == 4 && (r.mode & 0x200))
+			{
+				if (r.flips) { if (pic_have) pic[std::min<uint32_t>(r.refresh - pic_ref, 7)]++; pic_ref = r.refresh; pic_have = true; }
+			}
+			else pic_have = false;
+		}
+		for (size_t i = 240; i < m_all.size(); i++)
+		{
+			const FrameRec &r = m_all[i];
+			late += r.late;
+			if ((r.mode & 0xf) == 4 && (r.mode & 0x200))   // in the race proper (MGO): display frames per game picture
+			{
+				race++; rsince++;
+				if (r.flips) { race_h[std::min(rsince, 4)]++; rsince = 0; }
+			}
+			else rsince = 0;
+			const float v[9] = {r.msg, r.input, r.cpu, r.dsp, r.feed, r.ffb, r.wait, r.present, r.other};
+			for (int k = 0; k < 9; k++) { sum[k] += v[k]; mx[k] = std::max(mx[k], v[k]); }
+		}
+		const double nn = double(m_all.size() - 240);
+		if (!spike_path.empty())
+			if (FILE *f = std::fopen(spike_path.c_str(), "ab"))
+			{
+				std::fprintf(f, "== %s: %zu frames | median %.2f ms, p99 %.2f, p99.9 %.2f, max %.2f | over 1.25x median: %zu, 1.5x: %zu, 2x: %zu | spikes logged %zu\n",
+				             title, dt.size(), med, pct(0.99), pct(0.999), dt.back(), over125, over150, over200, m_spikes);
+				static const char *const nm[9] = {"messages", "input", "main cpu", "sound dsp", "gpu feed", "ffb/outputs", "wait", "present", "other"};
+				std::fprintf(f, "   phase avg / max ms:");
+				for (int k = 0; k < 9; k++) std::fprintf(f, " %s %.2f/%.2f |", nm[k], sum[k] / nn, mx[k]);
+				std::fprintf(f, "\n   display frames per game picture: 1:%u 2:%u 3:%u 4:%u 5:%u 6:%u 7+:%u\n", hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7]);
+				std::fprintf(f, "   in the race (%u frames): 1:%u 2:%u 3:%u 4+:%u | game pictures late for lack of host time: %u\n", race, race_h[1], race_h[2], race_h[3], race_h[4], late);
+				std::fprintf(f, "   on the display: refreshes per presented frame 0:%u 1:%u 2:%u 3:%u 4+:%u | refreshes per game picture in the race 1:%u 2:%u 3:%u 4:%u 5:%u 6+:%u\n\n",
+				             shown[0], shown[1], shown[2], shown[3], shown[4], pic[1], pic[2], pic[3], pic[4], pic[5], pic[6] + pic[7]);
+				std::fclose(f);
+			}
+		if (!csv_path.empty())
+			if (FILE *f = std::fopen(csv_path.c_str(), "wb"))
+			{
+				std::fprintf(f, "frame,dt,msg,input,emu,cpu,dsp,feed,ffb,wait,present,swap,gpu,other,audio_ms,quads,draws,mode,flips,clock_q4,ran,late,refresh,phase\n");
+				for (const FrameRec &r : m_all)
+					std::fprintf(f, "%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%u,%u,%X,%u,%u,%u,%u,%u,%.2f\n", r.frame, r.dt, r.msg, r.input, r.emu, r.cpu, r.dsp,
+					             r.feed, r.ffb, r.wait, r.present, r.swap, r.gpu, r.other, r.audio_ms, r.quads, r.draws, r.mode, r.flips, r.clock_q4, r.ran, r.late, r.refresh, r.phase);
+				std::fclose(f);
+			}
+	}
+
+private:
+	void write_spike(size_t at, double limit)
+	{
+		if (spike_path.empty()) return;
+		FILE *f = std::fopen(spike_path.c_str(), "ab");
+		if (!f) return;
+		std::fprintf(f, "spike: frame %u took %.2f ms (limit %.2f, median %.2f)\n", m_all[at].frame, m_all[at].dt, limit, m_median);
+		std::fprintf(f, "    frame      dt |   msg input |   emu =  cpu +  dsp + feed |  ffb  wait | present (swap)   gpu | other | audio quads draws mode  flip clk ran\n");
+		for (size_t i = at >= 8 ? at - 8 : 0; i <= at + 6 && i < m_all.size(); i++)
+		{
+			const FrameRec &r = m_all[i];
+			std::fprintf(f, " %c %7u %6.2f | %5.2f %5.2f | %5.2f  %5.2f  %5.2f  %5.2f | %4.2f %5.2f | %6.2f  %5.2f %5.2f | %5.2f | %5.0f %5u %5u %5X %4u %3.2g %3u\n", i == at ? '>' : ' ',
+			             r.frame, r.dt, r.msg, r.input, r.emu, r.cpu, r.dsp, r.feed, r.ffb, r.wait, r.present, r.swap, r.gpu, r.other, r.audio_ms, r.quads, r.draws, r.mode & 0xfffff, r.flips,
+			             double(r.clock_q4) / 4.0, r.ran);
+		}
+		std::fprintf(f, "\n");
+		std::fclose(f);
+	}
+
+	std::vector<FrameRec> m_all;
+	std::vector<size_t> m_pending;
+	size_t m_last_spike = 0, m_spikes = 0;
+	float m_median = 0;
+};

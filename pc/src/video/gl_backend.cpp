@@ -81,6 +81,11 @@ using GLchar_ = char;
 	X(void, glTexStorage2D, (GLenum, GLsizei, GLenum, GLsizei, GLsizei))                                \
 	X(void, glTexStorage3D, (GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLsizei))                       \
 	X(void, glTexSubImage3D, (GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void *)) \
+	X(void, glGenQueries, (GLsizei, GLuint *))                                                          \
+	X(void, glBeginQuery, (GLenum, GLuint))                                                             \
+	X(void, glEndQuery, (GLenum))                                                                       \
+	X(void, glGetQueryObjectiv, (GLuint, GLenum, GLint *))                                              \
+	X(void, glGetQueryObjectui64v, (GLuint, GLenum, unsigned long long *))                              \
 	X(void, glCopyImageSubData, (GLuint, GLenum, GLint, GLint, GLint, GLint, GLuint, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei))
 
 #define X(ret, name, args) using PFN_##name = ret(APIENTRY *) args;
@@ -160,7 +165,7 @@ public:
 
 	void set_options(const VideoOptions &o) override
 	{
-		bool rescale = o.scale != m_opt.scale || o.wide_margin != m_opt.wide_margin;
+		bool rescale = o.scale != m_opt.scale || o.wide_margin != m_opt.wide_margin || mask_scale(o) != mask_scale(m_opt);
 		m_opt = o;
 		m_opt.scale = std::clamp(m_opt.scale, 1, 8);
 		if (m_swap_interval) m_swap_interval(m_opt.vsync ? 1 : 0);
@@ -283,10 +288,15 @@ public:
 	void draw_shadows(int page, const GpuQuad *q, int count) override
 	{
 		if (count <= 0) return;
+		// Soft shadows in three small steps instead of one large one. Before, every pixel of the batch's rectangle on the page
+		// read the mask 49 times: at 6x and with a few cars near the camera that alone took longer than a display refresh
+		// (15-20 ms on the GPU, the cause of the hitches in traffic). Now the mask is drawn at no more than twice the arcade
+		// resolution (a soft shadow has no finer detail), blurred there into a second mask, and the page reads that one once
+		// per pixel. Each step only touches the batch's rectangle; the first reaches a radius further than the second, so
+		// that the blur never reads what an earlier shadow left in the mask.
 		const int sz = page_h(), pw = page_w();
-		const float sc = float(m_opt.scale);
-		const float radius = std::max(0.5f, m_opt.shadow_soft * sc);
-		// bounding box of the batch in page pixels, grown by the blur radius
+		const int ms = mask_scale(m_opt), mw = mask_w(), mh = mask_h();
+		const float sc = float(m_opt.scale), radius = std::max(0.5f, m_opt.shadow_soft);   // in arcade pixels
 		float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
 		for (int i = 0; i < count; i++)
 			for (int k = 0; k < 4; k++)
@@ -294,20 +304,20 @@ public:
 				minx = std::min(minx, q[i].p[k * 2]); maxx = std::max(maxx, q[i].p[k * 2]);
 				miny = std::min(miny, q[i].p[k * 2 + 1]); maxy = std::max(maxy, q[i].p[k * 2 + 1]);
 			}
-		int x0 = std::clamp(int(std::floor(minx * sc - radius - 2)), 0, pw), x1 = std::clamp(int(std::ceil(maxx * sc + radius + 2)), 0, pw);
-		int y0 = std::clamp(int(std::floor(miny * sc - radius - 2)), 0, sz), y1 = std::clamp(int(std::ceil(maxy * sc + radius + 2)), 0, sz);
-		if (x1 <= x0 || y1 <= y0) return;
-		// The mask is only cleared and drawn where it is needed, and the blur reads up to `radius` pixels beside the pixel it
-		// shades. So the cleared part must reach a radius further than the part that is shaded: otherwise the outermost
-		// pixels read what an earlier shadow left in the mask, which showed as thin dark lines along the rectangle's edges.
-		const int grow = int(std::ceil(radius)) + 2;
-		const int mx0 = std::max(0, x0 - grow), mx1 = std::min(pw, x1 + grow), my0 = std::max(0, y0 - grow), my1 = std::min(sz, y1 + grow);
+		// the batch's rectangle in arcade pixels, grown by `g` radii, in pixels of a target that is `k` times the arcade size
+		auto rect = [&](float g, float k, int w, int h, int r[4]) {
+			r[0] = std::clamp(int(std::floor((minx - radius * g - 1) * k)), 0, w); r[2] = std::clamp(int(std::ceil((maxx + radius * g + 1) * k)), 0, w);
+			r[1] = std::clamp(int(std::floor((miny - radius * g - 1) * k)), 0, h); r[3] = std::clamp(int(std::ceil((maxy + radius * g + 1) * k)), 0, h);
+			return r[2] > r[0] && r[3] > r[1];
+		};
+		int rm[4], rb[4], rp[4];
+		if (!rect(2, float(ms), mw, mh, rm) || !rect(1, float(ms), mw, mh, rb) || !rect(1, sc, pw, sz, rp)) return;
 
 		// 1. hard coverage of the shadow quads into the mask
 		glBindFramebuffer(GL_FRAMEBUFFER, m_mask_fbo);
-		glViewport(0, 0, pw, sz);
+		glViewport(0, 0, mw, mh);
 		glEnable(GL_SCISSOR_TEST);
-		glScissor(mx0, my0, mx1 - mx0, my1 - my0);
+		glScissor(rm[0], rm[1], rm[2] - rm[0], rm[3] - rm[1]);
 		glClearColor(0, 0, 0, 0);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glUseProgram(m_prog_smask);
@@ -324,16 +334,23 @@ public:
 			done += n;
 		}
 
-		// 2. the blurred mask darkens the page
+		// 2. blurred into the second mask
+		glBindFramebuffer(GL_FRAMEBUFFER, m_mask2_fbo);
+		glScissor(rb[0], rb[1], rb[2] - rb[0], rb[3] - rb[1]);
+		glUseProgram(m_prog_sblur);
+		glBindTexture(GL_TEXTURE_2D, m_mask_tex);
+		set_params({-1, -1, 1, 1}, {0, 0, 1, 1}, {0, radius * float(ms), 1.0f / float(mw), 1.0f / float(mh)});
+		glBindVertexArray(m_vao_empty);
+		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+
+		// 3. the blurred mask darkens the page
 		bind_page(page);
-		glScissor(x0, y0, x1 - x0, y1 - y0);
+		glScissor(rp[0], rp[1], rp[2] - rp[0], rp[3] - rp[1]);
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 		glUseProgram(m_prog_scomp);
-		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, m_mask_tex);
-		set_params({-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, radius, 1.0f / float(pw), 1.0f / float(sz)});
-		glBindVertexArray(m_vao_empty);
+		glBindTexture(GL_TEXTURE_2D, m_mask2_tex);
+		set_params({-1, -1, 1, 1}, {0, 0, 1, 1}, {m_opt.shadow_strength, 0, 0, 0});
 		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
 		glDisable(GL_BLEND);
 		glDisable(GL_SCISSOR_TEST);
@@ -381,8 +398,43 @@ public:
 		glBindTexture(GL_TEXTURE_2D, m_disp_tex);
 		glBindVertexArray(m_vao_empty);
 		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+		if (!m_prof) { SwapBuffers(m_dc); return; }
+
+		// profiling: one timer query spans all GL work of a frame (swap to swap); its result is read a few frames later,
+		// when it is available, so that reading never waits for the GPU
+		if (m_q_open) { glEndQuery(0x88BF); m_q_open = false; m_q_head = (m_q_head + 1) & 3; m_q_used = std::min(m_q_used + 1, 4); }
+		while (m_q_used > 1)
+		{
+			const int oldest = (m_q_head - m_q_used) & 3;
+			GLint ready = 0;
+			glGetQueryObjectiv(m_query[oldest], 0x8867, &ready);
+			if (!ready) break;
+			unsigned long long ns = 0;
+			glGetQueryObjectui64v(m_query[oldest], 0x8866, &ns);
+			m_gpu_ms = double(ns) / 1e6;
+			m_q_used--;
+		}
+		LARGE_INTEGER f, t0, t1;
+		QueryPerformanceFrequency(&f);
+		QueryPerformanceCounter(&t0);
 		SwapBuffers(m_dc);
+		QueryPerformanceCounter(&t1);
+		m_swap_ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(f.QuadPart);
+		if (m_q_used < 4)
+		{
+			if (!m_query[m_q_head]) glGenQueries(1, &m_query[m_q_head]);
+			glBeginQuery(0x88BF, m_query[m_q_head]);
+			m_q_open = true;
+		}
 	}
+
+	void set_profiling(bool on) override { m_prof = on; }
+	double last_swap_ms() const override { return m_swap_ms; }
+	double last_gpu_ms() const override { return m_gpu_ms; }
+	bool m_prof = false, m_q_open = false;
+	GLuint m_query[4] = {0, 0, 0, 0};
+	int m_q_head = 0, m_q_used = 0;
+	double m_swap_ms = -1.0, m_gpu_ms = -1.0;
 
 	bool read_display(std::vector<uint32_t> &out, int &w, int &h) override
 	{
@@ -446,7 +498,8 @@ private:
 		m_prog_ovl = link(shader_src::kRectVert, shader_src::kOverlayFrag, err);
 		m_prog_smask = link(shader_src::kQuadVert, shader_src::kShadowMaskFrag, err);
 		m_prog_scomp = link(shader_src::kRectVert, shader_src::kShadowCompFrag, err);
-		return m_prog_quad && m_prog_present && m_prog_ovl && m_prog_smask && m_prog_scomp;
+		m_prog_sblur = link(shader_src::kRectVert, shader_src::kShadowBlurFrag, err);
+		return m_prog_quad && m_prog_present && m_prog_ovl && m_prog_smask && m_prog_scomp && m_prog_sblur;
 	}
 
 	void new_tex(GLuint &t, GLenum fmt, int w, int h)
@@ -519,17 +572,22 @@ private:
 			glClear(GL_COLOR_BUFFER_BIT);
 		}
 		new_tex(m_disp_tex, GL_RGBA8, pw, sz);
-		if (m_mask_tex) { glDeleteTextures(1, &m_mask_tex); m_mask_tex = 0; }
-		new_tex(m_mask_tex, GL_R8, pw, sz);
-		if (!m_mask_fbo) glGenFramebuffers(1, &m_mask_fbo);
-		glBindFramebuffer(GL_FRAMEBUFFER, m_mask_fbo);
-		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_mask_tex, 0);
-		glViewport(0, 0, pw, sz);
-		glClearColor(0, 0, 0, 0);
-		glClear(GL_COLOR_BUFFER_BIT);
-		glBindTexture(GL_TEXTURE_2D, m_mask_tex);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		// the two shadow masks (see draw_shadows)
+		for (int i = 0; i < 2; i++)
+		{
+			GLuint &tex = i ? m_mask2_tex : m_mask_tex, &fbo = i ? m_mask2_fbo : m_mask_fbo;
+			if (tex) { glDeleteTextures(1, &tex); tex = 0; }
+			new_tex(tex, GL_R8, mask_w(), mask_h());
+			if (!fbo) glGenFramebuffers(1, &fbo);
+			glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+			glViewport(0, 0, mask_w(), mask_h());
+			glClearColor(0, 0, 0, 0);
+			glClear(GL_COLOR_BUFFER_BIT);
+			glBindTexture(GL_TEXTURE_2D, tex);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		}
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		apply_page_filter();
 	}
@@ -554,6 +612,10 @@ private:
 	int m_ovl_off[3] = {0, 0, 0};
 	GLuint m_tex_repl = 0;
 	int m_repl_res = 0;
+	// resolution of the shadow masks, as a multiple of the arcade's: a soft shadow needs no more than twice, a hard one the page's
+	static int mask_scale(const VideoOptions &o) { const int sc = std::clamp(o.scale, 1, 8); return o.shadow_soft >= 1.0f ? std::min(sc, 2) : sc; }
+	int mask_w() const { return (512 + 2 * m_opt.wide_margin) * mask_scale(m_opt); }
+	int mask_h() const { return 512 * mask_scale(m_opt); }
 	int page_w() const { return (512 + 2 * m_opt.wide_margin) * m_opt.scale; }
 	int page_h() const { return 512 * m_opt.scale; }
 	float page_w_px() const { return float(512 + 2 * m_opt.wide_margin); }
@@ -575,7 +637,7 @@ private:
 	int m_win_w = 1, m_win_h = 1;
 
 	GLuint m_prog_quad = 0, m_prog_present = 0, m_prog_ovl = 0, m_prog_smask = 0, m_prog_scomp = 0;
-	GLuint m_mask_tex = 0, m_mask_fbo = 0;
+	GLuint m_mask_tex = 0, m_mask_fbo = 0, m_mask2_tex = 0, m_mask2_fbo = 0, m_prog_sblur = 0;
 	GLuint m_vao_empty = 0, m_vao_quad = 0, m_vbo_inst = 0, m_ubo = 0;
 	GLuint m_tex_ram = 0, m_tex_pal = 0, m_tex_ovl = 0;
 	GLuint m_page_tex[2] = {0, 0}, m_fbo[2] = {0, 0}, m_disp_tex = 0;

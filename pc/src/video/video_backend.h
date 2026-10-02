@@ -79,6 +79,8 @@ public:
 	virtual void clear_margins(int page) { (void)page; }
 	// widescreen: show only the arcade's 4:3 picture, black bars beside it (menus and 2D screens)
 	virtual void set_pillarbox(bool on) { (void)on; }
+	virtual void set_profiling(bool on) { (void)on; }      // measure GPU and swap time (--perf)
+	virtual double last_swap_ms() const { return -1.0; }   // duration of the last buffer swap call
 	virtual double last_gpu_ms() const { return -1.0; }   // GPU time of the last finished frame (-1 = not measured)
 	virtual bool read_display(std::vector<uint32_t> &out, int &w, int &h) = 0;
 };

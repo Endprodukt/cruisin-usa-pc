@@ -108,3 +108,72 @@ waits until everything is written.
 
 Decoding and resampling are independent per file and run on up to 8 threads for the duration of the load (startup only, no threads
 per frame). 60 textures at 1024 px: 1497 ms on one core, 529 ms on four, 275 ms on all.
+
+## Frame time spikes (October 2026)
+
+Question: why does the port still hitch now and then, at a high internal resolution and a long draw distance, although the
+average frame takes a few milliseconds? Measured in the real app, paced, with the user's configuration (RTX 3060, i5-13600K,
+3440x1440 at 60 Hz, OpenGL, 6x internal resolution, 21:9, draw distance 300 %, modern shadows, display sync), an autopilot
+driving one race per run on Chicago, LA Freeway, San Francisco and Golden Gate Park.
+
+### The tools
+
+`--perf` now records every displayed frame (`FrameProf` in `src/perf.h`): frame time, window messages, input, emulation split
+into main CPU / sound DSP / GPU hand-over, force feedback, pacing wait, present with the swap call on its own, GPU time (OpenGL
+timer query, Vulkan timestamps), queued audio, polygons, draw calls, the game's mode, whether a new game picture was shown,
+the emulated clock and game pictures that were late. A frame over the limit (`--perf-spike <ms>`, default 1.5 x median) goes to
+`perf_spikes.log` with the eight frames before and six after it; at the end the log gets the percentiles, the phase averages
+and maxima and the cadence of the game's pictures. `--perf-csv <file>` writes every frame, `--perf-seconds <n>` ends the run,
+`--track <n>` and `--autopilot` (with `--autoplay`) pick and drive a race. The headless tool has `NFLOG=1` (vblanks per game
+frame), `QUADSTAT=1` (screen area of the polygons and of their bounding boxes) and `SURFLOG`.
+
+What counts is not the frame time of the host but the interval between two new game pictures on the display: the game draws
+a picture every second refresh (28.9 per second on the machine, 30 with display sync at 60 Hz).
+
+### Findings, by weight
+
+| # | Cause | Kind | Effect before | Change |
+|---|---|---|---|---|
+| 1 | Soft shadows: every pixel of a shadow batch's rectangle read the mask 49 times, at the full internal resolution | GPU, in traffic and with cars near the camera | GPU time up to 22 ms at 6x: runs of pictures 3 refreshes apart (LA Freeway: 11 in 92 s, audio buffer down to 0) | mask at no more than twice the arcade resolution, blurred there, read once per page pixel: GPU max 11.9 ms, no late picture |
+| 2 | Display sync was paced by a timer set to the nominal refresh rate, not by the display | pacing | timer and display drift against each other; every 15-20 s they cross and pictures are shown for 10 and 22 ms in turn for a moment | the buffer swap's wait for the vblank is the pace; the clock only takes over when the swap turns out not to wait |
+| 3 | The emulated CPU did not finish a game frame within its two vblanks | game cadence (emulated time) | pictures 3 vblanks apart: at the original draw distance up to 7 % of a race's frames (San Francisco 272 of 3700; the machine does the same), at 400 % 5 % on San Francisco even at three times the clock | `MidVUnit::catch_up`: before each vblank the CPU gets the instructions the frame still needs, in no emulated time, within 10 ms of host time per display frame. All 14 tracks at 100 / 300 / 400 %: 1-3 slow frames per race (the start). The frames after the finish line stay at 3 vblanks: there the game sets its governor to that |
+| 4 | Chicago did not start as a single race with a draw distance above 100 % | bug found on the way | the car never left the garage (the wider object window put other streets' road pieces under it) | the original window applies until the race mode is set |
+| 5 | One stall of 50-70 ms about 30 s after the game window opens | OpenGL driver (NVIDIA), once per start | one picture 5 refreshes late | not ours: independent of window mode, sound, force feedback and game state, absent with Vulkan. Left as it is |
+| 6 | Vulkan backend: stalls of 45-65 ms inside the polygon hand-over, in bursts | backend | not smooth at 6x | open (OpenGL is the default) |
+
+Not a cause (measured): window messages (avg 0.03 ms, max 2.8), input polling (avg 0.08, max 4.4 once), force feedback and
+outputs (0.00), sound DSP (0.8, max 3.1), GPU hand-over (0.00, max 0.3), allocations in the frame loop (none: the polygon
+lists are reserved once), texture replacement and export (inactive unless used), release flags (`/O2 /Oi`, whole program
+optimisation measured earlier: no gain).
+
+### After (same runs, 92 s of race each)
+
+| Track | pictures | at 2 refreshes | 3 refreshes | off the 33.4 ms pace by > 3 ms | emulation max | GPU max |
+|---|---|---|---|---|---|---|
+| Chicago 300 % | 2755 | 2750 | 2 | 1.2 % | 10.7 ms | 14.6 ms |
+| LA Freeway 300 % | 2758 | 2756 | 0 | 1.5 % | 10.3 ms | 12.5 ms |
+| San Francisco 300 % | 2757 | 2753 | 0 | 0.9 % | 10.7 ms | 10.9 ms |
+| Golden Gate Park 300 % | 2758 | 2755 | 0 | 0.2 % | 9.8 ms | 10.8 ms |
+| San Francisco 400 % | 2757 | 2753 | 1 | 0.3 % | 10.7 ms | 10.1 ms |
+| Chicago 400 % | 2757 | 2755 | 0 | 1.1 % | 10.6 ms | 13.7 ms |
+
+(Each run also contains the one driver stall of finding 5.) Before, with the old shadows: LA Freeway 11 pictures at 3
+refreshes, 2.5 % off pace, GPU max 22.4 ms.
+
+### Where the time goes now
+
+Per display frame: main CPU 3.5-5.9 ms on average, up to the 10 ms budget in the frame that computes a game picture and about
+0.4 ms in the other one; sound DSP 0.8 ms; everything else on the host below 0.2 ms. The game is CPU-bound on the emulated
+side (the interpreter), GPU-bound only through the shadow pass that is now gone, and was pacing-bound through the timer.
+With the internal resolution at 3x instead of 6x the GPU time barely changed before the shadow fix, which is what pointed at
+the shadow pass instead of the polygons.
+
+### Left as it is, with reasons
+
+* Polygons are drawn as their bounding rectangles and cut to shape in the fragment shader. The polygons cover 62-84 % of
+  those rectangles (QUADSTAT), so drawing the polygon's outline instead would save a fifth to a third of the fragment work.
+  The GPU has room at 6x on this card; at 8x or on a weaker card it would be the next thing to do.
+* `steady_budget_ms` (10 ms) is the share of a display frame the interpreter may use. A host that cannot do a game frame's work
+  in two such shares shows the picture a vblank later, as the machine would; the display frame itself is never made late.
+* `[game] steady_cadence = false` restores the machine's own slowdowns (and the fixed clock of the section above).
+
