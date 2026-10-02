@@ -1024,6 +1024,8 @@ bool MidVUnit::run_frame()
 	// the garage of the car selection: mode MINTRO with the selectable cars (object ids 0x481..0x484, INTRO.ASM ROUNDER)
 	// on one of the object lists
 	m_garage = false;
+	// the map stays open through the initials and the continue screen, until the next race (or the attract mode) starts
+	{ const uint32_t mm = m_ram0[0xC8F5] & 0xf; if (mm == 4 || mm == 2 || mm == 1) m_map_full = false; }
 	if (m_wide && (m_ram0[0xC8F5] & 0xf) == 3)
 		for (uint32_t list = 0x40; list <= 0x41 && !m_garage; list++)
 		{
@@ -1435,15 +1437,26 @@ void MidVUnit::text_begin()
 		w += last;
 	}
 	const int x1 = x0 + w;
-	const float mid = float(x0 + x1) * 0.5f, half = float(w) * 0.5f;
-	if (e->moving || x1 <= 0 || x0 >= 512)
-		m_text_shift = float(m_wide) + (mid - 256.0f) * float(m_wide) / (256.0f + half);
-	else if (m_hud_spread > 0 && hud_shown())
+	const float mid = float(x0 + x1) * 0.5f;
+	// Inside the arcade's 512 pixels a string is where the game puts it, moving or not, so nothing jumps when a string
+	// that scrolled in comes to rest. Only the part of its way that lies outside is stretched: by the share of the string
+	// that hangs over the edge, so that "just off the arcade screen" is "just off the wide picture".
+	if (w > 0 && x0 < 0) m_text_shift -= float(m_wide) * std::clamp(float(-x0) / float(w), 0.0f, 1.0f);
+	else if (w > 0 && x1 > 512) m_text_shift += float(m_wide) * std::clamp(float(x1 - 512) / float(w), 0.0f, 1.0f);
+	if (m_hud_spread > 0 && hud_shown())
 	{
-		const float cy = float(y0) + float(height) * 0.5f;
-		if (cy >= float(kHudTop) && cy < float(kHudBottom)) return;
-		if (x1 <= 256 && mid < 171) m_text_shift = float(m_wide) * (1.0f - m_hud_spread);
-		else if (x0 >= 256 && mid > 341) m_text_shift = float(m_wide) * (1.0f + m_hud_spread);
+		// HUD at the screen edges. In the race a still string in the left or right third of the top or bottom rows belongs
+		// to that corner. After the finish line the HUD's strings keep their corner while they slide out, and whatever comes
+		// new (the results) stays with the map in the middle.
+		if ((m_ram0[0xC8F5] & 0xf) == 4)
+		{
+			const float cy = float(y0) + float(height) * 0.5f;
+			e->place = 0;
+			if (!e->moving && (cy < float(kHudTop) || cy >= float(kHudBottom)))
+				e->place = (x1 <= 256 && mid < 171) ? -1 : (x0 >= 256 && mid > 341) ? 1 : 0;
+		}
+		if (e->place < 0) m_text_shift = float(m_wide) * (1.0f - m_hud_spread);
+		else if (e->place > 0) m_text_shift = float(m_wide) * (1.0f + m_hud_spread);
 	}
 }
 
@@ -1495,7 +1508,7 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->on_hook = nullptr;
 	const bool idle = idle_skip && !std::getenv("NOIDLESKIP");
 	const std::vector<uint32_t> &c = m_ram0;
-	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0, wdog_pc = ~0u, palq_pc = ~0u, palq_free = 0, palq_active = 0, hit_pc = ~0u, text_pc = ~0u, textend_pc = ~0u, carhit_pc = ~0u;
+	uint32_t sync_pc = ~0u, sort_entry = ~0u, sort_top = ~0u, dact_pc = ~0u, dact_skip = ~0u, snd_pc = ~0u, objinit_pc = ~0u, ofreecnt = 0, debris_ptr = 0, routine_pc = ~0u, routine_tab = 0, wdog_pc = ~0u, palq_pc = ~0u, palq_free = 0, palq_active = 0, hit_pc = ~0u, text_pc = ~0u, textend_pc = ~0u, carhit_pc = ~0u, mapfull_pc = ~0u;
 	m_ofree_addr = 0;
 	m_wreck_addr = 0;
 	for (uint32_t i = 0; i + 8 < 0x20000; i++)
@@ -1603,6 +1616,11 @@ void MidVUnit::setup_idle_hooks()
 		if ((c[i] & 0xffff0000u) == 0x04A90000u && (c[i + 1] & 0xffff0000u) == 0x6A060000u && (c[i + 2] & 0xff000000u) == 0x62000000u &&
 		    c[i + 3] == 0x04635480u && c[i + 4] == 0x6A090003u && carhit_pc == ~0u)
 			carhit_pc = i + 2;
+		// end of UNFOLDMAP (MAP.ASM), the road map is open: LDI map1_p,R0 / LDI map1_p,R1 / CALL PAL_OVERWRITE /
+		//   LDI *+AR7(MAP1OBJ),AR0 / LDI *+AR0(OFLAGS),R0 / ANDN O_1PAL,R0 / STI R0,*+AR0(OFLAGS)
+		if ((c[i] & 0xffff0000u) == 0x08600000u && c[i + 1] == (0x08610000u | (c[i] & 0xffff)) && (c[i + 2] & 0xff000000u) == 0x62000000u &&
+		    (c[i + 3] & 0xffffff00u) == 0x08480700u && c[i + 4] == 0x0840000Eu && c[i + 6] == 0x1540000Eu && mapfull_pc == ~0u)
+			mapfull_pc = i;
 		// WRECKST (RACER.ASM): LDF -60,R0 / STF R0,*+AR4(OVELY) / LDI 1,R0 / STI R0,(WRECKFLG) / LDI 0,R0 / STI R0,*+AR5(CARSHAD)
 		if (c[i] == 0x07605900u && c[i + 1] == 0x14400412u && c[i + 2] == 0x08600001u && (c[i + 3] & 0xffff0000u) == 0x15200000u &&
 		    c[i + 4] == 0x08600000u && c[i + 5] == 0x15400541u && m_wreck_addr == 0)
@@ -1636,10 +1654,17 @@ void MidVUnit::setup_idle_hooks()
 	m_cpu->hook_pc[10] = text_pc;
 	m_cpu->hook_pc[11] = textend_pc;
 	m_cpu->hook_pc[12] = carhit_pc;
+	m_cpu->hook_pc[13] = mapfull_pc;
 	m_cpu->refresh_hooks();
 	m_zsort_first = true;
-	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr, routine_pc, routine_tab, wdog_pc, palq_pc, palq_free, palq_active, hit_pc, text_pc, textend_pc, carhit_pc]() -> bool {
+	m_cpu->on_hook = [this, sync_pc, sort_entry, sort_top, dact_pc, dact_skip, snd_pc, objinit_pc, ofreecnt, debris_ptr, routine_pc, routine_tab, wdog_pc, palq_pc, palq_free, palq_active, hit_pc, text_pc, textend_pc, carhit_pc, mapfull_pc]() -> bool {
 		uint32_t pc = m_cpu->pc();
+		if (pc == mapfull_pc)
+		{
+			m_map_full = true;
+			if (debug_routines) std::fprintf(stderr, "MAPFULL frame %llu (mode %X)\n", (unsigned long long)m_frame_count, m_ram0[0xC8F5]);
+			return false;
+		}
 		if (pc == text_pc) { text_begin(); return false; }
 		if (pc == textend_pc) { m_text_on = false; return false; }
 		if (pc == carhit_pc)

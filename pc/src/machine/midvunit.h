@@ -63,7 +63,10 @@ public:
 	// The 3D world fills the picture: a race, its finish (bonus), the attract mode's demo race, or the garage of the car
 	// selection (a 3D room: the car on the outer lift reaches past the 4:3 picture). Everything else is a menu or a 2D screen
 	// made for the arcade's 4:3 picture (boot, race and transmission selection, initials, continue, high scores, logos).
-	bool world_shown() const { const uint32_t m = m_ram0[0xC8F5]; return (m & 0xf) == 4 || (m & 0xf) == 5 || ((m & 0xf) == 2 && (m & 0x200)) || m_garage; }
+	// At the end of a race the road map unfolds over the picture; once it is open the game loads other palettes (the trophy
+	// girls') and sometimes another backdrop behind it, which shows in the margins. From then on: 4:3 with black bars.
+	bool world_shown() const { const uint32_t m = m_ram0[0xC8F5]; return (m & 0xf) == 4 || ((m & 0xf) == 5 && !m_map_full) || ((m & 0xf) == 2 && (m & 0x200)) || m_garage; }
+	bool m_map_full = false;               // the road map of the bonus screen is fully unfolded
 	bool m_garage = false;                 // the car selection is on screen (updated once per frame)   // _MODE == MATTR: the attract mode (nobody is playing)
 	uint64_t palette_queue_overflows = 0;  // times the palette transfer queue was full and was flushed by the host
 	uint32_t rom_word(uint32_t i) const { return i < m_rom.size() ? m_rom[i] : 0; }
@@ -199,7 +202,7 @@ private:
 	bool in_race() const;
 	bool hud_shown() const;
 	void text_begin();
-	struct TextSeen { uint32_t str = 0, posx = 0; int y = 0; uint64_t frame = 0; bool moving = false; };
+	struct TextSeen { uint32_t str = 0, posx = 0; int y = 0; uint64_t frame = 0; bool moving = false; int place = 0; };
 	TextSeen m_text_seen[64];
 	int m_text_next = 0;
 	bool m_text_on = false;                // a string of the text list is being drawn
