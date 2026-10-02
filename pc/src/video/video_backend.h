@@ -82,7 +82,10 @@ public:
 	virtual void set_profiling(bool on) { (void)on; }      // measure GPU and swap time (--perf)
 	virtual void set_debug(int flags) { (void)flags; }     // experiments for the profiler. OpenGL: 1 = glFinish before the swap, 2 = glFlush. Vulkan: 16 = two frames in flight
 	virtual double last_swap_ms() const { return -1.0; }   // duration of the last buffer swap call
-	virtual double last_gpu_ms() const { return -1.0; }   // GPU time of the last finished frame (-1 = not measured)
+	virtual double last_gpu_ms() const { return -1.0; }
+	// ...and of that frame by render phase, where the backend measures it (OpenGL): the GPU's time for the phase's own calls
+	enum GpuPhase { GpuPolygons, GpuShadows, GpuOverlay, GpuLatch, GpuPresent, GpuUpload, kGpuPhases };
+	virtual double last_gpu_phase_ms(int phase) const { (void)phase; return -1.0; }   // GPU time of the last finished frame (-1 = not measured)
 	virtual bool read_display(std::vector<uint32_t> &out, int &w, int &h) = 0;
 };
 

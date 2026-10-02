@@ -111,6 +111,7 @@ struct FrameRec
 	float present = 0;     // final blit and buffer swap (with VSync: includes waiting for the display)
 	float swap = 0;        // of which the swap call itself
 	float gpu = 0;         // GPU time of a recent frame (-1: not measured)
+	float gpu_ph[6] = {-1, -1, -1, -1, -1, -1};   // ...by phase (IVideoBackend::GpuPhase): polygons, shadows, overlay, latch, present, uploads
 	float other = 0;       // window title, bookkeeping
 	float audio_ms = 0;    // sound queued in the output buffer
 	uint32_t quads = 0, draws = 0;
@@ -217,10 +218,10 @@ public:
 		if (!csv_path.empty())
 			if (FILE *f = std::fopen(csv_path.c_str(), "wb"))
 			{
-				std::fprintf(f, "frame,dt,msg,input,emu,cpu,dsp,feed,ffb,wait,present,swap,gpu,other,audio_ms,quads,draws,mode,flips,clock_q4,ran,late,refresh,phase\n");
+				std::fprintf(f, "frame,dt,msg,input,emu,cpu,dsp,feed,ffb,wait,present,swap,gpu,other,audio_ms,quads,draws,mode,flips,clock_q4,ran,late,refresh,phase,g_poly,g_shadow,g_overlay,g_latch,g_present,g_upload\n");
 				for (const FrameRec &r : m_all)
-					std::fprintf(f, "%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%u,%u,%X,%u,%u,%u,%u,%u,%.2f\n", r.frame, r.dt, r.msg, r.input, r.emu, r.cpu, r.dsp,
-					             r.feed, r.ffb, r.wait, r.present, r.swap, r.gpu, r.other, r.audio_ms, r.quads, r.draws, r.mode, r.flips, r.clock_q4, r.ran, r.late, r.refresh, r.phase);
+					std::fprintf(f, "%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%u,%u,%X,%u,%u,%u,%u,%u,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", r.frame, r.dt, r.msg, r.input, r.emu, r.cpu, r.dsp,
+					             r.feed, r.ffb, r.wait, r.present, r.swap, r.gpu, r.other, r.audio_ms, r.quads, r.draws, r.mode, r.flips, r.clock_q4, r.ran, r.late, r.refresh, r.phase, r.gpu_ph[0], r.gpu_ph[1], r.gpu_ph[2], r.gpu_ph[3], r.gpu_ph[4], r.gpu_ph[5]);
 				std::fclose(f);
 			}
 	}

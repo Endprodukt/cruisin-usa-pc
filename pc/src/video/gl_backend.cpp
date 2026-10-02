@@ -206,6 +206,7 @@ public:
 	void upload_palette(const uint32_t *argb, int first, int last) override
 	{
 		CallPhase ph("palette", m_tex_pal, ((last >> 8) - (first >> 8) + 1) * 1024);
+		GpuScope gq(*this, GpuUpload);
 		glActiveTexture(GL_TEXTURE0 + 1);
 		glBindTexture(GL_TEXTURE_2D, m_tex_pal);
 		int r0 = first >> 8, r1 = last >> 8;
@@ -231,6 +232,7 @@ public:
 	void upload_replacement(int layer, const uint8_t *rgba) override
 	{
 		CallPhase ph("replace", layer, (long long)m_repl_res * m_repl_res * 4);
+		GpuScope gq(*this, GpuUpload);
 		if (!m_tex_repl || m_repl_res <= 0) return;
 		glActiveTexture(GL_TEXTURE0 + 2);
 		glBindTexture(GL_TEXTURE_2D_ARRAY, m_tex_repl);
@@ -241,6 +243,7 @@ public:
 	void upload_texture_rows(const uint8_t *ram, int first, int last) override
 	{
 		CallPhase ph("textures", m_tex_ram, (last - first + 1) * 256);
+		GpuScope gq(*this, GpuUpload);
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, m_tex_ram);
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -250,6 +253,7 @@ public:
 	void upload_overlay(int page, const uint16_t *layer, int first, int last) override
 	{
 		CallPhase ph("overlay", page, (last - first + 1) * 1024);
+		GpuScope gq(*this, GpuOverlay);
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, m_tex_ovl);
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
@@ -280,6 +284,7 @@ public:
 	void clear_margins(int page) override
 	{
 		CallPhase ph("margins", page);
+		GpuScope gq(*this, GpuOverlay);
 		if (m_opt.wide_margin <= 0) return;
 		bind_page(page);
 		const int m = m_opt.wide_margin * m_opt.scale;
@@ -299,6 +304,7 @@ public:
 	void draw(int page, const GpuQuad *q, int count) override
 	{
 		CallPhase ph("polygons", page, (long long)count * (long long)sizeof(GpuQuad));
+		GpuScope gq(*this, GpuPolygons);
 		if (count <= 0) return;
 		bind_page(page);
 		glUseProgram(m_prog_quad);
@@ -324,6 +330,7 @@ public:
 	void draw_shadows(int page, const GpuQuad *q, int count) override
 	{
 		CallPhase ph("shadows", page, (long long)count * (long long)sizeof(GpuQuad));
+		GpuScope gq(*this, GpuShadows);
 		if (count <= 0) return;
 		// Soft shadows in three small steps instead of one large one. Before, every pixel of the batch's rectangle on the page
 		// read the mask 49 times: at 6x and with a few cars near the camera that alone took longer than a display refresh
@@ -396,6 +403,7 @@ public:
 	void latch(int page, int visible_rows) override
 	{
 		CallPhase ph("latch", page);
+		GpuScope gq(*this, GpuLatch);
 		int rows = std::clamp(visible_rows, 1, 512) * m_opt.scale;
 		glCopyImageSubData(m_page_tex[page & 1], GL_TEXTURE_2D, 0, 0, 0, 0, m_disp_tex, GL_TEXTURE_2D, 0, 0, 0, 0, page_w(), rows, 1);
 	}
@@ -403,6 +411,7 @@ public:
 	void present(int vis_w, int vis_h) override
 	{
 		CallPhase ph("present");
+		q_begin(GpuPresent);
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		glViewport(0, 0, m_win_w, m_win_h);
 		glClearColor(0, 0, 0, 1);
@@ -437,24 +446,12 @@ public:
 		glBindTexture(GL_TEXTURE_2D, m_disp_tex);
 		glBindVertexArray(m_vao_empty);
 		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+		q_end();
 		if (m_debug & 1) glFinish();   // (test: the GPU's queued work is waited for here, so that the swap's own wait stands alone)
 		if (m_debug & 2) glFlush();
 		if (!m_prof) { SwapBuffers(m_dc); g_calltrace.frame++; return; }
 
-		// profiling: one timer query spans all GL work of a frame (swap to swap); its result is read a few frames later,
-		// when it is available, so that reading never waits for the GPU
-		if (m_q_open) { glEndQuery(0x88BF); m_q_open = false; m_q_head = (m_q_head + 1) & 3; m_q_used = std::min(m_q_used + 1, 4); }
-		while (m_q_used > 1)
-		{
-			const int oldest = (m_q_head - m_q_used) & 3;
-			GLint ready = 0;
-			glGetQueryObjectiv(m_query[oldest], 0x8867, &ready);
-			if (!ready) break;
-			unsigned long long ns = 0;
-			glGetQueryObjectui64v(m_query[oldest], 0x8866, &ns);
-			m_gpu_ms = double(ns) / 1e6;
-			m_q_used--;
-		}
+		q_harvest();
 		LARGE_INTEGER f, t0, t1;
 		QueryPerformanceFrequency(&f);
 		QueryPerformanceCounter(&t0);
@@ -462,13 +459,62 @@ public:
 		QueryPerformanceCounter(&t1);
 		m_swap_ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(f.QuadPart);
 		g_calltrace.frame++;
-		if (m_q_used < 4)
+		m_q_frame++;
+	}
+
+	// Profiling: GPU time by render phase. A timer query around each phase's calls measures what the GPU spends on them. (One
+	// query from swap to swap, as before, also counts the time the GPU waits for the CPU to hand over the next call: it read
+	// 10 ms per picture at 1x, where the GPU has next to nothing to do.) Results are read when they are available, never
+	// waited for; a frame's sums are published when the first result of a later frame arrives.
+	enum { kPool = 512 };
+	struct GpuQuery { GLuint id = 0; uint8_t phase = 0; uint32_t frame = 0; };
+	GpuQuery m_pool[kPool];
+	int m_qh = 0, m_qt = 0;
+	uint32_t m_q_frame = 0, m_acc_frame = 0;
+	double m_acc[kGpuPhases] = {}, m_last[kGpuPhases] = {-1, -1, -1, -1, -1, -1};
+	void q_begin(int phase)
+	{
+		if (!m_prof || m_q_open || ((m_qh + 1) % kPool) == m_qt) return;
+		GpuQuery &q = m_pool[m_qh];
+		if (!q.id) glGenQueries(1, &q.id);
+		q.phase = uint8_t(phase); q.frame = m_q_frame;
+		glBeginQuery(0x88BF, q.id);
+		m_q_open = true;
+	}
+	void q_end()
+	{
+		if (!m_q_open) return;
+		glEndQuery(0x88BF);
+		m_q_open = false;
+		m_qh = (m_qh + 1) % kPool;
+	}
+	void q_harvest()
+	{
+		while (m_qt != m_qh)
 		{
-			if (!m_query[m_q_head]) glGenQueries(1, &m_query[m_q_head]);
-			glBeginQuery(0x88BF, m_query[m_q_head]);
-			m_q_open = true;
+			GpuQuery &q = m_pool[m_qt];
+			GLint ready = 0;
+			glGetQueryObjectiv(q.id, 0x8867, &ready);
+			if (!ready) break;
+			unsigned long long ns = 0;
+			glGetQueryObjectui64v(q.id, 0x8866, &ns);
+			if (q.frame != m_acc_frame)
+			{
+				m_gpu_ms = 0;
+				for (int i = 0; i < kGpuPhases; i++) { m_last[i] = m_acc[i]; m_gpu_ms += m_acc[i]; m_acc[i] = 0; }
+				m_acc_frame = q.frame;
+			}
+			m_acc[q.phase] += double(ns) / 1e6;
+			m_qt = (m_qt + 1) % kPool;
 		}
 	}
+	struct GpuScope
+	{
+		GlBackend &b;
+		GpuScope(GlBackend &b_, int phase) : b(b_) { b.q_begin(phase); }
+		~GpuScope() { b.q_end(); }
+	};
+	double last_gpu_phase_ms(int phase) const override { return phase >= 0 && phase < kGpuPhases ? m_last[phase] : -1.0; }
 
 	void set_profiling(bool on) override { m_prof = on; }
 	void set_debug(int flags) override { m_debug = flags; }
@@ -476,8 +522,6 @@ public:
 	double last_swap_ms() const override { return m_swap_ms; }
 	double last_gpu_ms() const override { return m_gpu_ms; }
 	bool m_prof = false, m_q_open = false;
-	GLuint m_query[4] = {0, 0, 0, 0};
-	int m_q_head = 0, m_q_used = 0;
 	double m_swap_ms = -1.0, m_gpu_ms = -1.0;
 
 	bool read_display(std::vector<uint32_t> &out, int &w, int &h) override

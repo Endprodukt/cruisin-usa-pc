@@ -739,6 +739,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			rec.present = float(pp1 - perf_p0);
 			rec.swap = video ? float(video->last_swap_ms()) : -1.0f;
 			rec.gpu = video ? float(video->last_gpu_ms()) : -1.0f;
+			if (video) for (int i = 0; i < 6; i++) rec.gpu_ph[i] = float(video->last_gpu_phase_ms(i));
 			rec.cpu = float(m.perf_cpu_ms - cpu0); rec.dsp = float(m.perf_dcs_ms - dcs0); rec.feed = float(m.perf_feed_ms - feed0) - rec.present;
 			if (rec.feed < 0) rec.feed = 0;
 			rec.quads = uint32_t(m.perf_quads - quads0); rec.draws = uint32_t(m.perf_draws - draws0);

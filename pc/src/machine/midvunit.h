@@ -88,8 +88,26 @@ public:
 	void catch_up();
 	uint32_t m_mwait0_pc = 0;              // MWAIT0 in the main loop (the frame's work is done, the governor holds it)
 	double m_frame_cpu0 = 0;               // interpreter time (without the time spent in the video backend) at the start of run_frame   // emulated CPU clock, in quarters of the original
-	bool quad_stats = false;               // diagnostics: screen area of the quads' bounding boxes and of the quads themselves
-	double stat_bbox = 0, stat_poly = 0; uint64_t stat_quads = 0;
+	// Diagnostics (QUADSTAT / POLYLOG in the headless tool): what the GPU backends' way of drawing costs. They draw each polygon
+	// as its bounding rectangle and cut it to shape per pixel. Per game picture: the polygons by shape, and for each internal
+	// resolution the pixels of the rectangles (what the GPU shades) and of the polygons (what survives the cut), computed with
+	// the fragment shader's own rules (scanline spans, half a pixel of dilation above 1x), clipped to the page.
+	bool quad_stats = false;
+	static constexpr int kStatScales = 7;
+	static constexpr int kStatScale[kStatScales] = {1, 2, 3, 4, 5, 6, 8};
+	enum { ShapeRect, ShapeTriangle, ShapeConvex, ShapeConcave, ShapeBowtie, ShapeDegenerate, kShapes };
+	struct PolyFrame
+	{
+		uint32_t quads = 0, shape[kShapes] = {};
+		double shape_box[kShapes] = {}, shape_cover[kShapes] = {};   // at 1x
+		double box[kStatScales] = {}, cover[kStatScales] = {};
+	};
+	PolyFrame poly_cur, poly_race;         // the picture being drawn / the sum over the race's pictures
+	uint64_t poly_race_frames = 0;
+	std::vector<float> poly_eff;           // per race picture: polygon pixels / rectangle pixels at 6x
+	FILE *poly_log = nullptr;              // one line per game picture
+	void poly_stat(const VQuad &q);
+	void poly_frame_end();
 	uint64_t page_flips = 0;               // displayed page changes = new pictures shown (game frame rate)
 	int dcs_thread = 0;                    // sound DSP on its own thread: -1 auto (4+ hardware threads), 0 off, 1 on
 	bool idle_skip = true;                 // fast-forward the game's wait loops (see setup_idle_hooks)

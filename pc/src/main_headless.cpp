@@ -60,7 +60,8 @@ int main(int argc, char **argv)
 	std::vector<int16_t> pcm; double rate = 0; int blocks = 0;
 	m.on_audio = [&](const int16_t *b, int n, double r) { pcm.insert(pcm.end(), b, b + n); if (rate == 0) rate = r; blocks++; };
 	if (const char *sc = getenv("STEADY")) m.steady_cadence = atoi(sc);   // 0 machine, 1 due frames only (default), 2 before every vblank
-	m.quad_stats = getenv("QUADSTAT") != nullptr;
+	m.quad_stats = getenv("QUADSTAT") != nullptr || getenv("POLYLOG") != nullptr;   // polygon statistics; POLYLOG=<csv>: one line per game picture
+	if (const char *pl = getenv("POLYLOG")) m.poly_log = fopen(pl, "w");
 	m.steady_budget_ms = getenv("STEADY_MS") ? atof(getenv("STEADY_MS")) : 0.0;   // headless runs are not paced: no host time limit
 	if (const char *dd = getenv("DD")) m.rom_patches.draw_distance_pct = atoi(dd);
 	if (getenv("PCHIST")) m.m_pchist_on = true;
@@ -364,8 +365,27 @@ int main(int argc, char **argv)
 		if (f % 60 == 0) fprintf(stderr, "frame %d free=%d mode=%X pc=%06X quads=%llu vis=%dx%d\n", f, m.free_objects(), m.ram_word(0xC8F5) | (m.ram_word(0xE49C) << 16), m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
 	if (const uint64_t *h = m.cpu_hits()) { std::vector<std::pair<uint64_t, int>> v; uint64_t tot = 0; for (int i = 0; i < 2048; i++) { v.push_back({h[i], i}); tot += h[i]; } std::sort(v.rbegin(), v.rend()); fprintf(stderr, "OPS total %llu%c", (unsigned long long)tot, 10); for (int i = 0; i < 25; i++) fprintf(stderr, "OP %03X %llu (%.1f%%)%c", v[i].second, (unsigned long long)v[i].first, 100.0 * v[i].first / double(tot), 10); }
-	if (m.quad_stats) fprintf(stderr, "QUADSTAT %llu quads, bounding boxes %.0f px, polygons %.0f px (%.1f %% of the boxes), per frame %.2f screens of boxes%c", (unsigned long long)m.stat_quads, m.stat_bbox, m.stat_poly,
-		100.0 * m.stat_poly / std::max(1.0, m.stat_bbox), m.stat_bbox / (512.0 * 400.0) / std::max(1, frames / 2), 10);
+	if (m.quad_stats && m.poly_race_frames)
+	{
+		const MidVUnit::PolyFrame &p = m.poly_race;
+		const double n = double(m.poly_race_frames), wm = double(m.rom_patches.wide_margin);
+		static const char *const nm[MidVUnit::kShapes] = {"rectangle", "triangle", "convex quad", "concave quad", "bowtie", "degenerate"};
+		fprintf(stderr, "QUADSTAT %llu race pictures, %.0f polygons per picture%c", (unsigned long long)m.poly_race_frames, double(p.quads) / n, 10);
+		for (int k = 0; k < MidVUnit::kShapes; k++)
+			fprintf(stderr, "QUADSTAT   %-13s %5.1f %% of the polygons, %5.1f %% of the rectangles' pixels, fills %5.1f %% of its rectangles%c", nm[k], 100.0 * p.shape[k] / std::max(1u, p.quads),
+			        100.0 * p.shape_box[k] / std::max(1.0, p.box[0]), 100.0 * p.shape_cover[k] / std::max(1.0, p.shape_box[k]), 10);
+		std::vector<float> e = m.poly_eff;
+		std::sort(e.begin(), e.end());
+		for (int si = 0; si < MidVUnit::kStatScales; si++)
+		{
+			const int s = MidVUnit::kStatScale[si];
+			const double screen = (512.0 + 2.0 * wm) * 400.0 * s * s;
+			fprintf(stderr, "QUADSTAT   %dx: per picture %.2f Mpx of rectangles (%.2f screens), %.2f Mpx of polygons, %.2f Mpx discarded; polygons / rectangles %.1f %%%c", s,
+			        p.box[si] / n / 1e6, p.box[si] / n / screen, p.cover[si] / n / 1e6, (p.box[si] - p.cover[si]) / n / 1e6, 100.0 * p.cover[si] / std::max(1.0, p.box[si]), 10);
+		}
+		fprintf(stderr, "QUADSTAT   efficiency per picture at 6x: min %.1f %%, 5th percentile %.1f %%, median %.1f %%, max %.1f %%%c", 100.0 * e.front(), 100.0 * e[e.size() / 20], 100.0 * e[e.size() / 2], 100.0 * e.back(), 10);
+	}
+	if (m.poly_log) fclose(m.poly_log);
 	if (getenv("PROFILE")) prof.stop_and_report();
 	if (getenv("CPUTIME")) fprintf(stderr, "CPUTIME main cpu %.1f ms, dsp %.1f ms over %d frames (%.3f ms/frame)%c", m.perf_cpu_ms, m.perf_dcs_ms, frames, m.perf_cpu_ms / frames, 10);
 	if (getenv("RAMUSE")) m.debug_ram_usage();

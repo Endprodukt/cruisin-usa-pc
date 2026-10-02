@@ -765,20 +765,7 @@ void MidVUnit::dma_trigger()
 {
 	VQuad q;
 	std::memcpy(q.dma, m_dma_data, sizeof(q.dma));
-	if (quad_stats)
-	{
-		// both clipped to the screen roughly (the bounding box exactly, the polygon by the box's share that is on screen)
-		float x[4], y[4];
-		for (int i = 0; i < 4; i++) { x[i] = float(int16_t(q.dma[2 + i * 2])); y[i] = float(int16_t(q.dma[3 + i * 2])); }
-		const float x0 = std::min(std::min(x[0], x[1]), std::min(x[2], x[3])), x1 = std::max(std::max(x[0], x[1]), std::max(x[2], x[3])) + 1;
-		const float y0 = std::min(std::min(y[0], y[1]), std::min(y[2], y[3])), y1 = std::max(std::max(y[0], y[1]), std::max(y[2], y[3])) + 1;
-		const float cw = std::max(0.0f, std::min(x1, 512.0f) - std::max(x0, 0.0f)), ch = std::max(0.0f, std::min(y1, 400.0f) - std::max(y0, 0.0f));
-		const float box = (x1 - x0) * (y1 - y0), vis = cw * ch;
-		float a = 0;
-		for (int i = 0; i < 4; i++) { const int j = (i + 1) & 3; a += x[i] * y[j] - x[j] * y[i]; }
-		const float poly = std::min(box, std::fabs(a) * 0.5f + 0.5f * ((x1 - x0) + (y1 - y0)));   // plus the edge pixels
-		if (box > 0) { stat_bbox += vis; stat_poly += poly * vis / box; stat_quads++; }
-	}
+	if (quad_stats) poly_stat(q);
 	q.page = (m_page_control & 4) ? 1 : 0;
 	if (m_gpu)
 	{
@@ -793,6 +780,149 @@ void MidVUnit::dma_trigger()
 		draw_quad(q);
 	quads_last_frame++;
 	m_dma_data_index = 0;
+}
+
+// ---- polygon statistics (diagnostics, see midvunit.h) ----------------------------------------------------------------------
+void MidVUnit::poly_stat(const VQuad &q)
+{
+	const uint16_t *d = q.dma;
+	if ((d[0] & 0x2000) && m_shadow_mode != 0 && !writer_is_2d()) return;   // shadows go their own way (mask) or are not drawn
+	const int wm = m_wide ? m_wide : rom_patches.wide_margin;
+	const double W = double(512 + 2 * wm);
+	double vx[4], vy[4], px[4], py[4];
+	for (int i = 0; i < 4; i++) { vx[i] = double(int16_t(d[2 + i * 2])); vy[i] = double(int16_t(d[3 + i * 2])); px[i] = vx[i] + 0.5; py[i] = vy[i] + 0.5; }
+	// the same nudge of "right" and "bottom" points as gpu_add_quad
+	uint8_t rmask = 0, bmask = 0, eqmask = 0;
+	for (int vn = 0; vn < 4; vn++)
+	{
+		const int nx = (vn + 1) & 3;
+		if (vy[nx] == vy[vn] && vx[nx] == vx[vn]) eqmask |= 1 << vn;
+		if (vy[nx] > vy[vn] || (vy[nx] == vy[vn] && vx[nx] < vx[vn])) rmask |= 1 << vn;
+		if (vx[nx] < vx[vn] || (vx[nx] == vx[vn] && vy[nx] < vy[vn])) bmask |= 1 << vn;
+	}
+	if (eqmask != 0x0f)
+		for (int vn = 0; vn < 4; vn++)
+		{
+			int eff = vn;
+			while (eqmask & (1 << eff)) eff = (eff + 1) & 3;
+			if (rmask & (1 << eff)) px[vn] += 0.001;
+			if (bmask & (1 << eff)) py[vn] += 0.001;
+		}
+	const double minx = std::min(std::min(vx[0], vx[1]), std::min(vx[2], vx[3])), maxx = std::max(std::max(vx[0], vx[1]), std::max(vx[2], vx[3]));
+	const double miny = std::min(std::min(vy[0], vy[1]), std::min(vy[2], vy[3])), maxy = std::max(std::max(vy[0], vy[1]), std::max(vy[2], vy[3]));
+	const bool flat = (d[0] & 0x300) != 0x100 || (d[0] & 0xc00) == 0x400;
+	const bool full = wm && flat && minx <= 0 && maxx >= 511 && miny <= 0 && maxy >= 399;   // the per-frame clear, stretched over the page
+	for (int i = 0; i < 4; i++) px[i] = full ? (vx[i] <= 0 ? 0.5 : px[i] + 2.0 * wm) : px[i] + wm;
+
+	// shape, from the distinct corners in drawing order
+	int shape = ShapeDegenerate;
+	{
+		double cx[4], cy[4]; int n = 0;
+		for (int i = 0; i < 4; i++)
+		{
+			bool dup = false;
+			for (int k = 0; k < n; k++) dup |= cx[k] == vx[i] && cy[k] == vy[i];
+			if (!dup) { cx[n] = vx[i]; cy[n] = vy[i]; n++; }
+		}
+		auto cross = [&](int a, int b, int c) { return (cx[b] - cx[a]) * (cy[c] - cy[a]) - (cy[b] - cy[a]) * (cx[c] - cx[a]); };
+		if (n == 3) shape = cross(0, 1, 2) != 0 ? ShapeTriangle : ShapeDegenerate;
+		else if (n == 4)
+		{
+			auto straddle = [&](int a, int b, int c, int e) { return cross(a, b, c) * cross(a, b, e) < 0 && cross(c, e, a) * cross(c, e, b) < 0; };
+			double area2 = 0;
+			for (int i = 0; i < 4; i++) { const int j = (i + 1) & 3; area2 += cx[i] * cy[j] - cx[j] * cy[i]; }
+			if (straddle(0, 1, 2, 3) || straddle(1, 2, 3, 0)) shape = ShapeBowtie;
+			else if (area2 == 0) shape = ShapeDegenerate;
+			else
+			{
+				int pos = 0, neg = 0, zero = 0;
+				for (int i = 0; i < 4; i++) { const double c = cross(i, (i + 1) & 3, (i + 2) & 3); pos += c > 0; neg += c < 0; zero += c == 0; }
+				if (pos && neg) shape = ShapeConcave;
+				else if (zero) shape = ShapeTriangle;                      // a corner on the line between its neighbours
+				else shape = std::fabs(area2) * 0.5 == (maxx - minx) * (maxy - miny) ? ShapeRect : ShapeConvex;
+			}
+		}
+	}
+
+	// the shader's scan(): the two boundary edges at height y
+	const double ymin = std::min(std::min(py[0], py[1]), std::min(py[2], py[3])), ymax = std::max(std::max(py[0], py[1]), std::max(py[2], py[3]));
+	auto scan = [&](double y, double &xl, double &xr) {
+		xl = 1e9; xr = -1e9;
+		int cnt = 0;
+		for (int i = 0; i < 4; i++)
+		{
+			const int j = (i + 1) & 3;
+			const double ya = py[i], yb = py[j];
+			if ((ya <= y && y < yb) || (yb <= y && y < ya))
+			{
+				const double x = px[i] + (px[j] - px[i]) * (y - ya) / (yb - ya);
+				xl = std::min(xl, x); xr = std::max(xr, x);
+				cnt++;
+			}
+		}
+		return cnt >= 2;
+	};
+	const double bx0 = std::min(std::min(px[0], px[1]), std::min(px[2], px[3])), bx1 = std::max(std::max(px[0], px[1]), std::max(px[2], px[3]));
+	poly_cur.quads++; poly_cur.shape[shape]++;
+	for (int si = 0; si < kStatScales; si++)
+	{
+		const int s = kStatScale[si];
+		const bool dil = s > 1;
+		const double grow = dil ? 1.0 : 0.0;
+		const double lx = std::clamp(std::floor(bx0 - grow), 0.0, W), hx = std::clamp(std::ceil(bx1 + grow), 0.0, W);
+		const double ly = std::clamp(std::floor(ymin - grow), 0.0, 512.0), hy = std::clamp(std::ceil(ymax + grow), 0.0, 512.0);
+		if (hx <= lx || hy <= ly) continue;
+		const double box = (hx - lx) * (hy - ly) * double(s) * double(s);
+		double cover = 0;
+		const int r0 = int(ly) * s, r1 = int(hy) * s;
+		for (int r = r0; r < r1; r++)
+		{
+			const double y = std::clamp((double(r) + 0.5) / double(s), 0.5, 511.5);
+			double xl, xr;
+			if (dil)
+			{
+				if (y < ymin - 0.5 || y >= ymax + 0.5) continue;
+				if (!scan(std::clamp(y, ymin, ymax - 1e-3), xl, xr)) continue;
+				xl -= 0.5; xr += 0.5;
+			}
+			else if (!scan(y, xl, xr)) continue;
+			// pixel centres (i + 0.5) / s in [xl, xr), inside the rectangle
+			const double a = std::max(std::ceil(xl * s - 0.5), lx * s), b = std::min(std::ceil(xr * s - 0.5), hx * s);
+			if (b > a) cover += b - a;
+		}
+		poly_cur.box[si] += box; poly_cur.cover[si] += cover;
+		if (si == 0) { poly_cur.shape_box[shape] += box; poly_cur.shape_cover[shape] += cover; }
+	}
+}
+
+void MidVUnit::poly_frame_end()
+{
+	const uint32_t mode = m_ram0[0xC8F5];
+	if (poly_cur.quads)
+	{
+		if (poly_log)
+		{
+			if (!poly_race_frames && ftell(poly_log) == 0)
+			{
+				fprintf(poly_log, "picture,mode,polygons,rect,triangle,convex,concave,bowtie,degenerate");
+				for (int si = 0; si < kStatScales; si++) fprintf(poly_log, ",box_%dx,poly_%dx", kStatScale[si], kStatScale[si]);
+				fprintf(poly_log, ",discarded_6x,efficiency_6x%c", 10);
+			}
+			fprintf(poly_log, "%llu,%X,%u", (unsigned long long)page_flips, mode, poly_cur.quads);
+			for (int k = 0; k < kShapes; k++) fprintf(poly_log, ",%u", poly_cur.shape[k]);
+			for (int si = 0; si < kStatScales; si++) fprintf(poly_log, ",%.0f,%.0f", poly_cur.box[si], poly_cur.cover[si]);
+			fprintf(poly_log, ",%.0f,%.4f%c", poly_cur.box[5] - poly_cur.cover[5], poly_cur.cover[5] / std::max(1.0, poly_cur.box[5]), 10);
+		}
+		if ((mode & 0xf) == 4 && (mode & 0x200))
+		{
+			poly_race.quads += poly_cur.quads;
+			for (int k = 0; k < kShapes; k++) { poly_race.shape[k] += poly_cur.shape[k]; poly_race.shape_box[k] += poly_cur.shape_box[k]; poly_race.shape_cover[k] += poly_cur.shape_cover[k]; }
+			for (int si = 0; si < kStatScales; si++) { poly_race.box[si] += poly_cur.box[si]; poly_race.cover[si] += poly_cur.cover[si]; }
+			poly_eff.push_back(float(poly_cur.cover[5] / std::max(1.0, poly_cur.box[5])));
+			poly_race_frames++;
+		}
+	}
+	poly_cur = PolyFrame{};
 }
 
 void MidVUnit::configure_screen()
@@ -839,7 +969,7 @@ void MidVUnit::update_screen_rows(int from, int to, int page)
 
 void MidVUnit::page_control_write(uint32_t data)
 {
-	if ((m_page_control ^ data) & 1) page_flips++;
+	if ((m_page_control ^ data) & 1) { page_flips++; if (quad_stats) poly_frame_end(); }
 	if (((m_page_control ^ data) & 1) && !m_gpu)
 	{
 		// the visible page flips: everything up to the current beam position was drawn from the old page

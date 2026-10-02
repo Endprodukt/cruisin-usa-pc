@@ -136,10 +136,10 @@ a picture every second refresh (28.9 per second on the machine, 30 with display 
 |---|---|---|---|---|
 | 1 | Soft shadows: every pixel of a shadow batch's rectangle read the mask 49 times, at the full internal resolution | GPU, in traffic and with cars near the camera | GPU time up to 22 ms at 6x: runs of pictures 3 refreshes apart (LA Freeway: 11 in 92 s, audio buffer down to 0) | mask at no more than twice the arcade resolution, blurred there, read once per page pixel: GPU max 11.9 ms, no late picture |
 | 2 | Display sync was paced by a timer set to the nominal refresh rate, not by the display | pacing | timer and display drift against each other; every 15-20 s they cross and pictures are shown for 10 and 22 ms in turn for a moment | the buffer swap's wait for the vblank is the pace; the clock only takes over when the swap turns out not to wait |
-| 3 | The emulated CPU did not finish a game frame within its two vblanks | game cadence (emulated time) | pictures 3 vblanks apart: at the original draw distance up to 7 % of a race's frames (San Francisco 272 of 3700; the machine does the same), at 400 % 5 % on San Francisco even at three times the clock | `MidVUnit::catch_up`: before each vblank the CPU gets the instructions the frame still needs, in no emulated time, within 10 ms of host time per display frame. All 14 tracks at 100 / 300 / 400 %: 1-3 slow frames per race (the start). The frames after the finish line stay at 3 vblanks: there the game sets its governor to that |
+| 3 | The emulated CPU did not finish a game frame within its two vblanks | game cadence (emulated time) | pictures 3 vblanks apart: at the original draw distance up to 7 % of a race's frames (San Francisco 272 of 3700; the machine does the same), at 400 % 5 % on San Francisco even at three times the clock | `MidVUnit::catch_up`: a frame that is due and would be late gets the instructions it still needs, in no emulated time (reworked in the second pass, see the audit below; the first version acted before every vblank within 10 ms of host time). All 14 tracks at 100 / 300 / 400 %: 1-3 slow frames per race (the start). The frames after the finish line stay at 3 vblanks: there the game sets its governor to that |
 | 4 | Chicago did not start as a single race with a draw distance above 100 % | bug found on the way | the car never left the garage (the wider object window put other streets' road pieces under it) | the original window applies until the race mode is set |
-| 5 | One stall of 50-70 ms about 30 s after the game window opens | OpenGL driver (NVIDIA), once per start | one picture 5 refreshes late | not ours: independent of window mode, sound, force feedback and game state, absent with Vulkan. Left as it is |
-| 6 | Vulkan backend: stalls of 45-65 ms inside the polygon hand-over, in bursts | backend | not smooth at 6x | open (OpenGL is the default) |
+| 5 | One stall of 50-70 ms about 30 s after the game window opens | OpenGL driver (NVIDIA), once per start | one picture 5 refreshes late | found in the second pass (below): the driver's reaction to the first new thread in the process; taken before the first frame now |
+| 6 | Vulkan backend: stalls of 45-65 ms inside the polygon hand-over, in bursts | backend | not smooth at 6x | found and fixed in the second pass (below): `vkWaitForFences` at a frame's first upload |
 
 Not a cause (measured): window messages (avg 0.03 ms, max 2.8), input polling (avg 0.08, max 4.4 once), force feedback and
 outputs (0.00), sound DSP (0.8, max 3.1), GPU hand-over (0.00, max 0.3), allocations in the frame loop (none: the polygon
@@ -162,7 +162,7 @@ refreshes, 2.5 % off pace, GPU max 22.4 ms.
 
 ### Where the time goes now
 
-Per display frame: main CPU 3.5-5.9 ms on average, up to the 10 ms budget in the frame that computes a game picture and about
+Per display frame: main CPU 3.5-5.9 ms on average, up to 10-12 ms in the frame that computes a game picture and about
 0.4 ms in the other one; sound DSP 0.8 ms; everything else on the host below 0.2 ms. The game is CPU-bound on the emulated
 side (the interpreter), GPU-bound only through the shadow pass that is now gone, and was pacing-bound through the timer.
 With the internal resolution at 3x instead of 6x the GPU time barely changed before the shadow fix, which is what pointed at
@@ -173,7 +173,401 @@ the shadow pass instead of the polygons.
 * Polygons are drawn as their bounding rectangles and cut to shape in the fragment shader. The polygons cover 62-84 % of
   those rectangles (QUADSTAT), so drawing the polygon's outline instead would save a fifth to a third of the fragment work.
   The GPU has room at 6x on this card; at 8x or on a weaker card it would be the next thing to do.
-* `steady_budget_ms` (10 ms) is the share of a display frame the interpreter may use. A host that cannot do a game frame's work
-  in two such shares shows the picture a vblank later, as the machine would; the display frame itself is never made late.
-* `[game] steady_cadence = false` restores the machine's own slowdowns (and the fixed clock of the section above).
+* `[game] steady_cadence = false` restores the machine's own slowdowns.
 
+## Second pass: timing audit, the two stalls, polygons, scaling (October 2026)
+
+A critical look at the first pass. Nothing here speeds up the emulated hardware; where the port deviates from the machine it
+says so. All numbers are from this machine (RTX 3060, i5-13600K, 3440x1440 at 60 Hz) and the configuration named above.
+
+### New tools
+
+* `src/calltrace.h`: every OpenGL / Vulkan call and the buffer swap is timed; a call over the limit (`--call-ms`, default 2) is
+  logged with frame, time since the start, function, duration, render phase, the phase's object and data size, and the call's
+  arguments (`perf_calls.log`, `--call-log <file>`).
+* `src/platform/stall_watch.{h,cpp}`: a watcher thread that sleeps on a timer the frame loop pushes back every frame. When a
+  frame is overdue (`--stall-ms`, default 28) it stops the frame loop's thread for a moment, walks its stack (module + nearest
+  export per frame), does the same once for every other thread of the process, and lists threads and modules that have
+  appeared since. `THREADAT=<frame>,..` starts a do-nothing thread in those frames (to reproduce the driver stall below).
+* `STATELOG=<csv>` in the headless tool: every `STATEEVERY` vblanks the emulated cycles, executed instructions, pictures,
+  mode, the game's timers, its random number, the player's car and hashes of the work RAM, to compare runs bit by bit.
+* `QUADSTAT=1` / `POLYLOG=<csv>` in the headless tool: per game picture the polygons by shape and, for 1x to 8x, the pixels
+  of their bounding rectangles and of the polygons themselves, computed with the fragment shader's own coverage rules.
+* The profiler's own logs are now written at the end of the run. One of the stalls it reported was its own `fflush`.
+
+### 1. Timing audit of the steady cadence
+
+What the first pass did was too much. It gave the CPU extra instructions before *every* vblank and limited them by host time.
+That kept the cadence, but it moved a frame's work in front of the frame's first vblank (the interrupt's side effects were
+then seen a vblank later by code that used to run after it), and its result depended on how fast the host was. The audit
+below showed the difference from frame 2050 on, in the countdown before the first race.
+
+`MidVUnit::catch_up` now acts only on a game frame that is due at this vblank (INFRAMES >= FRAMRATE) and has not asked for
+its page swap yet, i.e. a frame the machine would deliver a vblank late. It runs the instructions that frame still needs (at
+most four vblanks' worth, counted in instructions) while the emulated clock stands still. A frame that is in time is not
+touched. With a draw distance above 100 % the fixed clock of the section "Game cadence with a longer draw distance" applies
+again (x2, x3 from 300 %), because the frames there are late by more than a rescue should cover.
+
+The questions, with the measurements (headless, default save file, autopilot, the same inputs every run, 10 500 vblanks,
+draw distance 100 %, state logged every 25 vblanks; `--steady 0 / 1 / 2`):
+
+| | machine timing | steady cadence (due frames) | first version (every vblank) |
+|---|---|---|---|
+| **Golden Gate Park**: frames of 3 vblanks in the race | 1 | 0 | 0 |
+| instructions executed | 4 522 856 721 | 4 536 551 024 (+0.30 %) | 5 753 843 190 (+27.2 %) |
+| emulated cycles | 4 522 837 209 | 4 522 666 720 (-0.004 %) | 4 523 074 746 (+0.005 %) |
+| state (RAM hashes) first differs from the machine at vblank | | 7150 (the frame the machine delivers late) | 2050 |
+| at vblank 5000: random number, car position | C4065DFD, (-561257, 5326, 373236) | identical | 377881BE, (-652777, 3656, 507783) |
+| at vblank 10 000: game timer / pictures shown | 2.248636 / 4436 | 2.248636 / 4439 | 2.249221 / 4301 |
+| **San Francisco**: frames of 3 vblanks in the race | 270 | 0 | 0 |
+| instructions executed | 4 523 222 682 | 4 965 715 736 (+9.8 %) | 6 168 368 675 (+36.4 %) |
+| state first differs at vblank | | 2050 (the machine is already late before the start) | 2050 |
+| game timer per 2500 vblanks (5000 minus 2500) | 0.730947 | 0.730947 | 0.730947 |
+| at vblank 10 000: pictures shown | 4097 | 4304 | 4295 |
+
+* **Is the emulated clock faster?** No. Emulated time only advances in `run_cpu`, by the same cycles per scanline as before;
+  the rescue runs with the clock stopped. The cycle totals agree to 0.004 % (a time slice ends on an instruction boundary).
+  Sound board, A-D converter and the CPU's timer registers read that clock.
+* **More emulated work per real second?** More instructions, yes: 0.3 % (Golden Gate Park) to 9.8 % (San Francisco) at the
+  original draw distance, all of them in frames that would have been late. That is the one deviation, and it is deliberate.
+* **Do gameplay, AI, physics, timers or random numbers run faster?** Timers: no. The vblank interrupt counts INFRAMES, the
+  one-second timer, the race countdown and GAME_TIMER, the same number of times per second (the table's game timer per 2500
+  vblanks). Physics and AI: the game scales every movement by NFRAMES, the vblanks the last frame took, so a stretch that the
+  machine integrates as one step of 3 vblanks is integrated as steps of 2: the same race time, a slightly different
+  trajectory. Random numbers are drawn per game frame, so their sequence, and with it the traffic, differs from the first
+  rescued frame on. Until then the run is bit-identical to the machine (Golden Gate Park: 7150 vblanks, two minutes).
+* **Interrupt order?** Unchanged in a frame that is in time. In a rescued frame the vblank interrupt comes after the frame's
+  work instead of in the middle of it, which is where it comes in every frame that is in time.
+* **Extra emulated time?** None: no vblank and no cycle is added.
+* **Deterministic?** Yes: two runs of each mode are identical in every logged value. The limit is counted in instructions;
+  host time no longer enters (the 10 ms budget is gone).
+* **Same race duration?** Yes: the race clock ticks per vblank. The San Francisco race *starts* six vblanks (0.1 s) earlier,
+  because the machine is slow in the frames before the green light as well.
+* **CPU cycle counts used for timing?** The two timer registers of the TMS320C31 (the game uses them for its own profiling
+  record only), the sound board's command timing and the A-D converter. All read emulated time; none sees the rescue.
+
+So the steady cadence is not the machine: it is the machine without its own slowdowns. `[game] steady_cadence = false`
+(`--steady 0`) is the machine exactly as it is, slow frames included (San Francisco: 7 % of the race's frames).
+
+Cadence with the reworked rescue, all 14 tracks, frames of 3 or more vblanks in 12 000 vblanks: 100 %: 476, 300 %: 420,
+400 %: 428, of which 460 / 396 / 400 are LA Freeway's frames after the finish line (there the game sets its governor to 3
+vblanks; that is the machine's pace, not a slowdown). Every other track: 1 to 3 per race. Stability: all 14 tracks at 100 %
+and 400 % and the whole tour (14 legs) at 100 / 300 / 400 % run through without a reset.
+
+### 2. The OpenGL stall (one frame of 50 to 100 ms, about 30 s after the start)
+
+**The call that blocks is `SwapBuffers`.** Every other OpenGL call of the frame returns in microseconds (376 000 calls
+timed per run; apart from the swap, which waits for the display, none takes 2 ms after the first frames).
+
+**What it waits for** (stall watch, the stacks at the moment of the stall):
+
+    frame loop:     SwapBuffers > OPENGL32!wglSwapBuffers > nvoglv64!DrvSwapLayerBuffers > WaitForSingleObject
+    driver thread:  nvoglv64!DrvSwapLayerBuffers > ... > win32u!NtGdiDdDDIWaitForSynchronizationObjectFromCpu
+
+The NVIDIA driver runs OpenGL on a thread of its own; the application's swap waits for that thread, and that thread waits in
+the kernel for a GPU synchronisation object (D3DKMTWaitForSynchronizationObjectFromCpu) for four to six refreshes.
+
+**What triggers it** is not anything the game does, and not a timer of ours (nothing in the port runs on a 30 s or
+1800-frame period). It is the first thread that starts in the process after the driver has begun to present:
+
+| Run | Result |
+|---|---|
+| as before | `SwapBuffers` 70 to 100 ms at 27.5 s, in every run; at that moment two Windows thread pool workers appear in the process (every run, to within 10 ms) |
+| a do-nothing thread started in frame 600 (`THREADAT=600,900`) | the stall is in frame 600; none at frame 900, none at 27.5 s |
+| the same in frame 5 | the stall is in frame 7 (52 to 55 ms); none later |
+| an idle thread that exists from the first frame on | no stall at 27.5 s (the thread pool workers still appear) |
+| a thread started before the video backend exists | stall at 27.5 s as before |
+| a polling stall watcher (the first version of the tool) | no stall: the tool's own thread had triggered it in the first frames |
+
+So about 30 s after the start Windows starts thread pool workers in the process (for whom was not determined: they were
+idle again within 15 ms), the driver reacts to the first new thread it sees, once, and the reaction costs one swap of 50 to
+100 ms. Independent of window mode, sound, force feedback and the game's state, as found in the first pass; not present with
+Vulkan.
+
+**Change:** `driver_warmup` in `main_win.cpp` starts a thread that does nothing, keeps it alive across six presents of the
+first picture, and ends it, right before the frame loop begins (after the loading picture has gone, with the swap interval
+set; earlier, behind the loading picture, it has no effect). The driver's reaction happens there, on a still picture.
+`--no-warmup` leaves it out. After: no frame over 29 ms in three races of 82 s, every game picture two refreshes after the
+one before (Chicago 2457 of 2457, LA Freeway 2457 of 2457, San Francisco 2456 of 2456).
+
+What the driver does in that wait is not known; trigger, call and wait are measured.
+
+### 3. Vulkan
+
+**The call that blocks is `vkWaitForFences`**, in `begin_cb()` at the first upload of a game frame (the palette), where the
+backend waited for the fence of the frame submitted two presents earlier before reusing that frame's buffers:
+
+    Chicago, 6x, 62 s of race: 333 waits of more than 20 ms in the palette upload, 39 in the polygon hand-over;
+    average 39 ms, longest 59 ms; `vkQueuePresentKHR`, `vkAcquireNextImageKHR` and `vkQueueSubmit` never over 2 ms.
+    Game pictures: 408 after 1 refresh, 1188 after 2, 124 after 3, 136 after 4. 38 % off the pace by more than 3 ms.
+
+With a FIFO swapchain neither acquire nor present waits for the display on this driver; the wait is deferred into the
+semaphore the frame's command buffer needs for its swapchain image, and so into that frame's fence. With two frames queued
+the fence was released in bursts: nothing for seven frames, then 40 to 60 ms, in the middle of the emulated frame. No
+`vkDeviceWaitIdle` or other global wait is in the frame path, and the forced mid-frame submits (a per-frame buffer running
+full) are instrumented and do not appear among the slow calls. The implicit layers on this machine (RivaTuner, OBS) are not involved:
+the same with `VK_LOADER_LAYERS_DISABLE=~implicit~`.
+
+Measured alternatives (Chicago, 6x, 42 s of race, 1256 pictures):
+
+| Where the wait is | pictures at 2 refreshes | longest frame | emulation over 12 ms |
+|---|---|---|---|
+| at the next-but-one frame's first upload (before) | 824 | 66 ms | 1554 frames |
+| after present, for the frame before (two in flight) | 828 | 61 ms | 52 |
+| after present, for this frame (none in flight) | 1243 | 54 ms | 1 |
+| **in present, before acquiring: the frame before** (now) | **1254** | **30 ms** | 1 |
+
+**Change:** `present()` waits for the previous frame's fence before it acquires the next image. The wait is then the
+frame's pace (it ends with the display's vblank, once per frame, in the present phase); the GPU still renders one frame
+while the CPU emulates the next. After: LA Freeway 2456 of 2457 pictures at 2 refreshes, San Francisco 400 % 2458 of 2458.
+(`set_debug(16)` / `--gl-debug 16` restores the old behaviour for comparison.)
+
+### 4. How the polygons are drawn, and what it costs
+
+Both GPU backends draw one instance per hardware polygon: four vertices that span the polygon's bounding rectangle (grown by
+one arcade pixel above 1x), and a fragment shader that decides per pixel whether it belongs to the polygon.
+
+**Why rectangles.** The V-Unit's rasteriser is not a triangle rasteriser. It walks the polygon scanline by scanline, takes
+the leftmost and rightmost edge crossing of each line, interpolates the texture coordinates along those two edges and then
+linearly across the line, and fills the pixels whose centre lies in between, with its own rule for which edge pixels count.
+A GPU's triangles interpolate over the plane of each triangle and use the top-left rule: a quad split into two triangles
+gets a different texture mapping (the kink along the diagonal) and different edge pixels. So the fragment shader repeats
+the hardware's walk for its own pixel (`scan()` in `shader_src.h`), and the geometry only has to *cover* the polygon. The
+bounding rectangle is the simplest cover: no CPU work per polygon, one instanced draw call per page.
+
+**What shapes there are** (race pictures, at 1x; share of the polygons / of the rectangles' pixels / how much of its
+rectangles the shape fills):
+
+| Shape | Chicago | LA Freeway | San Francisco |
+|---|---|---|---|
+| axis-parallel rectangle | 13 % / 31 % / 100 % | 9 % / 42 % / 100 % | 22 % / 47 % / 100 % |
+| triangle (two corners equal, or three in line) | 14 % / 39 % / 9 % | 21 % / 11 % / 16 % | 10 % / 8 % / 25 % |
+| convex quad | 18 % / 28 % / 64 % | 31 % / 46 % / 60 % | 17 % / 44 % / 76 % |
+| concave quad | 0.3 % / 0.0 % / 15 % | 0.6 % / 0.1 % / 14 % | 0.3 % / 0.1 % / 23 % |
+| self-crossing ("bowtie") | 0.1 % / 0.0 % / 6 % | 0.2 % / 0.1 % / 6 % | 0.2 % / 0.1 % / 12 % |
+| no area (a line or a point: far objects) | 54 % / 1.8 % / 7 % | 38 % / 0.8 % / 24 % | 51 % / 1.3 % / 8 % |
+
+(draw distance 300 %; at 100 % the shares of the pixels are the same within two points and the polygons without area are
+35 / 21 / 27 % of the polygons.) Not all polygons are convex, but the ones that are not are at most 1.4 % of the polygons and 0.1 to
+0.2 % of the pixels. The hardware's walk fills them from the leftmost to the rightmost crossing, so on the machine, too,
+they are filled as if convex per scanline.
+
+**The measurement** (`QUADSTAT=1`, `POLYLOG=<csv>`: one line per game picture with the polygon count, the shapes, and
+rectangle and polygon pixels for 1x to 8x). Averages per race picture, in megapixels, page 896 x 512 arcade pixels (21:9):
+
+| | polygons per picture | rectangles 1x / 6x / 8x | polygons 1x / 6x / 8x | discarded at 6x | polygons / rectangles (average; per picture min .. median) |
+|---|---|---|---|---|---|
+| Chicago 100 % | 2206 | 2.15 / 82.9 / 147.3 | 1.14 / 41.8 / 74.2 | 41.1 | 50 % (25 .. 49 %) |
+| Chicago 300 % | 5000 | 2.20 / 86.7 / 154.2 | 1.16 / 42.6 / 75.8 | 44.1 | 49 % (28 .. 48 %) |
+| Chicago 400 % | 5340 | 2.23 / 87.8 / 156.0 | 1.16 / 42.6 / 75.7 | 45.2 | 48 % (25 .. 48 %) |
+| LA Freeway 100 % | 2262 | 1.61 / 63.4 / 112.7 | 1.16 / 42.5 / 75.5 | 20.9 | 67 % (53 .. 68 %) |
+| LA Freeway 300 % | 5003 | 1.64 / 66.2 / 117.7 | 1.17 / 42.9 / 76.3 | 23.3 | 65 % (52 .. 66 %) |
+| LA Freeway 400 % | 5922 | 1.65 / 66.9 / 119.0 | 1.18 / 43.4 / 77.2 | 23.5 | 65 % (53 .. 66 %) |
+| San Francisco 100 % | 3464 | 1.42 / 56.7 / 100.8 | 1.17 / 42.8 / 76.1 | 13.9 | 76 % (50 .. 78 %) |
+| San Francisco 300 % | 9012 | 1.46 / 60.9 / 108.2 | 1.19 / 43.9 / 78.0 | 17.0 | 72 % (49 .. 74 %) |
+| San Francisco 400 % | 11621 | 1.49 / 63.3 / 112.6 | 1.21 / 44.5 / 79.1 | 18.8 | 70 % (48 .. 72 %) |
+
+What follows from it:
+
+* The polygons themselves cover the picture 3.2 times (1.15 Mpx of 0.36 visible), and that number hardly moves with the
+  draw distance: what a longer draw distance adds is small on the screen. **The draw distance is paid for by the emulated
+  CPU (2.4 to 3.4 times the polygons at 400 %), not by the GPU's pixels (polygons +2 to +4 %, rectangles +6 to +12 %).**
+* The pixel work grows with the square of the internal resolution, and the share that is discarded is the same at every
+  resolution above 1x (at 1x it is 3 to 10 points lower: no dilation border).
+* Chicago is the worst case because of its triangles: 14 % of the polygons, 39 % of all shaded pixels, of which 91 % are
+  thrown away. Long thin triangles (the diagonal of a rectangle) are what a bounding rectangle fits worst.
+
+**Could the polygon's outline be drawn instead?** Yes, without touching the result: the fragment shader would still decide
+every pixel, the geometry would only stop offering pixels that cannot belong. For that the cover must be conservative: the
+convex hull of the four corners (not the polygon: concave and self-crossing ones are filled across), grown by one arcade
+pixel (half a pixel of dilation above 1x, the hardware's inclusive right and bottom edge pixels, rounding to pixel
+centres), and clamped to the page like the rectangle is now.
+
+* Triangulation: the hull of four points is a triangle or a quad, i.e. 3 to 4 corners, 1 or 2 triangles; grown by a pixel
+  with square corners it has at most 8. It can be built in the vertex shader from the same instance data (no CPU cost, no
+  change to the draw calls) or on the CPU (four cross products and a sort per polygon; not measured, an estimate is well under 0.1 ms for 5000).
+* Transparency, order and edges: unaffected. There is no depth buffer: the order is the order of the instances, and it
+  stays one instance per polygon. Transparent texels and the dither pattern are `discard`s in the fragment shader, the edge
+  rules are its scanline test; a tighter cover changes none of these, as long as it is a cover. The risk is exactly there:
+  a hull that is too tight by a fraction of a pixel drops edge pixels, visible as seams between road pieces. It would have
+  to be verified by comparing pictures pixel by pixel against the rectangle version (the headless tool can do that).
+* What it would save: the discarded pixels above, 14 to 45 Mpx per picture at 6x (a quarter to a half of the fragments),
+  minus the grown border. In time it is less than that share, because a discarded pixel is the cheap kind: it runs the
+  scanline test and stops, it does not read the texture, the palette or a replacement. What the GPU's time per megapixel
+  actually is, the scaling runs below show.
+
+The renderer has not been changed.
+
+### 5. Scaling: internal resolution 1x to 8x, draw distance 100 / 300 / 400 %
+
+63 races in the real app (OpenGL, fullscreen 3440x1440, 21:9, modern shadows, display sync, autopilot; 33 s of race each,
+about 957 game pictures), on LA Freeway, Chicago and San Francisco.
+
+**How the GPU's time is measured, and why it has to be read with the clock.** The first pass measured one timer query from
+swap to swap. That also counts the time the GPU waits for the CPU to hand over the next call, so it read 10 ms per picture
+at 1x, where the GPU has next to nothing to do. `--perf` now puts a query around each render phase's own calls (polygons,
+shadows, latch, present, uploads; columns `g_*` of the csv). And the GPU does not run at a fixed speed: the driver clocks it
+to the load. During these runs `nvidia-smi` showed 210 MHz at 1x, about 450 MHz at 3x, 900 MHz at 6x and 1000 to 1150 MHz
+at 8x, of 2160 MHz, at 28 to 40 % utilisation in every case and 17 to 37 W. So a phase's milliseconds are milliseconds at
+that clock (the same present pass takes 8.4 ms at 1x and 1.2 ms at 8x), and the measure of how much of the card is used is
+utilisation times clock: the column "load at full clock".
+
+The columns: emulation per game picture (two display frames; in brackets the longest single frame, which has to fit into
+one refresh of 16.7 ms); GPU time per picture by phase; the GPU's state; game pictures that did not come two refreshes
+after the one before; 1 % and 0.1 % low of the picture rate (30 is perfect); the longest interval between two pictures
+(33.4 ms is perfect).
+
+**LA Freeway, draw distance 100 %** (2201 polygons per picture)
+
+| internal | emulation: main CPU avg (longest frame) + sound | GPU per picture: polygons + shadows + latch + present = total (p99 / max) | GPU busy, clock, power: load at full clock | pictures off the 2-refresh pace | 1 % / 0.1 % low | longest interval |
+|---|---|---|---|---|---|---|
+| 1x | 4.1 (3.7) + 1.5 ms | 0.7 + 0.6 + 0.4 + 8.4 = 10.2 (12.3 / 13.4) ms | 37 %, 210 MHz, 17 W: 4 % | 0 of 957 | 27.5 / 27.4 fps | 36.5 ms |
+| 2x | 4.3 (3.9) + 1.6 ms | 1.6 + 0.7 + 1.1 + 7.2 = 10.6 (15.2 / 16.2) ms | 36 %, 379 MHz, 18 W: 6 % | 2 of 955 | 24.9 / 19.8 fps | 50.4 ms |
+| 3x | 4.1 (4.0) + 1.5 ms | 2.6 + 0.6 + 1.2 + 4.4 = 8.8 (18.0 / 19.2) ms | 35 %, 451 MHz, 19 W: 7 % | 2 of 955 | 24.3 / 20.0 fps | 50.0 ms |
+| 4x | 4.1 (5.2) + 1.5 ms | 3.7 + 0.6 + 1.6 + 4.3 = 10.2 (19.8 / 21.1) ms | 33 %, 525 MHz, 20 W: 8 % | 2 of 955 | 24.9 / 20.3 fps | 49.2 ms |
+| 5x | 4.1 (4.3) + 1.5 ms | 4.9 + 0.5 + 2.1 + 4.4 = 12.0 (15.7 / 18.7) ms | 39 %, 615 MHz, 21 W: 11 % | 0 of 957 | 28.6 / 28.3 fps | 35.3 ms |
+| 6x | 4.2 (3.9) + 1.6 ms | 4.7 + 0.4 + 2.5 + 4.1 = 11.7 (16.6 / 20.7) ms | 36 %, 907 MHz, 24 W: 15 % | 0 of 957 | 27.7 / 24.9 fps | 40.1 ms |
+| 8x | 4.0 (3.7) + 1.5 ms | 7.4 + 0.3 + 1.3 + 1.3 = 10.2 (20.6 / 29.6) ms | 32 %, 969 MHz, 35 W: 14 % | 1 of 955 | 25.7 / 20.3 fps | 49.2 ms |
+
+**LA Freeway, draw distance 300 %** (4728 polygons per picture)
+
+| internal | emulation: main CPU avg (longest frame) + sound | GPU per picture: polygons + shadows + latch + present = total (p99 / max) | GPU busy, clock, power: load at full clock | pictures off the 2-refresh pace | 1 % / 0.1 % low | longest interval |
+|---|---|---|---|---|---|---|
+| 1x | 8.4 (10.0) + 1.6 ms | 0.8 + 1.0 + 0.4 + 8.3 = 10.6 (13.0 / 16.1) ms | 38 %, 210 MHz, 17 W: 4 % | 0 of 957 | 27.5 / 27.4 fps | 36.6 ms |
+| 2x | 8.2 (10.0) + 1.6 ms | 1.5 + 0.9 + 1.0 + 6.2 = 9.7 (14.9 / 16.6) ms | 35 %, 391 MHz, 18 W: 6 % | 3 of 955 | 24.4 / 20.0 fps | 50.0 ms |
+| 3x | 8.1 (9.7) + 1.5 ms | 2.6 + 0.9 + 1.2 + 4.4 = 9.1 (18.9 / 26.3) ms | 32 %, 475 MHz, 19 W: 7 % | 4 of 955 | 22.6 / 17.9 fps | 56.0 ms |
+| 4x | 8.6 (9.8) + 1.6 ms | 3.9 + 0.8 + 1.6 + 4.2 = 10.6 (20.5 / 22.2) ms | 36 %, 531 MHz, 20 W: 9 % | 1 of 956 | 25.8 / 19.9 fps | 50.2 ms |
+| 5x | 8.2 (11.4) + 1.6 ms | 4.7 + 0.7 + 2.2 + 4.4 = 12.1 (18.4 / 22.0) ms | 39 %, 668 MHz, 21 W: 12 % | 0 of 957 | 28.6 / 28.5 fps | 35.1 ms |
+| 6x | 8.1 (10.2) + 1.5 ms | 4.7 + 0.5 + 2.0 + 3.2 = 10.4 (16.9 / 24.7) ms | 33 %, 949 MHz, 26 W: 14 % | 0 of 958 | 26.3 / 25.0 fps | 40.0 ms |
+| 8x | 8.0 (9.4) + 1.5 ms | 7.7 + 0.5 + 1.2 + 1.2 = 10.6 (21.5 / 31.5) ms | 34 %, 1024 MHz, 35 W: 16 % | 0 of 957 | 26.3 / 25.4 fps | 39.3 ms |
+
+**LA Freeway, draw distance 400 %** (5653 polygons per picture)
+
+| internal | emulation: main CPU avg (longest frame) + sound | GPU per picture: polygons + shadows + latch + present = total (p99 / max) | GPU busy, clock, power: load at full clock | pictures off the 2-refresh pace | 1 % / 0.1 % low | longest interval |
+|---|---|---|---|---|---|---|
+| 1x | 9.3 (9.8) + 1.6 ms | 0.8 + 1.0 + 0.4 + 8.3 = 10.7 (13.1 / 13.9) ms | 39 %, 211 MHz, 17 W: 4 % | 0 of 958 | 27.5 / 27.4 fps | 36.5 ms |
+| 2x | 9.2 (9.9) + 1.5 ms | 1.6 + 0.9 + 0.9 + 6.2 = 9.8 (15.3 / 16.9) ms | 33 %, 404 MHz, 18 W: 6 % | 2 of 957 | 24.4 / 18.8 fps | 53.2 ms |
+| 3x | 9.6 (9.8) + 1.6 ms | 2.6 + 0.8 + 1.2 + 4.3 = 9.0 (18.2 / 23.8) ms | 27 %, 463 MHz, 19 W: 6 % | 4 of 955 | 22.4 / 17.8 fps | 56.1 ms |
+| 4x | 9.3 (10.3) + 1.6 ms | 3.9 + 0.8 + 1.5 + 4.2 = 10.6 (20.4 / 28.1) ms | 34 %, 522 MHz, 20 W: 8 % | 3 of 956 | 23.6 / 18.2 fps | 55.0 ms |
+| 5x | 9.3 (10.2) + 1.5 ms | 4.7 + 0.7 + 2.2 + 4.4 = 12.0 (14.4 / 19.2) ms | 39 %, 670 MHz, 21 W: 12 % | 0 of 956 | 28.6 / 28.5 fps | 35.0 ms |
+| 6x | 9.5 (9.8) + 1.6 ms | 4.7 + 0.5 + 2.2 + 3.6 = 11.1 (15.5 / 22.2) ms | 35 %, 950 MHz, 25 W: 15 % | 0 of 957 | 26.9 / 25.4 fps | 39.4 ms |
+| 8x | 9.3 (10.4) + 1.5 ms | 8.6 + 0.5 + 1.2 + 1.2 = 11.5 (27.6 / 31.4) ms | 32 %, 1018 MHz, 35 W: 15 % | 1 of 957 | 25.9 / 20.5 fps | 48.7 ms |
+
+**Chicago, draw distance 100 %** (1866 polygons per picture)
+
+| internal | emulation: main CPU avg (longest frame) + sound | GPU per picture: polygons + shadows + latch + present = total (p99 / max) | GPU busy, clock, power: load at full clock | pictures off the 2-refresh pace | 1 % / 0.1 % low | longest interval |
+|---|---|---|---|---|---|---|
+| 1x | 4.3 (6.6) + 1.6 ms | 0.7 + 0.5 + 0.3 + 8.4 = 10.1 (12.3 / 13.7) ms | 37 %, 210 MHz, 17 W: 4 % | 0 of 956 | 27.5 / 27.4 fps | 36.5 ms |
+| 2x | 4.3 (5.8) + 1.6 ms | 1.7 + 0.6 + 1.0 + 7.4 = 10.9 (15.2 / 19.3) ms | 37 %, 397 MHz, 18 W: 7 % | 0 of 956 | 27.0 / 25.0 fps | 39.9 ms |
+| 3x | 4.3 (5.7) + 1.6 ms | 2.9 + 0.5 + 1.1 + 4.4 = 9.0 (17.4 / 18.1) ms | 28 %, 457 MHz, 19 W: 6 % | 5 of 952 | 21.6 / 18.0 fps | 55.4 ms |
+| 4x | 4.4 (6.3) + 1.6 ms | 4.2 + 0.5 + 1.3 + 4.2 = 10.3 (19.2 / 21.9) ms | 34 %, 518 MHz, 20 W: 8 % | 0 of 956 | 26.8 / 25.7 fps | 38.9 ms |
+| 5x | 4.2 (5.6) + 1.5 ms | 5.4 + 0.5 + 1.9 + 4.3 = 12.1 (17.2 / 19.5) ms | 39 %, 617 MHz, 21 W: 11 % | 0 of 956 | 28.5 / 27.7 fps | 36.1 ms |
+| 6x | 4.2 (6.2) + 1.6 ms | 5.2 + 0.4 + 2.1 + 3.8 = 11.6 (17.5 / 20.2) ms | 36 %, 922 MHz, 24 W: 15 % | 0 of 956 | 27.7 / 25.7 fps | 39.0 ms |
+| 8x | 4.3 (6.0) + 1.6 ms | 7.6 + 0.3 + 1.2 + 1.2 = 10.2 (21.1 / 31.1) ms | 32 %, 1147 MHz, 36 W: 17 % | 1 of 954 | 25.6 / 20.0 fps | 49.9 ms |
+
+**Chicago, draw distance 300 %** (4440 polygons per picture)
+
+| internal | emulation: main CPU avg (longest frame) + sound | GPU per picture: polygons + shadows + latch + present = total (p99 / max) | GPU busy, clock, power: load at full clock | pictures off the 2-refresh pace | 1 % / 0.1 % low | longest interval |
+|---|---|---|---|---|---|---|
+| 1x | 8.5 (10.3) + 1.6 ms | 0.9 + 0.9 + 0.4 + 8.2 = 10.5 (12.8 / 14.1) ms | 38 %, 210 MHz, 17 W: 4 % | 0 of 957 | 27.5 / 27.2 fps | 36.7 ms |
+| 2x | 8.3 (9.8) + 1.6 ms | 1.7 + 0.8 + 0.9 + 6.4 = 10.0 (15.4 / 16.0) ms | 34 %, 408 MHz, 18 W: 6 % | 2 of 956 | 24.3 / 20.0 fps | 50.1 ms |
+| 3x | 8.7 (10.1) + 1.6 ms | 2.9 + 0.8 + 1.0 + 4.3 = 9.1 (17.8 / 23.3) ms | 28 %, 486 MHz, 19 W: 6 % | 6 of 954 | 21.9 / 17.9 fps | 55.9 ms |
+| 4x | 8.6 (10.1) + 1.6 ms | 4.5 + 0.8 + 1.4 + 4.1 = 10.8 (19.3 / 21.6) ms | 35 %, 510 MHz, 20 W: 8 % | 0 of 957 | 26.9 / 25.7 fps | 38.8 ms |
+| 5x | 8.5 (10.0) + 1.6 ms | 5.4 + 0.7 + 1.9 + 4.3 = 12.4 (19.2 / 21.0) ms | 39 %, 662 MHz, 21 W: 12 % | 0 of 958 | 28.4 / 27.9 fps | 35.8 ms |
+| 6x | 8.8 (10.6) + 1.7 ms | 5.3 + 0.5 + 1.9 + 3.4 = 11.1 (18.6 / 23.5) ms | 35 %, 940 MHz, 26 W: 15 % | 0 of 957 | 26.6 / 25.4 fps | 39.4 ms |
+| 8x | 8.5 (10.7) + 1.6 ms | 8.4 + 0.4 + 1.1 + 1.1 = 11.1 (27.7 / 30.6) ms | 30 %, 1137 MHz, 37 W: 16 % | 0 of 957 | 26.8 / 26.0 fps | 38.4 ms |
+
+**Chicago, draw distance 400 %** (4843 polygons per picture)
+
+| internal | emulation: main CPU avg (longest frame) + sound | GPU per picture: polygons + shadows + latch + present = total (p99 / max) | GPU busy, clock, power: load at full clock | pictures off the 2-refresh pace | 1 % / 0.1 % low | longest interval |
+|---|---|---|---|---|---|---|
+| 1x | 8.0 (10.6) + 1.5 ms | 0.9 + 1.1 + 0.4 + 8.3 = 10.8 (13.1 / 17.0) ms | 38 %, 212 MHz, 17 W: 4 % | 0 of 957 | 27.4 / 27.3 fps | 36.7 ms |
+| 2x | 8.3 (10.1) + 1.6 ms | 1.7 + 0.9 + 0.9 + 5.9 = 9.6 (15.1 / 19.8) ms | 33 %, 396 MHz, 18 W: 6 % | 0 of 956 | 26.8 / 25.7 fps | 38.9 ms |
+| 3x | 8.2 (10.2) + 1.6 ms | 2.9 + 0.9 + 1.0 + 4.2 = 9.2 (17.9 / 24.5) ms | 31 %, 464 MHz, 19 W: 7 % | 4 of 955 | 23.0 / 18.2 fps | 54.9 ms |
+| 4x | 8.0 (10.8) + 1.6 ms | 4.6 + 0.9 + 1.4 + 4.1 = 11.0 (20.6 / 25.2) ms | 36 %, 508 MHz, 20 W: 8 % | 1 of 957 | 26.1 / 20.1 fps | 49.6 ms |
+| 5x | 8.6 (10.1) + 1.7 ms | 5.3 + 0.8 + 1.9 + 4.2 = 12.3 (19.3 / 21.4) ms | 39 %, 686 MHz, 21 W: 12 % | 0 of 957 | 28.5 / 27.8 fps | 36.0 ms |
+| 6x | 8.2 (10.2) + 1.6 ms | 5.4 + 0.6 + 1.7 + 2.9 = 10.5 (19.7 / 24.2) ms | 32 %, 946 MHz, 27 W: 14 % | 0 of 957 | 26.6 / 25.6 fps | 39.0 ms |
+| 8x | 8.1 (10.1) + 1.6 ms | 9.2 + 0.6 + 1.1 + 1.1 = 12.0 (25.9 / 30.5) ms | 33 %, 1099 MHz, 37 W: 16 % | 0 of 958 | 26.7 / 26.1 fps | 38.3 ms |
+
+**San Francisco, draw distance 100 %** (3275 polygons per picture)
+
+| internal | emulation: main CPU avg (longest frame) + sound | GPU per picture: polygons + shadows + latch + present = total (p99 / max) | GPU busy, clock, power: load at full clock | pictures off the 2-refresh pace | 1 % / 0.1 % low | longest interval |
+|---|---|---|---|---|---|---|
+| 1x | 5.3 (5.3) + 1.5 ms | 0.7 + 0.4 + 0.4 + 8.4 = 10.0 (12.3 / 13.5) ms | 36 %, 210 MHz, 17 W: 4 % | 0 of 955 | 27.6 / 27.4 fps | 36.4 ms |
+| 2x | 5.3 (5.7) + 1.5 ms | 1.7 + 0.5 + 1.1 + 8.3 = 11.8 (14.0 / 15.2) ms | 40 %, 346 MHz, 17 W: 6 % | 1 of 956 | 26.6 / 20.2 fps | 49.5 ms |
+| 3x | 5.4 (5.2) + 1.6 ms | 2.4 + 0.4 + 1.1 + 4.7 = 8.7 (16.9 / 17.5) ms | 31 %, 443 MHz, 19 W: 6 % | 2 of 955 | 24.0 / 18.2 fps | 54.8 ms |
+| 4x | 5.4 (5.3) + 1.6 ms | 3.2 + 0.4 + 1.4 + 4.4 = 9.5 (19.4 / 20.3) ms | 32 %, 530 MHz, 19 W: 8 % | 0 of 956 | 26.4 / 25.7 fps | 39.0 ms |
+| 5x | 5.6 (5.3) + 1.6 ms | 5.3 + 0.4 + 1.9 + 4.3 = 12.0 (13.7 / 19.0) ms | 39 %, 488 MHz, 21 W: 9 % | 0 of 956 | 28.6 / 28.3 fps | 35.3 ms |
+| 6x | 5.4 (5.5) + 1.6 ms | 4.9 + 0.3 + 2.5 + 4.5 = 12.3 (13.9 / 18.8) ms | 39 %, 763 MHz, 22 W: 14 % | 3 of 956 | 24.8 / 12.0 fps | 83.5 ms |
+| 8x | 5.3 (4.9) + 1.5 ms | 6.3 + 0.2 + 1.4 + 1.5 = 9.4 (19.5 / 21.1) ms | 28 %, 1004 MHz, 34 W: 13 % | 0 of 956 | 26.8 / 26.2 fps | 38.1 ms |
+
+**San Francisco, draw distance 300 %** (8640 polygons per picture)
+
+| internal | emulation: main CPU avg (longest frame) + sound | GPU per picture: polygons + shadows + latch + present = total (p99 / max) | GPU busy, clock, power: load at full clock | pictures off the 2-refresh pace | 1 % / 0.1 % low | longest interval |
+|---|---|---|---|---|---|---|
+| 1x | 12.2 (10.0) + 1.7 ms | 0.9 + 0.6 + 0.3 + 8.3 = 10.3 (12.7 / 13.7) ms | 37 %, 210 MHz, 17 W: 4 % | 0 of 958 | 27.5 / 27.2 fps | 36.8 ms |
+| 2x | 11.9 (10.6) + 1.6 ms | 1.7 + 0.6 + 1.0 + 7.4 = 10.8 (14.4 / 15.3) ms | 38 %, 380 MHz, 18 W: 6 % | 0 of 957 | 27.6 / 27.2 fps | 36.8 ms |
+| 3x | 11.8 (12.1) + 1.6 ms | 2.6 + 0.5 + 1.1 + 4.6 = 8.9 (17.5 / 18.2) ms | 31 %, 452 MHz, 19 W: 6 % | 3 of 954 | 23.3 / 18.2 fps | 55.1 ms |
+| 4x | 11.6 (9.7) + 1.6 ms | 3.6 + 0.5 + 1.4 + 4.3 = 9.9 (20.2 / 21.6) ms | 33 %, 532 MHz, 20 W: 8 % | 3 of 955 | 23.2 / 17.9 fps | 55.8 ms |
+| 5x | 12.1 (10.0) + 1.6 ms | 5.3 + 0.5 + 1.9 + 4.3 = 12.0 (13.8 / 19.5) ms | 39 %, 543 MHz, 21 W: 10 % | 0 of 957 | 28.3 / 27.8 fps | 35.9 ms |
+| 6x | 12.0 (10.2) + 1.6 ms | 4.8 + 0.4 + 2.5 + 4.5 = 12.3 (13.7 / 17.8) ms | 39 %, 856 MHz, 22 W: 16 % | 0 of 958 | 28.4 / 27.9 fps | 35.8 ms |
+| 8x | 12.1 (10.1) + 1.6 ms | 7.3 + 0.3 + 1.3 + 1.3 = 10.2 (25.5 / 29.0) ms | 31 %, 1014 MHz, 34 W: 14 % | 0 of 958 | 26.6 / 25.8 fps | 38.8 ms |
+
+**San Francisco, draw distance 400 %** (11002 polygons per picture)
+
+| internal | emulation: main CPU avg (longest frame) + sound | GPU per picture: polygons + shadows + latch + present = total (p99 / max) | GPU busy, clock, power: load at full clock | pictures off the 2-refresh pace | 1 % / 0.1 % low | longest interval |
+|---|---|---|---|---|---|---|
+| 1x | 14.4 (11.1) + 1.6 ms | 1.0 + 0.6 + 0.3 + 8.3 = 10.4 (12.8 / 14.2) ms | 38 %, 210 MHz, 17 W: 4 % | 0 of 957 | 27.4 / 26.7 fps | 37.5 ms |
+| 2x | 13.9 (10.1) + 1.6 ms | 1.8 + 0.6 + 0.9 + 7.3 = 10.8 (14.5 / 15.1) ms | 37 %, 383 MHz, 18 W: 6 % | 2 of 956 | 25.7 / 20.8 fps | 48.1 ms |
+| 3x | 14.6 (10.8) + 1.7 ms | 2.7 + 0.5 + 1.0 + 4.5 = 8.8 (17.6 / 18.4) ms | 29 %, 468 MHz, 19 W: 6 % | 2 of 956 | 25.0 / 20.0 fps | 50.1 ms |
+| 4x | 14.2 (10.1) + 1.6 ms | 3.7 + 0.5 + 1.4 + 4.3 = 9.9 (20.2 / 21.9) ms | 32 %, 553 MHz, 20 W: 8 % | 1 of 957 | 25.5 / 20.3 fps | 49.2 ms |
+| 5x | 14.3 (10.6) + 1.6 ms | 5.3 + 0.5 + 1.9 + 4.3 = 12.0 (13.6 / 14.3) ms | 39 %, 554 MHz, 21 W: 10 % | 0 of 957 | 28.8 / 27.9 fps | 35.8 ms |
+| 6x | 13.9 (9.9) + 1.6 ms | 4.9 + 0.4 + 2.5 + 4.5 = 12.3 (13.7 / 13.8) ms | 39 %, 861 MHz, 22 W: 15 % | 0 of 957 | 28.7 / 27.6 fps | 36.3 ms |
+| 8x | 14.8 (11.1) + 1.7 ms | 6.6 + 0.3 + 1.3 + 1.3 = 9.5 (19.7 / 21.3) ms | 28 %, 1056 MHz, 35 W: 13 % | 0 of 956 | 26.7 / 25.9 fps | 38.5 ms |
+
+Not in the tables: the emulation cannot be split into road, objects and traffic. The game computes all three in one pass
+over its object list, and the port has no symbols for the game program; it would take a profile of the emulated program by
+address (the headless tool samples it, `PCHIST=1`) mapped onto the routines of the source. What the tables do show is the
+sum, and that it follows the polygon count.
+
+What the matrix says:
+
+* **The emulated CPU** costs 4 to 5 ms per picture at 100 %, 8 to 9.5 ms at 300 and 400 % on LA Freeway and Chicago, 12 and
+  14.4 ms on San Francisco, independent of the internal resolution. The frame that computes a picture takes up to 10 to
+  12 ms of its 16.7 ms. That is the tighter of the two limits: a host with two thirds of this CPU's single-thread speed
+  would start to miss refreshes at 300 % on San Francisco.
+* **The GPU** is never the limit on this card. Its load, at full clock, goes from 3.6 % at 1x to 14 to 16 % at 6x and 8x.
+  The polygons are the part that grows (0.7 to 1.0 ms per picture at 1x, 4.7 to 5.4 ms at 6x, 6.4 to 9.2 ms at 8x, each at that
+  resolution's clock); the shadows are 0.3 to 1.1 ms since the first pass; latch and present together 9 ms at 1x and 2.4 ms at 8x, falling
+  as the clock rises. The draw distance moves the GPU's numbers by a few percent, as the polygon statistics predicted.
+* **What is left is pacing, and it is not the same at every resolution.** Game pictures that came a refresh late, of about
+  8600 per resolution: 1x: 0, 2x: 12, 3x: 32, 4x: 11, 5x: 0, 6x: 3 (one stall, below), 8x: 3. The late pictures at 2x to
+  4x come every 2 to 4 seconds or a multiple of that, in a present that takes one refresh longer, and the GPU time of the
+  frames after such a present is twice or half what it was before: the driver has changed the GPU's clock. At 2x to 4x the
+  load sits where the driver keeps switching between power states (the clock samples spread over 300 to 650 MHz); at 1x
+  it stays in the lowest state and from 5x on it stays up. `glFinish` or `glFlush` before the swap does not change it
+  (`--gl-debug 1 / 2`: 6 and 2 late pictures of 955 against 3). This is the driver's power management ("Power management
+  mode" in the NVIDIA control panel; "Prefer maximum performance" for `cruisn_usa.exe` is the setting that holds the clock).
+  The port does not touch driver settings.
+* **The stall of section 2 came back once in the 63 runs** (San Francisco, 6x, 100 %: 66 ms at 27.5 s). The warm-up takes the
+  driver's reaction in the other 62, and did in all runs before; why it did not in that one is not known.
+* At 8x a display frame takes 29 ms now and then, every 2.4 s in some runs, without a game picture being late: the swap's
+  return drifts against the display's vblank while the pictures stay on their refreshes.
+
+So, for 4x, 6x and 8x on this machine: neither CPU nor GPU limits the frame rate. The CPU has a factor of 1.4 to 4 in hand
+depending on track and draw distance, the GPU a factor of 6. Where pictures are late, it is the hand-over to the display.
+
+### Next, in order of what the measurements say matters
+
+1. **GPU power states at 2x to 4x** (0.1 to 0.4 % of the pictures late): a driver setting, see above. Nothing in the port
+   should try to hold the GPU's clock up with artificial load.
+2. **The interpreter's worst frame** (10 to 12 ms of 16.7): the only place where a slower host would lose refreshes. A
+   profile of the interpreter on San Francisco at 400 % would be the starting point; nothing has been changed here.
+3. **The warm-up's one miss in 63**: an idle thread that stays for the whole session had no miss in a dozen runs either; with as
+   few events as this, telling the two apart needs a few hundred starts.
+4. **A tighter cover for the polygons** (section 4): saves a quarter to a half of the fragments, which on this card is a
+   saving on 16 % load. Worth it for integrated graphics, not here; needs a pixel-exact comparison first.
+5. **Vulkan** now paces as evenly as OpenGL (one frame of 45 ms in three races). OpenGL stays the default; the per-phase GPU
+   times are OpenGL only so far (Vulkan reports the frame's total, which is a true GPU time there: one command buffer).
+6. **The steady cadence's default** is a decision, not a measurement: on, the machine's own slow frames are gone and the
+   run differs from the machine from the first rescued frame; off, it is the machine exactly.
