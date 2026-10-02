@@ -19,7 +19,7 @@ struct FfbModernConfig
 	float surface = 1.0f;     // off the road (grass, dirt, gravel: all of it is "shoulder" to the game), scaled by speed
 	float object = 1.0f;      // running into roadside objects: signs, posts, barrels, bushes, animals
 	float standstill = 1.0f;  // resistance of the wheel while the car stands or crawls (tyres scrubbing on the spot)
-	float engine_ms_idle = 45.0f, engine_ms_max = 10.0f;   // period of the engine vibration at idle and at full revs
+	float engine_ms_idle = 130.0f, engine_ms_max = 60.0f;   // period of the engine vibration at idle and at full revs
 	float kerb = 1.0f;        // sideways tug when a wheel drops off the road
 	float bump = 1.0f;        // bumps: road seams, potholes, rails
 	float collision = 1.0f;   // other cars hitting the car (from any side), walls, trees, sudden loss of speed

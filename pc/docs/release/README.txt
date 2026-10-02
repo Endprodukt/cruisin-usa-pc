@@ -11,7 +11,8 @@ What you need
 Start
   Run cruisn_usa.exe. The launcher opens: PLAY starts the game, SAVE writes the settings, QUIT leaves.
   Settings are kept in cruisn.ini, high scores and operator settings in cruisn_usa.nv. Both are created next to the
-  program at the first start.
+  program at the first start. The first start also asks whether you want a shortcut on the desktop; nothing is put there
+  without asking.
   To skip the launcher turn off "Show this launcher at startup" (hold Shift while starting to get it back).
 
 Keys in the game (defaults, as in MAME)

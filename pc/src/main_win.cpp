@@ -1,6 +1,8 @@
 // Cruis'n USA PC - Windows front end: settings + launcher, window, video backend, input, pacing
 #include <windows.h>
 #include <mmsystem.h>
+#include <objbase.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <chrono>
@@ -25,6 +27,9 @@
 
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "uuid.lib")
 
 namespace {
 
@@ -176,6 +181,38 @@ std::string arg_value(const std::string &a, const char *key)
 	return a.substr(p, e == std::string::npos ? e : e - p);
 }
 
+// "Cruis'n USA.lnk" on the user's desktop, pointing at this program (asked for once, at the first start)
+bool create_desktop_shortcut()
+{
+	char exe[MAX_PATH], desk[MAX_PATH];
+	GetModuleFileNameA(nullptr, exe, MAX_PATH);
+	if (FAILED(SHGetFolderPathA(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, 0, desk))) return false;
+	std::string dir = exe;
+	dir = dir.substr(0, dir.find_last_of("\\/"));
+	const std::string lnk = std::string(desk) + "\\Cruis'n USA.lnk";
+	const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
+	bool ok = false;
+	IShellLinkA *link = nullptr;
+	if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkA, reinterpret_cast<void **>(&link))) && link)
+	{
+		link->SetPath(exe);
+		link->SetWorkingDirectory(dir.c_str());
+		link->SetIconLocation(exe, 0);
+		link->SetDescription("Cruis'n USA for Windows");
+		IPersistFile *file = nullptr;
+		if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, reinterpret_cast<void **>(&file))) && file)
+		{
+			wchar_t wide[MAX_PATH];
+			MultiByteToWideChar(CP_ACP, 0, lnk.c_str(), -1, wide, MAX_PATH);
+			ok = SUCCEEDED(file->Save(wide, TRUE));
+			file->Release();
+		}
+		link->Release();
+	}
+	if (com) CoUninitialize();
+	return ok;
+}
+
 std::string exe_dir()
 {
 	char path[MAX_PATH];
@@ -260,6 +297,11 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			if (r == IDOK && browse_rom(nullptr, pth)) { S.rom = pth; S.save(ini); }
 			want_launcher = true;
 		}
+		// ...and, the first time only, whether a shortcut on the desktop is wanted. Nothing is put there unasked.
+		if (first_start &&
+		    MessageBoxA(nullptr, "Would you like a shortcut to Cruis'n USA on your desktop?", "Cruis'n USA - desktop shortcut", MB_YESNO | MB_ICONQUESTION) == IDYES &&
+		    !create_desktop_shortcut())
+			MessageBoxA(nullptr, "The shortcut could not be created.", "Cruis'n USA", MB_OK | MB_ICONWARNING);
 	}
 
 	if (a.find("--save-ini") != std::string::npos)      // write the effective configuration and quit (also creates a default file)

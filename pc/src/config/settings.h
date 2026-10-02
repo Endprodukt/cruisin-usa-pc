@@ -93,11 +93,11 @@ struct FfbSettings
 	int rumble_strength = 100;
 	FfbMode mode = FfbMode::Modern;   // vanilla: only the force the game computes; modern: plus effects from the game's car state
 	// modern effect strengths, percent of their default (0 = off)
-	int fx_offroad = 60, fx_kerb = 30, fx_bump = 30, fx_collision = 70, fx_spin = 70;
-	int fx_landing = 70, fx_engine = 5, fx_skid = 5, fx_air = 70, fx_understeer = 70;
-	int fx_aligning = 110, fx_centering = 80, fx_menu = 100, fx_impact = 60;
-	int fx_object = 100, fx_standstill = 100;
-	int engine_ms_idle = 45, engine_ms_max = 10;   // period of the engine vibration at idle / at full revs (ms)
+	int fx_offroad = 30, fx_kerb = 30, fx_bump = 30, fx_collision = 50, fx_spin = 70;
+	int fx_landing = 60, fx_engine = 30, fx_skid = 10, fx_air = 70, fx_understeer = 70;
+	int fx_aligning = 100, fx_centering = 80, fx_menu = 80, fx_impact = 45;
+	int fx_object = 30, fx_standstill = 70;
+	int engine_ms_idle = 130, engine_ms_max = 60;   // period of the engine vibration at idle / at full revs (ms)
 	void reset_effects()
 	{
 		const FfbSettings d;
