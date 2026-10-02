@@ -77,8 +77,13 @@ public:
 	int cpu_overclock = 1;                 // 1..4: more main CPU instructions per emulated time (the game's heavy frames finish sooner)
 	bool skip_raster = false;              // benchmarking: do not rasterise quads on the CPU
 	int clock_q4() const { return m_oc_q4; }
-	bool steady_cadence = true;            // give the CPU what a game frame still needs before the vblank (catch_up)
-	double steady_budget_ms = 10.0;        // ...within this much host time per display frame (0 = no limit: benchmarks, headless)
+	// 0: the machine as it is. 1: a game frame that would miss the vblank it is due at gets the instructions it still needs
+	// (catch_up); frames that are in time run exactly as with 0. 2: the same before every vblank (the first version, kept for
+	// the comparison in docs/PERFORMANCE.md; it changes where in the frame the interrupts fall).
+	int steady_cadence = 1;
+	double steady_budget_ms = 0.0;         // optional host time limit per display frame for catch_up (0 = none: the emulation stays deterministic)
+	uint64_t instr_total = 0, instr_extra = 0;   // instructions given to the main CPU / of which by catch_up
+	uint64_t cycles_total() const { return m_cycles_total; }
 	uint64_t catchups = 0, catchup_fails = 0;   // due game frames finished that way / frames that were late even so
 	void catch_up();
 	uint32_t m_mwait0_pc = 0;              // MWAIT0 in the main loop (the frame's work is done, the governor holds it)

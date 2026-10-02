@@ -41,7 +41,7 @@ target_compile_definitions(imgui PRIVATE IMGUI_DISABLE_WIN32_DEFAULT_CLIPBOARD_F
 
 add_executable(cruisn_usa WIN32
   src/main_win.cpp
-  src/platform/audio_wasapi.cpp src/platform/splash.cpp
+  src/platform/audio_wasapi.cpp src/platform/splash.cpp src/platform/stall_watch.cpp
   src/video/gl_backend.cpp src/video/vk_backend.cpp
   src/config/settings.cpp
   src/input/devices.cpp src/input/controls.cpp src/input/ffb_modern.cpp

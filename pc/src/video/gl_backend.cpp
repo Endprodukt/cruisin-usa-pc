@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "../calltrace.h"
 #include "shader_src.h"
 
 #pragma comment(lib, "opengl32.lib")
@@ -91,9 +92,37 @@ using GLchar_ = char;
 #define X(ret, name, args) using PFN_##name = ret(APIENTRY *) args;
 GL_FUNCS(X)
 #undef X
-#define X(ret, name, args) PFN_##name name = nullptr;
+// every GL call goes through the slow-call trace (calltrace.h): the loaded functions as objects that time the call...
+template <class Sig> struct GlFn;
+template <class R, class... A> struct GlFn<R(APIENTRY *)(A...)>
+{
+	R(APIENTRY *p)(A...) = nullptr;
+	const char *nm = "";
+	R operator()(A... a) const { CallScope s(nm, a...); return p(a...); }
+};
+#define X(ret, name, args) GlFn<PFN_##name> name{nullptr, #name};
 GL_FUNCS(X)
 #undef X
+// ...and the OpenGL 1.1 functions of opengl32.dll, and the buffer swap, through a timed forwarder
+#define glBindTexture(...) traced_call("glBindTexture", glBindTexture, __VA_ARGS__)
+#define glBlendFunc(...) traced_call("glBlendFunc", glBlendFunc, __VA_ARGS__)
+#define glClear(...) traced_call("glClear", glClear, __VA_ARGS__)
+#define glClearColor(...) traced_call("glClearColor", glClearColor, __VA_ARGS__)
+#define glDeleteTextures(...) traced_call("glDeleteTextures", glDeleteTextures, __VA_ARGS__)
+#define glDisable(...) traced_call("glDisable", glDisable, __VA_ARGS__)
+#define glEnable(...) traced_call("glEnable", glEnable, __VA_ARGS__)
+#define glGenTextures(...) traced_call("glGenTextures", glGenTextures, __VA_ARGS__)
+#define glGetIntegerv(...) traced_call("glGetIntegerv", glGetIntegerv, __VA_ARGS__)
+#define glGetTexImage(...) traced_call("glGetTexImage", glGetTexImage, __VA_ARGS__)
+#define glPixelStorei(...) traced_call("glPixelStorei", glPixelStorei, __VA_ARGS__)
+#define glScissor(...) traced_call("glScissor", glScissor, __VA_ARGS__)
+#define glTexParameteri(...) traced_call("glTexParameteri", glTexParameteri, __VA_ARGS__)
+#define glTexSubImage2D(...) traced_call("glTexSubImage2D", glTexSubImage2D, __VA_ARGS__)
+#define glViewport(...) traced_call("glViewport", glViewport, __VA_ARGS__)
+#define glGetError() traced_call("glGetError", glGetError)
+#define glFinish() traced_call("glFinish", glFinish)
+#define glFlush() traced_call("glFlush", glFlush)
+#define SwapBuffers(dc) traced_call("SwapBuffers", SwapBuffers, dc)
 
 using PFNWGLCREATECONTEXTATTRIBSARB = HGLRC(WINAPI *)(HDC, HGLRC, const int *);
 using PFNWGLSWAPINTERVALEXT = BOOL(WINAPI *)(int);
@@ -101,8 +130,8 @@ using PFNWGLSWAPINTERVALEXT = BOOL(WINAPI *)(int);
 bool load_gl_functions()
 {
 #define X(ret, name, args)                                                     \
-	name = reinterpret_cast<PFN_##name>(wglGetProcAddress(#name));             \
-	if (!name) { std::fprintf(stderr, "GL: missing %s\n", #name); return false; }
+	name.p = reinterpret_cast<PFN_##name>(wglGetProcAddress(#name));           \
+	if (!name.p) { std::fprintf(stderr, "GL: missing %s\n", #name); return false; }
 	GL_FUNCS(X)
 #undef X
 	return true;
@@ -165,6 +194,7 @@ public:
 
 	void set_options(const VideoOptions &o) override
 	{
+		CallPhase ph("options");
 		bool rescale = o.scale != m_opt.scale || o.wide_margin != m_opt.wide_margin || mask_scale(o) != mask_scale(m_opt);
 		m_opt = o;
 		m_opt.scale = std::clamp(m_opt.scale, 1, 8);
@@ -175,6 +205,7 @@ public:
 
 	void upload_palette(const uint32_t *argb, int first, int last) override
 	{
+		CallPhase ph("palette", m_tex_pal, ((last >> 8) - (first >> 8) + 1) * 1024);
 		glActiveTexture(GL_TEXTURE0 + 1);
 		glBindTexture(GL_TEXTURE_2D, m_tex_pal);
 		int r0 = first >> 8, r1 = last >> 8;
@@ -199,6 +230,7 @@ public:
 
 	void upload_replacement(int layer, const uint8_t *rgba) override
 	{
+		CallPhase ph("replace", layer, (long long)m_repl_res * m_repl_res * 4);
 		if (!m_tex_repl || m_repl_res <= 0) return;
 		glActiveTexture(GL_TEXTURE0 + 2);
 		glBindTexture(GL_TEXTURE_2D_ARRAY, m_tex_repl);
@@ -208,6 +240,7 @@ public:
 
 	void upload_texture_rows(const uint8_t *ram, int first, int last) override
 	{
+		CallPhase ph("textures", m_tex_ram, (last - first + 1) * 256);
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, m_tex_ram);
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -216,6 +249,7 @@ public:
 
 	void upload_overlay(int page, const uint16_t *layer, int first, int last) override
 	{
+		CallPhase ph("overlay", page, (last - first + 1) * 1024);
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, m_tex_ovl);
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
@@ -245,6 +279,7 @@ public:
 
 	void clear_margins(int page) override
 	{
+		CallPhase ph("margins", page);
 		if (m_opt.wide_margin <= 0) return;
 		bind_page(page);
 		const int m = m_opt.wide_margin * m_opt.scale;
@@ -263,6 +298,7 @@ public:
 
 	void draw(int page, const GpuQuad *q, int count) override
 	{
+		CallPhase ph("polygons", page, (long long)count * (long long)sizeof(GpuQuad));
 		if (count <= 0) return;
 		bind_page(page);
 		glUseProgram(m_prog_quad);
@@ -287,6 +323,7 @@ public:
 
 	void draw_shadows(int page, const GpuQuad *q, int count) override
 	{
+		CallPhase ph("shadows", page, (long long)count * (long long)sizeof(GpuQuad));
 		if (count <= 0) return;
 		// Soft shadows in three small steps instead of one large one. Before, every pixel of the batch's rectangle on the page
 		// read the mask 49 times: at 6x and with a few cars near the camera that alone took longer than a display refresh
@@ -358,12 +395,14 @@ public:
 
 	void latch(int page, int visible_rows) override
 	{
+		CallPhase ph("latch", page);
 		int rows = std::clamp(visible_rows, 1, 512) * m_opt.scale;
 		glCopyImageSubData(m_page_tex[page & 1], GL_TEXTURE_2D, 0, 0, 0, 0, m_disp_tex, GL_TEXTURE_2D, 0, 0, 0, 0, page_w(), rows, 1);
 	}
 
 	void present(int vis_w, int vis_h) override
 	{
+		CallPhase ph("present");
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		glViewport(0, 0, m_win_w, m_win_h);
 		glClearColor(0, 0, 0, 1);
@@ -398,7 +437,9 @@ public:
 		glBindTexture(GL_TEXTURE_2D, m_disp_tex);
 		glBindVertexArray(m_vao_empty);
 		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
-		if (!m_prof) { SwapBuffers(m_dc); return; }
+		if (m_debug & 1) glFinish();   // (test: the GPU's queued work is waited for here, so that the swap's own wait stands alone)
+		if (m_debug & 2) glFlush();
+		if (!m_prof) { SwapBuffers(m_dc); g_calltrace.frame++; return; }
 
 		// profiling: one timer query spans all GL work of a frame (swap to swap); its result is read a few frames later,
 		// when it is available, so that reading never waits for the GPU
@@ -420,6 +461,7 @@ public:
 		SwapBuffers(m_dc);
 		QueryPerformanceCounter(&t1);
 		m_swap_ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(f.QuadPart);
+		g_calltrace.frame++;
 		if (m_q_used < 4)
 		{
 			if (!m_query[m_q_head]) glGenQueries(1, &m_query[m_q_head]);
@@ -429,6 +471,8 @@ public:
 	}
 
 	void set_profiling(bool on) override { m_prof = on; }
+	void set_debug(int flags) override { m_debug = flags; }
+	int m_debug = 0;
 	double last_swap_ms() const override { return m_swap_ms; }
 	double last_gpu_ms() const override { return m_gpu_ms; }
 	bool m_prof = false, m_q_open = false;
@@ -438,6 +482,7 @@ public:
 
 	bool read_display(std::vector<uint32_t> &out, int &w, int &h) override
 	{
+		CallPhase ph("readback");
 		w = page_w(); h = page_h();
 		out.resize(size_t(w) * h);
 		glBindTexture(GL_TEXTURE_2D, m_disp_tex);

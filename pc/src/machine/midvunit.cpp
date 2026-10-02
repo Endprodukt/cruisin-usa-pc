@@ -301,10 +301,8 @@ void MidVUnit::update_clock()
 		if (groups > 0 && groups <= 20)
 		{
 			const bool governed = m_framrate_addr && m_ram0[m_framrate_addr] >= 1 && m_ram0[m_framrate_addr] <= 4;
-			// governed (races, attract drive): catch_up() finishes each frame in time, so only as much clock as keeps the
-			// frame's work from piling up at the vblank; ungoverned: in proportion to the draw distance
-			// governed (races, attract drive): catch_up() gives each frame what it needs; ungoverned: in proportion to the distance
-			const int want = governed ? (steady_cadence ? 4 : (dd >= 300 ? 12 : 8)) : 4 + (dd - 100) / 100;
+			// (mode 2 of catch_up did all the extra work itself and kept the clock at 1)
+			const int want = governed ? (steady_cadence == 2 ? 4 : (dd >= 300 ? 12 : 8)) : 4 + (dd - 100) / 100;
 			q = std::max(q, want);
 		}
 	}
@@ -322,36 +320,50 @@ double host_ms()
 
 // The game shows a new picture every FRAMRATE + 1 vblanks at best (two in a race: FRAMRATE 1). Its main loop does the frame's
 // work, waits at MWAIT0 until INFRAMES, the vblanks counted since the last picture, has reached FRAMRATE, sets CLEARRDY, and the
-// next vblank interrupt swaps the pages. When the work is not done in time the picture comes a vblank later: three vblanks
-// instead of two, and the motion stutters. The arcade CPU is just fast enough for the original scenery; with a longer draw
-// distance it is not (San Francisco at 400 %: most frames).
-// So before every vblank the CPU is given the instructions the frame's work still needs, in no emulated time (as an overclock
-// does), until the main loop waits: the game computes the same frames, only never late. Its speed does not change, since it
-// scales every movement by the vblanks that passed. What limits this is the host: the work is done within steady_budget_ms of
-// real time per display frame, so that the emulation itself never makes a display frame late; what does not fit is finished
-// before the next vblank (and if the host is too slow altogether, the picture comes a vblank later, as on the machine).
+// next vblank interrupt swaps the pages. When the work is not done by then the picture comes a vblank later: three vblanks
+// instead of two, the motion stutters. The machine does that now and then (San Francisco: 7 % of a race's frames); a longer
+// draw distance, which is more work per frame, would do it most of the time.
+//
+// What this does, and what it does not. Right before the vblank interrupt at which a picture is due (INFRAMES >= FRAMRATE)
+// but not requested (CLEARRDY still 0), the main CPU executes the instructions the frame's work still needs, up to four
+// frames' worth, while the emulated clock stands still: the cycle count that times the sound board, the A-D converter and
+// the CPU's timer registers does not advance, no interrupt is raised in between, and no vblank is added. So:
+//  * emulated time is untouched. Everything the game times, it times in vblanks (the interrupt counts INFRAMES, the one
+//    second timer, the race countdown, GAME_TIMER, the watchdog; the processes sleep in game frames and scale every movement
+//    by NFRAMES): the same number per second as before, at the same moments.
+//  * the CPU is, for that frame, faster than the machine's. That is the point, and the only difference: a frame that the
+//    machine's CPU delivers a vblank late is delivered in time, with NFRAMES 2 instead of 3. The game then integrates that
+//    stretch of the race in steps of 2 vblanks instead of one of 3: the same race time, a slightly different trajectory, and
+//    from then on a different sequence of game frames than the machine's (the random numbers, drawn per frame, with it).
+//  * a frame that is in time is not touched at all: its instructions, and the points where the interrupts fall in them, are
+//    exactly the machine's. With the original draw distance a stretch of a race without slowdowns is bit-identical to mode 0
+//    (tools: STATELOG in the headless tool; results in docs/PERFORMANCE.md).
+//  * it is deterministic: the limit is counted in instructions, not in host time (unless steady_budget_ms is set).
+// Mode 2 did the same before every vblank, also when nothing was due. That keeps the cadence as well but moves the frame's
+// work in front of the first vblank, so that the interrupt's side effects (switches, palette queue) are seen a vblank later
+// by the part of the frame that used to run after it: not the machine's order of events, and the reason it was replaced.
 void MidVUnit::catch_up()
 {
-	if (!steady_cadence || !m_framrate_addr || !m_idle_flag_addr || !m_mwait0_pc) return;
+	if (steady_cadence <= 0 || !m_framrate_addr || !m_idle_flag_addr || !m_mwait0_pc) return;
 	const uint32_t rate = m_ram0[m_framrate_addr];
 	if (rate < 1 || rate > 4) return;                             // no governor: the pace is the CPU's own (selection screens, logos)
 	auto waiting = [&] {
 		if (m_ram0[m_idle_flag_addr] != 0) return true;           // CLEARRDY: the swap is requested
 		const uint32_t pc = m_cpu->pc();
-		return pc >= m_mwait0_pc && pc <= m_mwait0_pc + 2;        // MWAIT0: done, held by the governor
+		return pc >= m_mwait0_pc && pc <= m_mwait0_pc + 2;        // MWAIT0: the work is done, the governor holds the frame
 	};
-	if (waiting()) return;
 	const bool due = m_ram0[m_framrate_addr - 1] >= rate;         // INFRAMES: the picture is due at this vblank
-	// the budget counts the interpreter's own time only: what the video backend takes inside the CPU's hooks (handing over
-	// polygons, and with Vulkan the wait for the display) is not load
+	if (waiting() || (!due && steady_cadence != 2)) return;
 	const double spent0 = (perf_cpu_ms - perf_feed_ms) - m_frame_cpu0, t0 = host_ms(), feed0 = perf_feed_ms;
 	PerfTimer pt(perf_cpu_ms);
 	const int chunk = 3000;
-	int budget = int(double(CPU_HZ) / m_refresh_hz) * 8;
+	int budget = int(double(CPU_HZ) / m_refresh_hz) * (steady_cadence == 2 ? 8 : 4);
 	while (budget > 0 && !waiting())
 	{
+		// (optional, off by default: the interpreter's own time, without what the video backend takes inside the CPU's hooks)
 		if (steady_budget_ms > 0 && spent0 + (host_ms() - t0) - (perf_feed_ms - feed0) > steady_budget_ms + (due ? 2.0 : 0.0)) break;
-		m_cpu->run(chunk);
+		const int ran = m_cpu->run(chunk);
+		instr_total += uint64_t(ran); instr_extra += uint64_t(ran);
 		budget -= chunk;
 	}
 	if (due) { if (waiting()) catchups++; else catchup_fails++; }
@@ -364,6 +376,7 @@ int MidVUnit::run_cpu(int cycles)
 		PerfTimer pt(perf_cpu_ms);
 		// overclock: the CPU gets m_oc_q4 / 4 times the instructions in the same emulated time
 		const int ran = m_cpu->run(cycles * m_oc_q4 / 4);
+		instr_total += uint64_t(ran);
 		used = std::max(ran * 4 / m_oc_q4, std::min(cycles, ran));
 	}
 	if (m_pchist_on) m_pchist[m_cpu->pc() >> 2]++;

@@ -59,7 +59,7 @@ int main(int argc, char **argv)
 	if (!m.load_roms(rom, ver, err)) { fprintf(stderr, "ROM error: %s\n", err.c_str()); return 1; }
 	std::vector<int16_t> pcm; double rate = 0; int blocks = 0;
 	m.on_audio = [&](const int16_t *b, int n, double r) { pcm.insert(pcm.end(), b, b + n); if (rate == 0) rate = r; blocks++; };
-	if (const char *sc = getenv("STEADY")) m.steady_cadence = atoi(sc) != 0;
+	if (const char *sc = getenv("STEADY")) m.steady_cadence = atoi(sc);   // 0 machine, 1 due frames only (default), 2 before every vblank
 	m.quad_stats = getenv("QUADSTAT") != nullptr;
 	m.steady_budget_ms = getenv("STEADY_MS") ? atof(getenv("STEADY_MS")) : 0.0;   // headless runs are not paced: no host time limit
 	if (const char *dd = getenv("DD")) m.rom_patches.draw_distance_pct = atoi(dd);
@@ -320,6 +320,35 @@ int main(int argc, char **argv)
 				if (ch) show = 40;
 				if (show > 0) { show--; fprintf(stderr, "C %d spd=%.1f hits=%u/%u/%u spin=%d drot=%+.4f yrot=%+.3f vrot=%+.3f ffb=%+.2f..%+.2f%c", f, t.speed, t.hits_light, t.hits_object, t.hits_wall, t.spin, t.d_rot, t.y_rot, t.v_rot, mn, mx, 10); }
 				pt = t;
+			}
+		}
+		if (const char *sl = getenv("STATELOG"))
+		{   // STATELOG=<file>: the machine's state every STATEEVERY (default 250) frames, to compare runs: emulated cycles,
+			// instructions executed, vblanks, game pictures, timers, random number, the player's car, and hashes of the RAM
+			static FILE *sf = nullptr; static uint32_t rand_addr = 0, gtime_addr = 0; static int every = 250;
+			if (!sf)
+			{
+				sf = fopen(sl, "w");
+				if (getenv("STATEEVERY")) every = std::max(1, atoi(getenv("STATEEVERY")));
+				for (uint32_t i = 0; i + 3 < 0x20000 && (!rand_addr || !gtime_addr); i++)
+				{
+					// RANDOM: LDI @RAND,R0 / LDI R0,R1 / LSH 1,R0     and the interrupt: LDF @FLOAT_TIK,R0 / ADDF @GAME_TIMER,R0 / STF R0,@GAME_TIMER
+					if (!rand_addr && (m.ram_word(i) & 0xffff0000u) == 0x08200000u && m.ram_word(i + 1) == 0x08010000u && m.ram_word(i + 2) == 0x09E00001u) rand_addr = m.ram_word(i) & 0xffff;
+					if (!gtime_addr && (m.ram_word(i) & 0xffff0000u) == 0x07200000u && (m.ram_word(i + 1) & 0xffff0000u) == 0x01A00000u &&
+					    m.ram_word(i + 2) == (0x14200000u | (m.ram_word(i + 1) & 0xffff))) gtime_addr = m.ram_word(i + 1) & 0xffff;
+				}
+				if (sf) fprintf(sf, "frame,cycles,instr,instr_extra,flips,mode,inframes,nframes,rand,game_timer,countdown,car_x,car_y,car_z,speed,dist,hash_bss,hash_ram1,hash_cars%c", 10);
+			}
+			if (sf && f % every == 0)
+			{
+				auto fnv = [&](uint32_t from, uint32_t to) { uint64_t h = 1469598103934665603ull; for (uint32_t a = from; a < to; a++) { h ^= m.ram_peek(a); h *= 1099511628211ull; } return h; };
+				const uint32_t blk = m.ram_word(0xE8A8);
+				auto cf = [&](int o) { return blk ? c3x_to_double(m.ram_peek(blk + uint32_t(o))) : 0.0; };
+				fprintf(sf, "%d,%llu,%llu,%llu,%llu,%X,%u,%u,%08X,%.6f,%d,%.3f,%.3f,%.3f,%.4f,%.2f,%016llX,%016llX,%016llX%c", f, (unsigned long long)m.cycles_total(),
+				        (unsigned long long)m.instr_total, (unsigned long long)m.instr_extra, (unsigned long long)m.page_flips, m.ram_word(0xC8F5), m.ram_word(0xC960), m.ram_word(0xC95F),
+				        rand_addr ? m.ram_word(rand_addr) : 0, gtime_addr ? c3x_to_double(m.ram_word(gtime_addr)) : 0.0, int(m.ram_word(0xE634)), cf(0), cf(1), cf(2), cf(38), cf(39),
+				        (unsigned long long)fnv(0xC8F0, 0x20000), (unsigned long long)fnv(0x400000, 0x420000), (unsigned long long)fnv(0xE8A8, 0xF400), 10);
+				fflush(sf);
 			}
 		}
 		if (getenv("SURFLOG"))

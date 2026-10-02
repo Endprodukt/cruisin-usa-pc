@@ -18,7 +18,11 @@
 #include "input/controls.h"
 #include "input/devices.h"
 #include "launcher/launcher.h"
+#include <thread>
+
 #include "perf.h"
+#include "calltrace.h"
+#include "platform/stall_watch.h"
 #include "machine/midvunit.h"
 #include "machine/telemetry.h"
 #include "outputs/outputs.h"
@@ -354,8 +358,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	m.rom_patches.smooth_frames = S.smooth_frames;
 	m.cpu_overclock = S.smooth_frames ? 2 : 1;   // a frame per vblank needs the frame's work done within one vblank
 	m.dcs_thread = S.dsp_thread;
-	m.steady_cadence = S.steady_cadence;
-	m.steady_budget_ms = bench ? 0.0 : 10.0;   // of the 16.7 ms of a display frame; the rest is for the GPU hand-over and the swap
+	m.steady_cadence = S.steady_cadence ? 1 : 0;
+	if (std::string v = arg_value(a, "--steady"); !v.empty()) m.steady_cadence = std::clamp(std::atoi(v.c_str()), 0, 2);
 	if (std::string v = arg_value(a, "--dcs-thread"); !v.empty()) m.dcs_thread = std::atoi(v.c_str());   // -1 auto, 0 off, 1 on
 	m.rom_patches.wide_margin = S.video.renderer == Renderer::Cpu ? 0 : wide_margin_for(S.video);
 	m.set_wide_margin(m.rom_patches.wide_margin);
@@ -376,6 +380,17 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	HWND hwnd = CreateWindowA("CruisnPC", "Cruis'n USA (PC)", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr, nullptr, hi, nullptr);
 	apply_window_mode(hwnd, S.video, S.video.window_mode);
 	ShowWindow(hwnd, SW_SHOW);
+
+	// --perf: slow graphics calls (--call-ms <limit>, default 2) and the stack of the frame loop when a frame stalls
+	// (--stall-ms <limit>, default 28, 0 = off) go to perf_calls.log / --call-log <file>. The watcher thread is started before
+	// the video backend exists: a thread that appears while the driver is already presenting is itself an event (PERFORMANCE.md).
+	std::string call_log = arg_value(a, "--call-log");
+	if (call_log.empty()) call_log = exe_relative("perf_calls.log");
+	if (prof.on)
+	{
+		const std::string sm = arg_value(a, "--stall-ms");
+		if (sm != "0") stallwatch::start(call_log, sm.empty() ? 28.0 : std::atof(sm.c_str()));
+	}
 
 	// ---- video backend
 	std::unique_ptr<IVideoBackend> video;
@@ -477,6 +492,23 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		if (video) m.present_gpu(); else cpu.present(m, cr.right, cr.bottom);
 	};
 
+	// The first thread that starts in the process after the OpenGL driver has begun to present makes the driver's next buffer
+	// swap wait for 50 to 100 ms, once (measured: NVIDIA; the driver's own thread sits in a wait for a GPU synchronisation
+	// object, D3DKMTWaitForSynchronizationObjectFromCpu). Left alone, that thread is one of Windows' thread pool workers about
+	// 30 s after the start, in the middle of the first race. So it is given one here, while nothing moves on the screen yet.
+	// --no-warmup leaves it out (to measure the stall).
+	const bool driver_warmup_on = a.find("--no-warmup") == std::string::npos;
+	const int warm_n = arg_value(a, "--warmup").empty() ? 6 : std::atoi(arg_value(a, "--warmup").c_str());
+	auto driver_warmup = [&]() {
+		if (!video || !driver_warmup_on) return;
+		HANDLE done = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+		std::thread th([done] { WaitForSingleObject(done, INFINITE); });   // (it has to be there while the driver swaps)
+		for (int i = 0; i < warm_n; i++) present();
+		SetEvent(done);
+		th.join();
+		CloseHandle(done);
+	};
+
 	MSG msg;
 	// ---- The arcade board's power-up tests (ROM checksums, RAM, sound board, then the result screens with their fixed waits)
 	// are part of the game program and take about 1300 frames. They are run unthrottled, silent and unseen behind a loading
@@ -521,6 +553,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	bool sync_clock = false;   // display sync paced by the clock because the swap does not wait
 
 	if (video) video->set_profiling(prof.on);
+	driver_warmup();
+	if (prof.on && video)
+	{
+		const std::string cm = arg_value(a, "--call-ms");
+		g_calltrace.open(call_log, cm.empty() ? 2.0 : std::atof(cm.c_str()), video->name());   // (its own handle on the file; both append whole lines)
+		if (std::string v = arg_value(a, "--gl-debug"); !v.empty()) video->set_debug(std::atoi(v.c_str()));   // see IVideoBackend::set_debug
+	}
 	double prof_last = 0;
 	uint64_t prof_flips = m.page_flips, prof_late = m.catchup_fails;
 	uint32_t prof_n = 0;
@@ -531,6 +570,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	while (!g_quit)
 	{
 		FrameRec rec;
+		if (prof.on) stallwatch::beat();
 		const double pr0 = prof.on ? perf_now_ms() : 0.0;
 		while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
 		if (prof.on) rec.msg = float(perf_now_ms() - pr0);
@@ -747,6 +787,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		std::snprintf(title, sizeof(title), "%s %dx, draw distance %d%%, %s%s", video ? video->name() : "CPU", S.video.internal_scale, S.video.draw_distance,
 		              sync_k ? "display sync" : (S.video.vsync ? "vsync" : "no vsync"), bench ? ", bench" : "");
 		prof.finish(title);
+		stallwatch::stop();
+		g_calltrace.close();
 	}
 	controls.ffb_stop();
 	outputs.stop();

@@ -52,6 +52,12 @@ public:
 		if (now - m_window > 5000.0) report(now);
 	}
 	std::string summary() const { return m_summary; }
+	~PerfStats()
+	{
+		if (!log_path.empty() && !m_log_text.empty())
+			if (FILE *f = std::fopen(log_path.c_str(), "ab")) { std::fwrite(m_log_text.data(), 1, m_log_text.size(), f); std::fclose(f); }
+	}
+	std::string m_log_text;
 
 private:
 	void report(double now)
@@ -73,8 +79,7 @@ private:
 		              m_nemu ? double(m_draws) / double(m_nemu) : 0.0, m_nemu ? double(m_quads) / double(m_nemu) : 0.0);
 		m_summary = buf;
 		if (!m_out.empty()) { m_summary += " | slow frames: " + m_out; m_out.clear(); }
-		if (!log_path.empty())
-			if (FILE *f = std::fopen(log_path.c_str(), "ab")) { std::fprintf(f, "%s\n", m_summary.c_str()); std::fclose(f); }
+		if (!log_path.empty()) { m_log_text += m_summary; m_log_text += "\n"; }   // (written at the end: no file access in the frame loop)
 		m_ft.clear(); m_worst = 0; m_emu = m_feed = m_pres = m_cpu = m_dcs = m_gpu = 0; m_ngpu = 0; m_nemu = m_npres = 0; m_draws = m_quads = 0;
 		m_window = now;
 	}
@@ -197,6 +202,7 @@ public:
 		if (!spike_path.empty())
 			if (FILE *f = std::fopen(spike_path.c_str(), "ab"))
 			{
+				std::fwrite(m_spike_text.data(), 1, m_spike_text.size(), f);
 				std::fprintf(f, "== %s: %zu frames | median %.2f ms, p99 %.2f, p99.9 %.2f, max %.2f | over 1.25x median: %zu, 1.5x: %zu, 2x: %zu | spikes logged %zu\n",
 				             title, dt.size(), med, pct(0.99), pct(0.999), dt.back(), over125, over150, over200, m_spikes);
 				static const char *const nm[9] = {"messages", "input", "main cpu", "sound dsp", "gpu feed", "ffb/outputs", "wait", "present", "other"};
@@ -220,23 +226,25 @@ public:
 	}
 
 private:
+	// (kept in memory and written by finish(): a file write in the frame loop can itself be the next spike)
 	void write_spike(size_t at, double limit)
 	{
-		if (spike_path.empty()) return;
-		FILE *f = std::fopen(spike_path.c_str(), "ab");
-		if (!f) return;
-		std::fprintf(f, "spike: frame %u took %.2f ms (limit %.2f, median %.2f)\n", m_all[at].frame, m_all[at].dt, limit, m_median);
-		std::fprintf(f, "    frame      dt |   msg input |   emu =  cpu +  dsp + feed |  ffb  wait | present (swap)   gpu | other | audio quads draws mode  flip clk ran\n");
+		if (spike_path.empty() || m_spike_text.size() > (8u << 20)) return;
+		char b[400];
+		std::snprintf(b, sizeof(b), "spike: frame %u took %.2f ms (limit %.2f, median %.2f)\n", m_all[at].frame, m_all[at].dt, limit, m_median);
+		m_spike_text += b;
+		m_spike_text += "    frame      dt |   msg input |   emu =  cpu +  dsp + feed |  ffb  wait | present (swap)   gpu | other | audio quads draws mode  flip clk ran\n";
 		for (size_t i = at >= 8 ? at - 8 : 0; i <= at + 6 && i < m_all.size(); i++)
 		{
 			const FrameRec &r = m_all[i];
-			std::fprintf(f, " %c %7u %6.2f | %5.2f %5.2f | %5.2f  %5.2f  %5.2f  %5.2f | %4.2f %5.2f | %6.2f  %5.2f %5.2f | %5.2f | %5.0f %5u %5u %5X %4u %3.2g %3u\n", i == at ? '>' : ' ',
-			             r.frame, r.dt, r.msg, r.input, r.emu, r.cpu, r.dsp, r.feed, r.ffb, r.wait, r.present, r.swap, r.gpu, r.other, r.audio_ms, r.quads, r.draws, r.mode & 0xfffff, r.flips,
-			             double(r.clock_q4) / 4.0, r.ran);
+			std::snprintf(b, sizeof(b), " %c %7u %6.2f | %5.2f %5.2f | %5.2f  %5.2f  %5.2f  %5.2f | %4.2f %5.2f | %6.2f  %5.2f %5.2f | %5.2f | %5.0f %5u %5u %5X %4u %3.2g %3u\n", i == at ? '>' : ' ',
+			              r.frame, r.dt, r.msg, r.input, r.emu, r.cpu, r.dsp, r.feed, r.ffb, r.wait, r.present, r.swap, r.gpu, r.other, r.audio_ms, r.quads, r.draws, r.mode & 0xfffff, r.flips,
+			              double(r.clock_q4) / 4.0, r.ran);
+			m_spike_text += b;
 		}
-		std::fprintf(f, "\n");
-		std::fclose(f);
+		m_spike_text += "\n";
 	}
+	std::string m_spike_text;
 
 	std::vector<FrameRec> m_all;
 	std::vector<size_t> m_pending;

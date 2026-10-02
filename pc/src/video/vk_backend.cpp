@@ -8,7 +8,95 @@
 #include <cstdio>
 #include <cstring>
 
+#include "../calltrace.h"
 #include "spv_shaders.h"
+
+// every Vulkan call of this file goes through the slow-call trace (calltrace.h)
+#define vkAcquireNextImageKHR(...) traced_call("vkAcquireNextImageKHR", vkAcquireNextImageKHR, __VA_ARGS__)
+#define vkAllocateCommandBuffers(...) traced_call("vkAllocateCommandBuffers", vkAllocateCommandBuffers, __VA_ARGS__)
+#define vkAllocateDescriptorSets(...) traced_call("vkAllocateDescriptorSets", vkAllocateDescriptorSets, __VA_ARGS__)
+#define vkAllocateMemory(...) traced_call("vkAllocateMemory", vkAllocateMemory, __VA_ARGS__)
+#define vkBeginCommandBuffer(...) traced_call("vkBeginCommandBuffer", vkBeginCommandBuffer, __VA_ARGS__)
+#define vkBindBufferMemory(...) traced_call("vkBindBufferMemory", vkBindBufferMemory, __VA_ARGS__)
+#define vkBindImageMemory(...) traced_call("vkBindImageMemory", vkBindImageMemory, __VA_ARGS__)
+#define vkCmdBeginRenderPass(...) traced_call("vkCmdBeginRenderPass", vkCmdBeginRenderPass, __VA_ARGS__)
+#define vkCmdBindDescriptorSets(...) traced_call("vkCmdBindDescriptorSets", vkCmdBindDescriptorSets, __VA_ARGS__)
+#define vkCmdBindPipeline(...) traced_call("vkCmdBindPipeline", vkCmdBindPipeline, __VA_ARGS__)
+#define vkCmdBindVertexBuffers(...) traced_call("vkCmdBindVertexBuffers", vkCmdBindVertexBuffers, __VA_ARGS__)
+#define vkCmdClearAttachments(...) traced_call("vkCmdClearAttachments", vkCmdClearAttachments, __VA_ARGS__)
+#define vkCmdClearColorImage(...) traced_call("vkCmdClearColorImage", vkCmdClearColorImage, __VA_ARGS__)
+#define vkCmdCopyBufferToImage(...) traced_call("vkCmdCopyBufferToImage", vkCmdCopyBufferToImage, __VA_ARGS__)
+#define vkCmdCopyImage(...) traced_call("vkCmdCopyImage", vkCmdCopyImage, __VA_ARGS__)
+#define vkCmdCopyImageToBuffer(...) traced_call("vkCmdCopyImageToBuffer", vkCmdCopyImageToBuffer, __VA_ARGS__)
+#define vkCmdDraw(...) traced_call("vkCmdDraw", vkCmdDraw, __VA_ARGS__)
+#define vkCmdEndRenderPass(...) traced_call("vkCmdEndRenderPass", vkCmdEndRenderPass, __VA_ARGS__)
+#define vkCmdPipelineBarrier(...) traced_call("vkCmdPipelineBarrier", vkCmdPipelineBarrier, __VA_ARGS__)
+#define vkCmdResetQueryPool(...) traced_call("vkCmdResetQueryPool", vkCmdResetQueryPool, __VA_ARGS__)
+#define vkCmdSetScissor(...) traced_call("vkCmdSetScissor", vkCmdSetScissor, __VA_ARGS__)
+#define vkCmdSetViewport(...) traced_call("vkCmdSetViewport", vkCmdSetViewport, __VA_ARGS__)
+#define vkCmdWriteTimestamp(...) traced_call("vkCmdWriteTimestamp", vkCmdWriteTimestamp, __VA_ARGS__)
+#define vkCreateBuffer(...) traced_call("vkCreateBuffer", vkCreateBuffer, __VA_ARGS__)
+#define vkCreateCommandPool(...) traced_call("vkCreateCommandPool", vkCreateCommandPool, __VA_ARGS__)
+#define vkCreateDescriptorPool(...) traced_call("vkCreateDescriptorPool", vkCreateDescriptorPool, __VA_ARGS__)
+#define vkCreateDescriptorSetLayout(...) traced_call("vkCreateDescriptorSetLayout", vkCreateDescriptorSetLayout, __VA_ARGS__)
+#define vkCreateDevice(...) traced_call("vkCreateDevice", vkCreateDevice, __VA_ARGS__)
+#define vkCreateFence(...) traced_call("vkCreateFence", vkCreateFence, __VA_ARGS__)
+#define vkCreateFramebuffer(...) traced_call("vkCreateFramebuffer", vkCreateFramebuffer, __VA_ARGS__)
+#define vkCreateGraphicsPipelines(...) traced_call("vkCreateGraphicsPipelines", vkCreateGraphicsPipelines, __VA_ARGS__)
+#define vkCreateImage(...) traced_call("vkCreateImage", vkCreateImage, __VA_ARGS__)
+#define vkCreateImageView(...) traced_call("vkCreateImageView", vkCreateImageView, __VA_ARGS__)
+#define vkCreateInstance(...) traced_call("vkCreateInstance", vkCreateInstance, __VA_ARGS__)
+#define vkCreatePipelineLayout(...) traced_call("vkCreatePipelineLayout", vkCreatePipelineLayout, __VA_ARGS__)
+#define vkCreateQueryPool(...) traced_call("vkCreateQueryPool", vkCreateQueryPool, __VA_ARGS__)
+#define vkCreateRenderPass(...) traced_call("vkCreateRenderPass", vkCreateRenderPass, __VA_ARGS__)
+#define vkCreateSampler(...) traced_call("vkCreateSampler", vkCreateSampler, __VA_ARGS__)
+#define vkCreateSemaphore(...) traced_call("vkCreateSemaphore", vkCreateSemaphore, __VA_ARGS__)
+#define vkCreateShaderModule(...) traced_call("vkCreateShaderModule", vkCreateShaderModule, __VA_ARGS__)
+#define vkCreateSwapchainKHR(...) traced_call("vkCreateSwapchainKHR", vkCreateSwapchainKHR, __VA_ARGS__)
+#define vkCreateWin32SurfaceKHR(...) traced_call("vkCreateWin32SurfaceKHR", vkCreateWin32SurfaceKHR, __VA_ARGS__)
+#define vkDestroyBuffer(...) traced_call("vkDestroyBuffer", vkDestroyBuffer, __VA_ARGS__)
+#define vkDestroyCommandPool(...) traced_call("vkDestroyCommandPool", vkDestroyCommandPool, __VA_ARGS__)
+#define vkDestroyDescriptorPool(...) traced_call("vkDestroyDescriptorPool", vkDestroyDescriptorPool, __VA_ARGS__)
+#define vkDestroyDescriptorSetLayout(...) traced_call("vkDestroyDescriptorSetLayout", vkDestroyDescriptorSetLayout, __VA_ARGS__)
+#define vkDestroyDevice(...) traced_call("vkDestroyDevice", vkDestroyDevice, __VA_ARGS__)
+#define vkDestroyFence(...) traced_call("vkDestroyFence", vkDestroyFence, __VA_ARGS__)
+#define vkDestroyFramebuffer(...) traced_call("vkDestroyFramebuffer", vkDestroyFramebuffer, __VA_ARGS__)
+#define vkDestroyImage(...) traced_call("vkDestroyImage", vkDestroyImage, __VA_ARGS__)
+#define vkDestroyImageView(...) traced_call("vkDestroyImageView", vkDestroyImageView, __VA_ARGS__)
+#define vkDestroyInstance(...) traced_call("vkDestroyInstance", vkDestroyInstance, __VA_ARGS__)
+#define vkDestroyPipeline(...) traced_call("vkDestroyPipeline", vkDestroyPipeline, __VA_ARGS__)
+#define vkDestroyPipelineLayout(...) traced_call("vkDestroyPipelineLayout", vkDestroyPipelineLayout, __VA_ARGS__)
+#define vkDestroyQueryPool(...) traced_call("vkDestroyQueryPool", vkDestroyQueryPool, __VA_ARGS__)
+#define vkDestroyRenderPass(...) traced_call("vkDestroyRenderPass", vkDestroyRenderPass, __VA_ARGS__)
+#define vkDestroySampler(...) traced_call("vkDestroySampler", vkDestroySampler, __VA_ARGS__)
+#define vkDestroySemaphore(...) traced_call("vkDestroySemaphore", vkDestroySemaphore, __VA_ARGS__)
+#define vkDestroyShaderModule(...) traced_call("vkDestroyShaderModule", vkDestroyShaderModule, __VA_ARGS__)
+#define vkDestroySurfaceKHR(...) traced_call("vkDestroySurfaceKHR", vkDestroySurfaceKHR, __VA_ARGS__)
+#define vkDestroySwapchainKHR(...) traced_call("vkDestroySwapchainKHR", vkDestroySwapchainKHR, __VA_ARGS__)
+#define vkDeviceWaitIdle(...) traced_call("vkDeviceWaitIdle", vkDeviceWaitIdle, __VA_ARGS__)
+#define vkEndCommandBuffer(...) traced_call("vkEndCommandBuffer", vkEndCommandBuffer, __VA_ARGS__)
+#define vkEnumeratePhysicalDevices(...) traced_call("vkEnumeratePhysicalDevices", vkEnumeratePhysicalDevices, __VA_ARGS__)
+#define vkFreeMemory(...) traced_call("vkFreeMemory", vkFreeMemory, __VA_ARGS__)
+#define vkGetBufferMemoryRequirements(...) traced_call("vkGetBufferMemoryRequirements", vkGetBufferMemoryRequirements, __VA_ARGS__)
+#define vkGetDeviceQueue(...) traced_call("vkGetDeviceQueue", vkGetDeviceQueue, __VA_ARGS__)
+#define vkGetImageMemoryRequirements(...) traced_call("vkGetImageMemoryRequirements", vkGetImageMemoryRequirements, __VA_ARGS__)
+#define vkGetPhysicalDeviceMemoryProperties(...) traced_call("vkGetPhysicalDeviceMemoryProperties", vkGetPhysicalDeviceMemoryProperties, __VA_ARGS__)
+#define vkGetPhysicalDeviceProperties(...) traced_call("vkGetPhysicalDeviceProperties", vkGetPhysicalDeviceProperties, __VA_ARGS__)
+#define vkGetPhysicalDeviceQueueFamilyProperties(...) traced_call("vkGetPhysicalDeviceQueueFamilyProperties", vkGetPhysicalDeviceQueueFamilyProperties, __VA_ARGS__)
+#define vkGetPhysicalDeviceSurfaceCapabilitiesKHR(...) traced_call("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", vkGetPhysicalDeviceSurfaceCapabilitiesKHR, __VA_ARGS__)
+#define vkGetPhysicalDeviceSurfaceFormatsKHR(...) traced_call("vkGetPhysicalDeviceSurfaceFormatsKHR", vkGetPhysicalDeviceSurfaceFormatsKHR, __VA_ARGS__)
+#define vkGetPhysicalDeviceSurfacePresentModesKHR(...) traced_call("vkGetPhysicalDeviceSurfacePresentModesKHR", vkGetPhysicalDeviceSurfacePresentModesKHR, __VA_ARGS__)
+#define vkGetPhysicalDeviceSurfaceSupportKHR(...) traced_call("vkGetPhysicalDeviceSurfaceSupportKHR", vkGetPhysicalDeviceSurfaceSupportKHR, __VA_ARGS__)
+#define vkGetQueryPoolResults(...) traced_call("vkGetQueryPoolResults", vkGetQueryPoolResults, __VA_ARGS__)
+#define vkGetSwapchainImagesKHR(...) traced_call("vkGetSwapchainImagesKHR", vkGetSwapchainImagesKHR, __VA_ARGS__)
+#define vkMapMemory(...) traced_call("vkMapMemory", vkMapMemory, __VA_ARGS__)
+#define vkQueuePresentKHR(...) traced_call("vkQueuePresentKHR", vkQueuePresentKHR, __VA_ARGS__)
+#define vkQueueSubmit(...) traced_call("vkQueueSubmit", vkQueueSubmit, __VA_ARGS__)
+#define vkResetCommandBuffer(...) traced_call("vkResetCommandBuffer", vkResetCommandBuffer, __VA_ARGS__)
+#define vkResetFences(...) traced_call("vkResetFences", vkResetFences, __VA_ARGS__)
+#define vkUnmapMemory(...) traced_call("vkUnmapMemory", vkUnmapMemory, __VA_ARGS__)
+#define vkUpdateDescriptorSets(...) traced_call("vkUpdateDescriptorSets", vkUpdateDescriptorSets, __VA_ARGS__)
+#define vkWaitForFences(...) traced_call("vkWaitForFences", vkWaitForFences, __VA_ARGS__)
 
 namespace {
 
@@ -189,6 +277,7 @@ public:
 
 	void upload_palette(const uint32_t *argb, int first, int last) override
 	{
+		CallPhase ph("palette", 0, ((last >> 8) - (first >> 8) + 1) * 1024);
 		int r0 = first >> 8, r1 = last >> 8;
 		copy_rows_to_image(m_tex_pal, argb + r0 * 256, 256 * 4, 256, r0, r1 - r0 + 1);
 	}
@@ -217,6 +306,7 @@ public:
 
 	void upload_replacement(int layer, const uint8_t *rgba) override
 	{
+		CallPhase ph("replace", layer, (long long)m_repl_res * m_repl_res * 4);
 		if (m_repl_res <= 0) return;
 		const size_t bytes = size_t(m_repl_res) * size_t(m_repl_res) * 4;
 		begin_cb();
@@ -242,11 +332,13 @@ public:
 
 	void upload_texture_rows(const uint8_t *ram, int first, int last) override
 	{
+		CallPhase ph("textures", 0, (last - first + 1) * 256);
 		copy_rows_to_image(m_tex_ram, ram + size_t(first) * 256, 256, 256, first, last - first + 1);
 	}
 
 	void clear_margins(int page) override
 	{
+		CallPhase ph("margins", page);
 		if (m_opt.wide_margin <= 0) return;
 		begin_cb();
 		begin_page_pass(page);
@@ -267,6 +359,7 @@ public:
 
 	void upload_overlay(int page, const uint16_t *layer, int first, int last) override
 	{
+		CallPhase ph("overlay", page, (last - first + 1) * 1024);
 		copy_rows_to_image(m_tex_ovl, layer + size_t(first) * 512, 512 * 2, 512, first, last - first + 1);
 		begin_cb();
 		{
@@ -287,13 +380,14 @@ public:
 
 	void draw(int page, const GpuQuad *q, int count) override
 	{
+		CallPhase ph("polygons", page, (long long)count * (long long)sizeof(GpuQuad));
 		if (count <= 0) return;
 		begin_cb();
 		const size_t stride = sizeof(GpuQuad);
 		for (int done = 0; done < count;)
 		{
 			size_t room = (m_inst_end - m_instbuf_off) / stride;
-			if (room < 256) { submit_wait(); begin_cb(); continue; }
+			if (room < 256) { CallPhase full("inst-full"); submit_wait(); begin_cb(); continue; }
 			int n = int(std::min<size_t>(size_t(count - done), room));
 			std::memcpy(m_instbuf.map + m_instbuf_off, q + done, size_t(n) * stride);
 
@@ -313,6 +407,7 @@ public:
 
 	void draw_shadows(int page, const GpuQuad *q, int count) override
 	{
+		CallPhase ph("shadows", page, (long long)count * (long long)sizeof(GpuQuad));
 		if (count <= 0) return;
 		begin_cb();
 		// Soft shadows in three small steps instead of one large one. Before, every pixel of the batch's rectangle on the page
@@ -347,7 +442,7 @@ public:
 		{
 			// 1. hard coverage into the mask (the render pass clears its area)
 			size_t room = (m_inst_end - m_instbuf_off) / stride;
-			if (room < 256) { submit_wait(); begin_cb(); continue; }
+			if (room < 256) { CallPhase full("inst-full"); submit_wait(); begin_cb(); continue; }
 			int n = int(std::min<size_t>(size_t(count - done), room));
 			std::memcpy(m_instbuf.map + m_instbuf_off, q + done, size_t(n) * stride);
 
@@ -403,6 +498,7 @@ public:
 
 	void latch(int page, int visible_rows) override
 	{
+		CallPhase ph("latch", page);
 		begin_cb();
 		int sz = std::clamp(visible_rows, 1, 512) * m_opt.scale, pw = page_w();
 		Img &src = m_page[page & 1];
@@ -424,10 +520,18 @@ public:
 
 	void present(int vis_w, int vis_h) override
 	{
+		CallPhase ph("present");
 		const int page = 0;
 		if (m_sc_dirty) { std::string e; vkDeviceWaitIdle(m_dev); create_swapchain(e); }
 		if (!m_sc) { submit_wait(); return; }
 		begin_cb();
+		// The frame before this one is finished before this one is handed over. Without that the wait came at the first upload
+		// of the frame after next (the slot's fence), in the middle of the emulated frame, and with two pictures queued on a
+		// FIFO swapchain the driver released that fence in bursts: nothing for seven frames, then 40 to 60 ms (measured: 333
+		// such waits in one race, docs/PERFORMANCE.md). Here the wait is the frame's pace: it ends with the display's vblank,
+		// once per frame, in the present; the GPU still renders a frame while the CPU emulates the next one.
+		// (set_debug 16 = the old behaviour, for comparison.)
+		if (!(m_debug & 16)) { CallPhase w("wait-prev"); wait_slot(m_slot ^ 1); }
 
 		uint32_t idx = 0;
 		VkResult r = vkAcquireNextImageKHR(m_dev, m_sc, UINT64_MAX, m_sem_acq, VK_NULL_HANDLE, &idx);
@@ -488,12 +592,16 @@ public:
 		m_recording = false;
 		m_inflight[m_slot] = true;
 		select_slot(m_slot ^ 1);
+		g_calltrace.frame++;
 	}
 
 	double last_gpu_ms() const override { return m_gpu_ms; }
+	void set_debug(int flags) override { m_debug = flags; }
+	int m_debug = 0;
 
 	bool read_display(std::vector<uint32_t> &out, int &w, int &h) override
 	{
+		CallPhase ph("readback");
 		Img &rp = m_disp;
 		w = page_w(); h = page_h();
 		size_t bytes = size_t(w) * h * 4;
@@ -604,7 +712,8 @@ private:
 	// ---- command buffer management ---------------------------------------------------------------
 	// The frame's last submission is not waited for at present time: the CPU goes on emulating the next frame while the GPU renders
 	// this one. Before anything is recorded or written into the per-frame buffers again, the previous submission must be done.
-	// Two frames can be in flight: each has its own command buffer, fence and half of the per-frame buffers.
+	// Each of the two slots has its own command buffer, fence and half of the per-frame buffers; one frame is in flight at a
+	// time (present() waits for the one before).
 	void select_slot(int i)
 	{
 		m_slot = i;
@@ -618,19 +727,25 @@ private:
 
 	void reset_offsets() { m_instbuf_off = m_inst_base; m_stage_off = m_stage_base; m_ubo_off = m_ubo_base; }
 
+	void wait_slot(int i)
+	{
+		if (!m_inflight[i]) return;
+		vkWaitForFences(m_dev, 1, &m_fences[i], VK_TRUE, UINT64_MAX);
+		if (m_qpool && m_ts_valid[i])
+		{
+			uint64_t t[2];
+			if (vkGetQueryPoolResults(m_dev, m_qpool, uint32_t(i) * 2, 2, sizeof t, t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+				m_gpu_ms = double(t[1] - t[0]) * double(m_limits.timestampPeriod) * 1e-6;
+			m_ts_valid[i] = false;
+		}
+		vkResetFences(m_dev, 1, &m_fences[i]);
+		m_inflight[i] = false;
+	}
+
 	void wait_inflight()
 	{
 		if (!m_inflight[m_slot]) return;
-		vkWaitForFences(m_dev, 1, &m_fence, VK_TRUE, UINT64_MAX);
-		if (m_qpool && m_ts_valid[m_slot])
-		{
-			uint64_t t[2];
-			if (vkGetQueryPoolResults(m_dev, m_qpool, uint32_t(m_slot) * 2, 2, sizeof t, t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
-				m_gpu_ms = double(t[1] - t[0]) * double(m_limits.timestampPeriod) * 1e-6;
-			m_ts_valid[m_slot] = false;
-		}
-		vkResetFences(m_dev, 1, &m_fence);
-		m_inflight[m_slot] = false;
+		wait_slot(m_slot);
 		reset_offsets();
 	}
 
@@ -666,7 +781,7 @@ private:
 	uint32_t write_params(const Params &p)
 	{
 		size_t align = std::max<size_t>(m_limits.minUniformBufferOffsetAlignment, 64);
-		if (m_ubo_off + align > m_ubo_end) { submit_wait(); begin_cb(); }
+		if (m_ubo_off + align > m_ubo_end) { CallPhase full("ubo-full", m_slot, (long long)(m_ubo_off - m_ubo_base)); submit_wait(); begin_cb(); }
 		std::memcpy(m_ubo.map + m_ubo_off, &p, sizeof(p));
 		uint32_t off = uint32_t(m_ubo_off);
 		m_ubo_off += align;
@@ -677,7 +792,7 @@ private:
 	{
 		size_t bytes = row_bytes * size_t(rows);
 		begin_cb();
-		if (m_stage_off + bytes > m_stage_end) { submit_wait(); begin_cb(); }
+		if (m_stage_off + bytes > m_stage_end) { CallPhase full("stage-full", m_slot, (long long)(m_stage_off - m_stage_base)); submit_wait(); begin_cb(); }
 		std::memcpy(m_stage.map + m_stage_off, src, bytes);
 		barrier(im.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 		        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);

@@ -80,6 +80,7 @@ public:
 	// widescreen: show only the arcade's 4:3 picture, black bars beside it (menus and 2D screens)
 	virtual void set_pillarbox(bool on) { (void)on; }
 	virtual void set_profiling(bool on) { (void)on; }      // measure GPU and swap time (--perf)
+	virtual void set_debug(int flags) { (void)flags; }     // experiments for the profiler. OpenGL: 1 = glFinish before the swap, 2 = glFlush. Vulkan: 16 = two frames in flight
 	virtual double last_swap_ms() const { return -1.0; }   // duration of the last buffer swap call
 	virtual double last_gpu_ms() const { return -1.0; }   // GPU time of the last finished frame (-1 = not measured)
 	virtual bool read_display(std::vector<uint32_t> &out, int &w, int &h) = 0;
