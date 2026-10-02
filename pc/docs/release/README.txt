@@ -17,6 +17,8 @@ Start
 
 Keys in the game (defaults, as in MAME)
   5 coin, 1 start, Left / Right steer, Left Ctrl accelerate, Left Alt brake, Z X C V gears, F2 test menu, Esc quit.
+  P pause menu (continue, return to attract, exit game): arrow keys or the wheel move, Enter, Start or the accelerator
+  choose, P again continues. The pause button can be bound to a wheel or pad button in the launcher (Controls).
   F3 anti-aliasing, F4 shadow style, F5 / F6 internal resolution, F7 texture filter, F8 VSync, F9 smooth scaling.
   Wheels, pedals, shifters and pads are bound in the launcher under Controls.
 

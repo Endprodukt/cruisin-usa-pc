@@ -14,6 +14,7 @@ ACTION(service,    "Service credit",         "9",        "",           Operator)
 ACTION(test,       "Test / Enter (operator)","F2",       "",           Operator)
 ACTION(vol_down,   "Volume down",            "MINUS",    "",           Operator)
 ACTION(vol_up,     "Volume up",              "EQUALS",   "",           Operator)
+ACTION(pause,      "Pause menu",             "P",        "",           Operator)
 
 ACTION(steer_left, "Steer left",             "LEFT",     "",           Driving)
 ACTION(steer_right,"Steer right",            "RIGHT",    "",           Driving)

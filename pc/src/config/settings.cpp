@@ -283,7 +283,7 @@ bool Settings::save(const std::string &path) const
 	o << "; Cruis'n USA PC -- written by the launcher. Every key is optional; defaults apply.\n\n";
 	o << "[game]\nrom = " << rom << "\nversion = " << version << "\nnvram = " << nvram
 	  << "\nshow_launcher = " << b(show_launcher) << "\nfast_boot = " << b(fast_boot) << "\n; opponents' rubber band (catch-up boost) in percent of the original: 100 original, 50 reduced, 0 none\nrubberband = " << rubberband	  << "\n; sound DSP emulated on its own thread (same sound, less time per frame): -1 auto (4+ CPU threads), 0 off, 1 on\ndsp_thread = " << dsp_thread
-	  << "\n; a game picture every second refresh without exception: the emulated CPU gets the instructions a frame still needs before\n; its vblank (false = the arcade machine's own slowdowns, and more of them with a longer draw distance)\nsteady_cadence = " << b(steady_cadence) << "\n\n";
+	  << "\n; a game picture every second refresh without exception: the emulated CPU gets the instructions a frame still needs before\n; its vblank, and the legs of "Cruise the USA" after the first run at the race's frame rate instead of two thirds of it\n; (false = the arcade machine exactly as it is, with its own slowdowns)\nsteady_cadence = " << b(steady_cadence) << "\n\n";
 
 	o << "[video]\n; renderer: cpu | opengl | vulkan      window_mode: window | borderless | fullscreen\n"
 	  << "renderer = " << to_string(video.renderer) << "\nwindow_mode = " << to_string(video.window_mode)

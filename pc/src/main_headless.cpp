@@ -59,7 +59,9 @@ int main(int argc, char **argv)
 	if (!m.load_roms(rom, ver, err)) { fprintf(stderr, "ROM error: %s\n", err.c_str()); return 1; }
 	std::vector<int16_t> pcm; double rate = 0; int blocks = 0;
 	m.on_audio = [&](const int16_t *b, int n, double r) { pcm.insert(pcm.end(), b, b + n); if (rate == 0) rate = r; blocks++; };
-	if (const char *sc = getenv("STEADY")) m.steady_cadence = atoi(sc);   // 0 machine, 1 due frames only (default), 2 before every vblank
+	if (const char *sc = getenv("STEADY")) { m.steady_cadence = atoi(sc); m.rom_patches.cruise_leg_rate = atoi(sc) != 0; }   // (0 = the machine as it is)
+	if (const char *lr = getenv("LEGRATE")) m.rom_patches.cruise_leg_rate = atoi(lr) != 0;
+	// (STEADY: 0 machine, 1 due frames only (default), 2 before every vblank)
 	m.quad_stats = getenv("QUADSTAT") != nullptr || getenv("POLYLOG") != nullptr;   // polygon statistics; POLYLOG=<csv>: one line per game picture
 	if (const char *pl = getenv("POLYLOG")) m.poly_log = fopen(pl, "w");
 	m.steady_budget_ms = getenv("STEADY_MS") ? atof(getenv("STEADY_MS")) : 0.0;   // headless runs are not paced: no host time limit

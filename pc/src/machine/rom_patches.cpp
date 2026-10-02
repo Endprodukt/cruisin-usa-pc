@@ -280,6 +280,34 @@ void fix_debris_maxdist(std::vector<uint32_t> &ram, int &applied, std::string &l
 	else if (n > 1) log += "  debris sort: MAXDIST matched " + std::to_string(n) + " words\n";
 }
 
+// The frame governor FRAMRATE (a game picture at most every FRAMRATE + 1 vblanks) is set to 2 by INIT_GAMELEG and to 1, the
+// race's value, by ALL_JOINUP (INTRO.ASM), which every start of a race runs through after INIT_GAMELEG: a single race, the
+// first leg of "Cruise the USA", a new challenger. The one exception is the next leg of the tour, started from the map screen
+// (BONUS.ASM): "CLRI R0 / STI R0,@DID_TIMED_OUT / CALL INIT_GAMELEG / DIE". It never reaches ALL_JOINUP, so the second and
+// all later legs run at a picture every 3 vblanks (19.3 instead of 28.9 per second): an oversight in the game, on the machine
+// as well. The two instructions before the call are redundant (INIT_GAMELEG clears DID_TIMED_OUT itself), which leaves room:
+// the four words become "CALL INIT_GAMELEG / LDI 1,R0 / STI R0,@FRAMRATE / DIE".
+void cruise_leg_rate(std::vector<uint32_t> &ram, int &applied, std::string &log)
+{
+	for (size_t i = 0; i + 4 < 0x20000; i++)
+	{
+		if (!(ram[i] == 0x18000000u && (ram[i + 1] & 0xffff0000u) == 0x15200000u && (ram[i + 2] & 0xff000000u) == 0x62000000u && (ram[i + 3] & 0xff000000u) == 0x60000000u))
+			continue;
+		const size_t leg = ram[i + 2] & 0xffffffu;   // INIT_GAMELEG: CLRI R0, a few STI R0,@..., LDI 2,R0 / STI R0,@FRAMRATE
+		if (leg + 12 >= 0x20000 || ram[leg] != 0x18000000u) continue;
+		bool clears = false;
+		size_t k = leg + 1;
+		for (; k < leg + 10 && (ram[k] & 0xffff0000u) == 0x15200000u; k++) clears |= ram[k] == ram[i + 1];
+		if (!clears || ram[k] != 0x08600002u || (ram[k + 1] & 0xffff0000u) != 0x15200000u) continue;
+		ram[i] = ram[i + 2];            // CALL INIT_GAMELEG
+		ram[i + 1] = 0x08600001u;       // LDI 1,R0
+		ram[i + 2] = ram[k + 1];        // STI R0,@FRAMRATE
+		applied++;
+		log += "  cruise the USA: the race's frame rate in every leg\n";
+		return;
+	}
+}
+
 } // namespace
 
 int apply_rom_patches(std::vector<uint32_t> &ram, const RomPatchOptions &opt, std::string &log)
@@ -291,5 +319,6 @@ int apply_rom_patches(std::vector<uint32_t> &ram, const RomPatchOptions &opt, st
 	rubberband(ram, opt.rubberband_pct, applied, log);
 	widescreen(ram, opt.wide_margin, applied, log);
 	if (opt.smooth_frames) smooth_frames(ram, applied, log);
+	if (opt.cruise_leg_rate) cruise_leg_rate(ram, applied, log);
 	return applied;
 }

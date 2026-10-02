@@ -1418,6 +1418,13 @@ void MidVUnit::gpu_sync_state()
 {
 	if (!m_gpu)
 		return;
+	if (m_ui_active)
+	{
+		// the game draws again: the palette entries the pause menu borrowed get the game's colours back
+		m_ui_active = false;
+		m_pal_lo = std::min(m_pal_lo, m_ui_lo); m_pal_hi = std::max(m_pal_hi, m_ui_hi);
+		m_ui_lo = 0x7fffffff; m_ui_hi = -1;
+	}
 	if (m_repl_pending)
 	{
 		m_repl_pending = false;
@@ -1570,6 +1577,32 @@ void MidVUnit::gpu_add_quad(const VQuad &q)
 	dst.push_back(g);
 	if (dst.size() >= 4096)
 		gpu_flush_quads();
+}
+
+void MidVUnit::ui_palette(int first, const uint32_t *rgb, int count)
+{
+	if (!m_gpu || first < 0 || count <= 0 || size_t(first + count) > m_palette_rgb.size()) return;
+	if (!m_ui_active)
+	{
+		gpu_flush_quads();
+		gpu_sync_state();
+		m_ui_pal = m_palette_rgb;
+		m_ui_active = true;
+	}
+	std::copy(rgb, rgb + count, m_ui_pal.begin() + first);
+	m_gpu->upload_palette(m_ui_pal.data(), first, first + count - 1);
+	m_ui_lo = std::min(m_ui_lo, first); m_ui_hi = std::max(m_ui_hi, first + count - 1);
+}
+
+void MidVUnit::ui_draw(const GpuQuad *quads, int count)
+{
+	if (!m_gpu || count <= 0) return;
+	if (!m_ui_active) { gpu_flush_quads(); gpu_sync_state(); }
+	std::vector<GpuQuad> q(quads, quads + count);
+	for (GpuQuad &g : q)
+		for (int i = 0; i < 4; i++) g.p[i * 2] += float(m_wide);
+	m_gpu->draw(m_present_page, q.data(), count);
+	m_gpu->latch(m_present_page, m_vis_h);
 }
 
 void MidVUnit::present_gpu()

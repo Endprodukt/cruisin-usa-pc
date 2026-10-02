@@ -145,6 +145,16 @@ public:
 	void set_hud_spread(float f) { m_hud_spread = f; }   // 0 = HUD in the 4:3 centre, 1 = pushed to the screen edges
 	void present_gpu();                       // flush pending draws and present the display page
 	int  display_page() const { return m_present_page; }
+	// ---- the port's own drawing onto the picture that is on display (pause menu). The machine does not run meanwhile; the
+	// game's palette is handed back to the video backend when it draws again.
+	uint32_t mem_peek(uint32_t a) const { return a >= 0xC00000 && a - 0xC00000 < m_rom.size() ? m_rom[a - 0xC00000] : ram_peek(a); }   // RAM or program ROM
+	static uint32_t colour_rgb(uint32_t w) { auto c = [](uint32_t v) { v &= 31; return (v << 3) | (v >> 2); }; return (c(w >> 10) << 16) | (c(w >> 5) << 8) | c(w); }
+	int wide_margin() const { return m_wide; }
+	void ui_palette(int first, const uint32_t *rgb, int count);   // palette entries for ui_draw
+	void ui_draw(const GpuQuad *quads, int count);                // x in arcade pixels of the 512 px picture
+	std::vector<uint32_t> m_ui_pal;
+	bool m_ui_active = false;
+	int m_ui_lo = 0x7fffffff, m_ui_hi = -1;
 
 	// ---- outputs ------------------------------------------------------------------------
 	uint8_t wheel_motor = 0;     // WHLCTLZ latch (force feedback command)

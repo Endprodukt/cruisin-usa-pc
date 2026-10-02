@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "perf.h"
+#include "pause_menu.h"
 #include "calltrace.h"
 #include "platform/stall_watch.h"
 #include "machine/midvunit.h"
@@ -356,6 +357,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	m.rom_patches.draw_distance_pct = S.video.draw_distance;
 	m.rom_patches.rubberband_pct = S.rubberband;
 	m.rom_patches.smooth_frames = S.smooth_frames;
+	m.rom_patches.cruise_leg_rate = S.steady_cadence && arg_value(a, "--steady") != "0";   // (steady_cadence = false: the machine as it is)
 	m.cpu_overclock = S.smooth_frames ? 2 : 1;   // a frame per vblank needs the frame's work done within one vblank
 	m.dcs_thread = S.dsp_thread;
 	m.steady_cadence = S.steady_cadence ? 1 : 0;
@@ -512,9 +514,10 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	MSG msg;
 	// ---- The arcade board's power-up tests (ROM checksums, RAM, sound board, then the result screens with their fixed waits)
 	// are part of the game program and take about 1300 frames. They are run unthrottled, silent and unseen behind a loading
-	// picture (about two seconds), until the attract mode draws its first picture.
-	if (S.fast_boot)
-	{
+	// picture (about two seconds), until the attract mode draws its first picture. (Also after "return to attract" in the
+	// pause menu, which resets the machine.)
+	auto boot_to_attract = [&]() {
+		if (!S.fast_boot) return;
 		Splash splash;
 		if (shot.empty()) splash.show(hwnd, "LOADING ...");
 		hook_audio(false);
@@ -532,7 +535,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		present();          // the game's first picture is in the window before the loading picture goes
 		splash.hide();
 		SetForegroundWindow(hwnd);
-	}
+	};
+	boot_to_attract();
 	hook_audio(true);
 	std::fill(std::begin(g_pressed), std::end(g_pressed), false);
 
@@ -567,6 +571,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	double next_frame = 0;
 	double fps_t = 0; int fps_n = 0; int shot_count = 0;
 	bool fullscreen_now = S.video.window_mode == WindowMode::Fullscreen;
+	PauseMenu pause;
+	bool pause_held = false, pause_sel_held = false;
+	int pause_zone = 0;
 	while (!g_quit)
 	{
 		FrameRec rec;
@@ -582,6 +589,68 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			apply_window_mode(hwnd, S.video, fullscreen_now ? WindowMode::Fullscreen : back);
 		}
 		if (g_size_w > 0) { if (video) video->resize(g_size_w, g_size_h); g_size_w = 0; sync_clock = false; sync_fast = 0; }   // (another display, perhaps: look again whether the swap waits)
+
+		// ---- pause (the "pause" action, P by default): the machine stands still, no sound, no force. The menu is steered with
+		// the arrow keys or the wheel (left = up, right = down) and chosen with Enter, Start or the accelerator; pause again continues.
+		if (!pause.is_open())
+		{
+			// (testing: --pause-at <frame> opens the menu by itself, --pause-sel <n> moves the selection down n times)
+			static const int pause_at = arg_value(a, "--pause-at").empty() ? 0 : std::atoi(arg_value(a, "--pause-at").c_str());
+			static int pause_frames = 0;
+			const bool pause_test = pause_at > 0 && ++pause_frames == pause_at;
+			const bool ph = controls.action_active("pause");
+			if ((ph && !pause_held) || pause_test)
+			{
+				pause.open(m);
+				if (pause_test) for (int k = std::atoi(arg_value(a, "--pause-sel").c_str()); k > 0; k--) pause.update(m, false, true, false);
+				audio.clear();
+				controls.ffb_update(0, nullptr);
+				pause_sel_held = true;                                    // a pedal that is down has to come up first
+				pause_zone = m.inputs.wheel < 88 ? -1 : m.inputs.wheel > 168 ? 1 : 0;
+			}
+			pause_held = ph;
+		}
+		if (pause.is_open())
+		{
+			MachineInputs pin;
+			controls.update(pin, GetForegroundWindow() == hwnd);
+			const bool ph = controls.action_active("pause");
+			const int zone = pin.wheel < 88 ? -1 : pin.wheel > 168 ? 1 : (pin.wheel > 108 && pin.wheel < 148) ? 0 : pause_zone;
+			const bool up = g_pressed[VK_UP] || (zone == -1 && pause_zone != -1), down = g_pressed[VK_DOWN] || (zone == 1 && pause_zone != 1);
+			pause_zone = zone;
+			const bool sel_now = !(pin.in0 & in0bit::START) || pin.accel > 160;
+			const bool select = (g_pressed[VK_RETURN] && !(GetKeyState(VK_MENU) & 0x8000)) || (sel_now && !pause_sel_held);
+			pause_sel_held = sel_now;
+			PauseMenu::Choice choice = pause.update(m, up, down, select);
+			if (ph && !pause_held) choice = PauseMenu::Continue;
+			{   // (testing: --pause-do continue|attract|exit chooses by itself two seconds after --pause-at opened the menu)
+				static const std::string pause_do = arg_value(a, "--pause-do");
+				static int pause_open_frames = 0;
+				if (!pause_do.empty() && ++pause_open_frames == 120) choice = pause_do == "attract" ? PauseMenu::Attract : pause_do == "exit" ? PauseMenu::Exit : PauseMenu::Continue;
+			}
+			pause_held = ph;
+			std::fill(std::begin(g_pressed), std::end(g_pressed), false);
+			if (choice == PauseMenu::None)
+			{
+				present();
+				if (!video || !S.video.vsync) Sleep(10);
+				continue;
+			}
+			pause.close();
+			if (choice == PauseMenu::Exit) { g_quit = true; continue; }
+			if (choice == PauseMenu::Attract)
+			{
+				m.save_nvram(exe_relative(S.nvram));
+				m.reset();
+				boot_to_attract();
+				hook_audio(true);
+			}
+			// back to the game: the pacing starts from now
+			next_frame = now_sec() - t_start;
+			sync_last = now_sec(); sync_done = 0; sync_fast = 0;
+			prof_last = 0;
+			continue;
+		}
 
 		double t = now_sec() - t_start;
 

@@ -194,6 +194,7 @@ void Controls::update(MachineInputs &out, bool focused)
 	hold0(active("test"), in0bit::TEST);
 	hold0(active("vol_down"), in0bit::VOLDN);
 	hold0(active("vol_up"), in0bit::VOLUP);
+	active("pause");   // (not a cabinet input: the frame loop asks action_active("pause"))
 	hold1(active("radio"), in1bit::RADIO);
 	hold1(active("view1"), in1bit::VIEW1);
 	hold1(active("view2"), in1bit::VIEW2);

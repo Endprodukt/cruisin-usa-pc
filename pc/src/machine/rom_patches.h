@@ -15,6 +15,10 @@ struct RomPatchOptions
 	// EXPERIMENTAL, not offered in the launcher: frame governor off (a game frame per vblank). Breaks the game's timing: ~290
 	// SLEEP calls and other counters run per game frame, not per vblank (race start countdown twice as fast). See PERFORMANCE.md.
 	bool smooth_frames = false;
+	// "Cruise the USA": every leg after the first runs with the frame governor at 2 (a picture every 3 vblanks, 19 per second,
+	// instead of every 2) in the original, because the code that starts the next leg from the map screen does not set it back
+	// to the race's value. true = it does. See rom_patches.cpp.
+	bool cruise_leg_rate = true;
 };
 
 // patches `ram` (the first words of the program, as copied to RAM at boot); returns the number of patches applied
