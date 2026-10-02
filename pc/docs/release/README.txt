@@ -31,7 +31,7 @@ Keys in the game (defaults)
   Wheels, pedals, shifters and pads are bound in the launcher under Controls.
 
 Folders the program creates when asked to
-  textures/dump     textures exported while playing (Video > Textures)
+  textures/dump     textures exported while playing (Video > Textures; not ready yet, switched off in this version)
   textures/replace  your replacement textures (same file names)
 
 Credits and licences: see the launcher's About page and LICENSES.txt.

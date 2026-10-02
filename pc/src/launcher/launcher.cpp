@@ -297,13 +297,17 @@ void page_video(Launcher &L)
 	     "right items right, time and rank stay centred). Only has an effect with real widescreen. Takes effect at the next start.");
 
 	ImGui::SeparatorText("Textures");
-	ImGui::BeginDisabled(!gpu);
+	// the export is not finished (file naming and the palette variants are still changing): shown, but not switchable yet
+	ImGui::TextDisabled("Texture export is not ready yet and is switched off in this version.");
+	ImGui::BeginDisabled(true);
 	edited(L, ImGui::Checkbox("Export textures while playing", &v.export_textures));
 	help("Writes every texture that gets drawn to textures/dump next to the program as a 256 x 256 PNG (tex_<hash>.png; textures that look the same share one file). "
 	     "Upscale them with any tool and keep the names. The export is switched here only (there is no key for it in the game).");
 	edited(L, ImGui::Checkbox("Export every palette variant (car colours etc.)", &v.export_variants));
 	help("Off: one file (idx_<hash>.png) per distinct texture page, shown in the first colours seen; a replacement of it is used for all "
 	     "colour variants. On: one file (tex_<hash>.png) for every colour variant, which allows per-colour replacements but exports many more files.");
+	ImGui::EndDisabled();
+	ImGui::BeginDisabled(!gpu);
 	edited(L, ImGui::Checkbox("Use replacement textures", &v.replace_textures));
 	help("PNGs with the same names in textures/replace (square, 256 to 2048 px; all of them are brought to the largest size) are drawn instead "
 	     "of the original textures. Takes effect at the next start of the game.");
