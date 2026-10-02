@@ -87,6 +87,11 @@ using GLchar_ = char;
 	X(void, glEndQuery, (GLenum))                                                                       \
 	X(void, glGetQueryObjectiv, (GLuint, GLenum, GLint *))                                              \
 	X(void, glGetQueryObjectui64v, (GLuint, GLenum, unsigned long long *))                              \
+	X(void, glQueryCounter, (GLuint, GLenum))                                                           \
+	X(void, glGetInteger64v, (GLenum, long long *))                                                     \
+	X(void *, glFenceSync, (GLenum, GLbitfield))                                                        \
+	X(GLenum, glClientWaitSync, (void *, GLbitfield, unsigned long long))                               \
+	X(void, glDeleteSync, (void *))                                                                     \
 	X(void, glCopyImageSubData, (GLuint, GLenum, GLint, GLint, GLint, GLint, GLuint, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei))
 
 #define X(ret, name, args) using PFN_##name = ret(APIENTRY *) args;
@@ -445,8 +450,33 @@ public:
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, m_disp_tex);
 		glBindVertexArray(m_vao_empty);
+		// (experiment 64: the same pass a number of times more, to hold the GPU's load up: for measuring only)
+		if (m_debug & 64) for (int k = m_debug >> 8; k > 0; k--) glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
 		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
 		q_end();
+		if (m_prof && ((m_ts_head + 1) % kTs) != m_ts_tail)
+		{
+			// the moment the GPU has finished this frame's last call
+			TsQuery &t = m_ts[m_ts_head];
+			if (!t.id) glGenQueries(1, &t.id);
+			t.frame = m_q_frame;
+			glQueryCounter(t.id, 0x8E28);
+			m_ts_head = (m_ts_head + 1) % kTs;
+		}
+		if (m_opt.frame_ahead_limit || (m_debug & 4))
+		{
+			// The frame before this one has to be finished by the GPU before this one is swapped. Without that the driver runs
+			// its own thread up to four frames behind the game (measured, NVIDIA: the GPU finished a frame 63 ms after its swap
+			// was called; from reading the inputs to the picture on the display it took 80 ms). The swap call then returns at
+			// times that have little to do with the display, and at 8x the GPU's work ended right on the vblank every few
+			// seconds: 2 % of the pictures were shown a refresh early or late. With the limit: 46 ms, and the work ends 6 ms
+			// or more before its vblank. (docs/PERFORMANCE.md; [video] frame_ahead_limit = false or --gl-debug 128 turn it off.)
+			if (!(m_debug & 128))
+			{
+				if (m_fence) { glClientWaitSync(m_fence, 1 /* GL_SYNC_FLUSH_COMMANDS_BIT */, 100000000ull); glDeleteSync(m_fence); }
+				m_fence = glFenceSync(0x9117 /* GL_SYNC_GPU_COMMANDS_COMPLETE */, 0);
+			}
+		}
 		if (m_debug & 1) glFinish();   // (test: the GPU's queued work is waited for here, so that the swap's own wait stands alone)
 		if (m_debug & 2) glFlush();
 		if (!m_prof) { SwapBuffers(m_dc); g_calltrace.frame++; return; }
@@ -458,6 +488,7 @@ public:
 		SwapBuffers(m_dc);
 		QueryPerformanceCounter(&t1);
 		m_swap_ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(f.QuadPart);
+		m_swap_t0 = double(t0.QuadPart) * 1000.0 / double(f.QuadPart); m_swap_t1 = double(t1.QuadPart) * 1000.0 / double(f.QuadPart);
 		g_calltrace.frame++;
 		m_q_frame++;
 	}
@@ -501,12 +532,52 @@ public:
 			if (q.frame != m_acc_frame)
 			{
 				m_gpu_ms = 0;
-				for (int i = 0; i < kGpuPhases; i++) { m_last[i] = m_acc[i]; m_gpu_ms += m_acc[i]; m_acc[i] = 0; }
+				PhaseRec pr; pr.frame = m_acc_frame;
+				for (int i = 0; i < kGpuPhases; i++) { m_last[i] = m_acc[i]; pr.ms[i] = m_acc[i]; m_gpu_ms += m_acc[i]; m_acc[i] = 0; }
+				if (m_phase_done.size() < 256) m_phase_done.push_back(pr);
 				m_acc_frame = q.frame;
 			}
 			m_acc[q.phase] += double(ns) / 1e6;
 			m_qt = (m_qt + 1) % kPool;
 		}
+		while (m_ts_tail != m_ts_head)
+		{
+			TsQuery &t = m_ts[m_ts_tail];
+			GLint ready = 0;
+			glGetQueryObjectiv(t.id, 0x8867, &ready);
+			if (!ready) break;
+			unsigned long long ns = 0;
+			glGetQueryObjectui64v(t.id, 0x8866, &ns);
+			m_done.push_back({t.frame, double((long long)ns - m_ts_gl0) / 1e6 + m_ts_qpc0});
+			m_ts_tail = (m_ts_tail + 1) % kTs;
+		}
+	}
+	// timestamps: the GL clock is tied to the performance counter once, when profiling starts
+	enum { kTs = 64 };
+	struct TsQuery { GLuint id = 0; uint32_t frame = 0; };
+	TsQuery m_ts[kTs];
+	int m_ts_head = 0, m_ts_tail = 0;
+	long long m_ts_gl0 = 0;
+	double m_ts_qpc0 = 0, m_swap_t0 = 0, m_swap_t1 = 0;
+	std::vector<std::pair<uint32_t, double>> m_done;
+	struct PhaseRec { uint32_t frame = 0; double ms[kGpuPhases] = {}; };
+	std::vector<PhaseRec> m_phase_done;
+	bool pop_gpu_phases(uint32_t &idx, double ms[kGpuPhases]) override
+	{
+		if (m_phase_done.empty()) return false;
+		idx = m_phase_done.front().frame;
+		for (int i = 0; i < kGpuPhases; i++) ms[i] = m_phase_done.front().ms[i];
+		m_phase_done.erase(m_phase_done.begin());
+		return true;
+	}
+	uint32_t present_index() const override { return m_q_frame; }
+	void swap_times(double &b, double &e) const override { b = m_swap_t0; e = m_swap_t1; }
+	bool pop_gpu_done(uint32_t &idx, double &ms) override
+	{
+		if (m_done.empty()) return false;
+		idx = m_done.front().first; ms = m_done.front().second;
+		m_done.erase(m_done.begin());
+		return true;
 	}
 	struct GpuScope
 	{
@@ -516,9 +587,18 @@ public:
 	};
 	double last_gpu_phase_ms(int phase) const override { return phase >= 0 && phase < kGpuPhases ? m_last[phase] : -1.0; }
 
-	void set_profiling(bool on) override { m_prof = on; }
+	void set_profiling(bool on) override
+	{
+		m_prof = on;
+		if (!on) return;
+		const double a = perf_now_ms();
+		glGetInteger64v(0x8E28, &m_ts_gl0);          // (waits for the GPU: once, before the first frame)
+		m_ts_qpc0 = (a + perf_now_ms()) * 0.5;
+	}
 	void set_debug(int flags) override { m_debug = flags; }
+	void flush() override { CallPhase ph("flush"); glFlush(); }
 	int m_debug = 0;
+	void *m_fence = nullptr;
 	double last_swap_ms() const override { return m_swap_ms; }
 	double last_gpu_ms() const override { return m_gpu_ms; }
 	bool m_prof = false, m_q_open = false;

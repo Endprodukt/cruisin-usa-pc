@@ -1270,6 +1270,8 @@ bool MidVUnit::run_frame()
 			m_present_page = m_page_control & 1;
 			gpu_flush_quads();
 			gpu_sync_state();
+			if (page_flips != m_latched_flips || m_present_page != m_latched_page || m_front_drawn || m_cpu_page_writes[m_present_page]) m_display_dirty = true;
+			m_latched_flips = page_flips; m_latched_page = m_present_page; m_front_drawn = false;
 			// The game clears a page either with a full-screen fill (stretched over the margins in gpu_add_quad) or, for boot and
 			// test screens, by writing the video RAM itself. Only the latter leaves stale 3D in the widescreen margins, so they are
 			// cleared when the CPU rewrote most of a page since the last vblank. (Not "no polygons this frame": the game also holds a
@@ -1487,6 +1489,7 @@ void MidVUnit::gpu_flush_quads()
 	perf_draws++;
 	perf_quads += m_gq.size();
 	gpu_sync_state();
+	if (m_gq_page == int(m_page_control & 1)) m_front_drawn = true;   // drawn into the page that is on display
 	m_gpu->draw(m_gq_page, m_gq.data(), int(m_gq.size()));
 	m_gq.clear();
 }
@@ -1603,6 +1606,7 @@ void MidVUnit::ui_draw(const GpuQuad *quads, int count)
 		for (int i = 0; i < 4; i++) g.p[i * 2] += float(m_wide);
 	m_gpu->draw(m_present_page, q.data(), count);
 	m_gpu->latch(m_present_page, m_vis_h);
+	m_display_dirty = true;
 }
 
 void MidVUnit::present_gpu()
@@ -2194,8 +2198,12 @@ void MidVUnit::setup_idle_hooks()
 
 #ifdef C3X_PROFILE
 const uint64_t *MidVUnit::cpu_hits() const { return m_cpu->m_hits; }
+uint32_t *MidVUnit::cpu_pc_hits(uint64_t **other) { if (other) *other = &m_cpu->m_pc_other; return m_cpu->m_pc_hits; }
+uint64_t *MidVUnit::cpu_tag_hits(uint32_t tag_pc, uint32_t lo, uint32_t hi) { m_cpu->m_tag_pc = tag_pc; m_cpu->m_tag_lo = lo; m_cpu->m_tag_hi = hi; return m_cpu->m_tag_hits; }
 #else
+uint64_t *MidVUnit::cpu_tag_hits(uint32_t, uint32_t, uint32_t) { return nullptr; }
 const uint64_t *MidVUnit::cpu_hits() const { return nullptr; }
+uint32_t *MidVUnit::cpu_pc_hits(uint64_t **) { return nullptr; }
 #endif
 
 int MidVUnit::free_objects() const

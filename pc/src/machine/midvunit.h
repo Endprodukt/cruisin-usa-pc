@@ -119,6 +119,8 @@ public:
 	double perf_feed_ms = 0;               // time spent handing quads / state to the video backend
 	uint64_t perf_draws = 0, perf_quads = 0;
 	const uint64_t *cpu_hits() const;
+	uint32_t *cpu_pc_hits(uint64_t **other = nullptr);
+	uint64_t *cpu_tag_hits(uint32_t tag_pc, uint32_t lo, uint32_t hi);   // (profiling builds) instructions in [lo, hi) by object class, see tms320c3x.h   // C3X_PROFILE builds: executed instructions by address (0x20000 entries), else null
 	bool m_pchist_on = false;
 	std::map<uint32_t, uint32_t> m_pchist;
 	bool read_telemetry(struct Telemetry &t) const;   // player car state for motion / force feedback
@@ -150,6 +152,12 @@ public:
 	uint32_t mem_peek(uint32_t a) const { return a >= 0xC00000 && a - 0xC00000 < m_rom.size() ? m_rom[a - 0xC00000] : ram_peek(a); }   // RAM or program ROM
 	static uint32_t colour_rgb(uint32_t w) { auto c = [](uint32_t v) { v &= 31; return (v << 3) | (v >> 2); }; return (c(w >> 10) << 16) | (c(w >> 5) << 8) | c(w); }
 	int wide_margin() const { return m_wide; }
+	// has the picture on display changed since this was last asked? (a page flip, the CPU or polygons drawing into the page
+	// that is shown, the port's own drawing)
+	bool take_display_changed() { const bool d = m_display_dirty; m_display_dirty = false; return d; }
+	bool m_display_dirty = true, m_front_drawn = false;
+	uint64_t m_latched_flips = ~0ull;
+	int m_latched_page = -1;
 	void ui_palette(int first, const uint32_t *rgb, int count);   // palette entries for ui_draw
 	void ui_draw(const GpuQuad *quads, int count);                // x in arcade pixels of the 512 px picture
 	std::vector<uint32_t> m_ui_pal;

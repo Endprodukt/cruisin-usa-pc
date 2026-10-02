@@ -244,6 +244,9 @@ void page_video(Launcher &L)
 	ImGui::BeginDisabled(v.display_sync);
 	edited(L, ImGui::Checkbox("VSync", &v.vsync));
 	ImGui::EndDisabled();
+	edited(L, ImGui::Checkbox("Low input lag (driver at most one frame behind)", &v.frame_ahead_limit));
+	help("The graphics driver otherwise queues several frames: the picture then follows the wheel about 35 ms later, and at high internal "
+	     "resolutions single pictures are shown a refresh early or late.");
 
 	ImGui::SeparatorText("Shadows");
 	ImGui::BeginDisabled(!gpu);

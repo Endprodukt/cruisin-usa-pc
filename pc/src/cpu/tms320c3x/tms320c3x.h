@@ -70,15 +70,17 @@ public:
 
 	// Execution hooks: when the program counter reaches one of hook_pc (before the instruction runs), on_hook() is called from the
 	// run loop. If it returns true the rest of the current time slice is skipped (used to fast-forward the game's idle loops).
-	// After changing hook_pc call refresh_hooks(): the run loop first looks the low bits of the PC up in a small table, so the cost
-	// per instruction stays one byte load however many hooks there are.
+	// After changing hook_pc call refresh_hooks(): the run loop first looks the low 12 bits of the PC up in a table, so the cost
+	// per instruction stays one byte load however many hooks there are. (12 bits, not 8: with 14 hooks one instruction in 18
+	// passed an 8-bit filter and went through the comparison of all hooks, 3.5 % of the interpreter's time in the profile.)
 	static constexpr int kHooks = 16;
 	uint32_t hook_pc[kHooks] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
-	uint8_t hook_filter[256] = {};
+	static constexpr uint32_t kHookMask = 4095;
+	uint8_t hook_filter[kHookMask + 1] = {};
 	void refresh_hooks()
 	{
 		for (uint8_t &f : hook_filter) f = 0;
-		for (uint32_t h : hook_pc) if (h != ~0u) hook_filter[h & 255] = 1;
+		for (uint32_t h : hook_pc) if (h != ~0u) hook_filter[h & kHookMask] = 1;
 	}
 	std::function<bool()> on_hook;
 	// Diagnostics (headless tool): with trace_jumps every change of the program flow is kept in a ring (from, to); trace_dump prints
@@ -92,7 +94,14 @@ public:
 	void skip_rest_of_slice() { m_icount = 0; }
 	void set_pc(uint32_t pc) { m_pc = pc; }
 #ifdef C3X_PROFILE
-	uint64_t m_hits[2048] = {};
+	uint64_t m_hits[2048] = {};                // executed instructions by opcode (top 11 bits)
+	static constexpr uint32_t kPcHits = 0x20000;
+	uint32_t m_pc_hits[kPcHits] = {};          // ...and by address (the program runs from the first 128K words of RAM)
+	uint64_t m_pc_other = 0;
+	// ...and, inside one address range (the display routine), by a tag read when the PC passes m_tag_pc: the class of the
+	// object in R0 (object word 15, bits 8-11), so that the display's work can be split by what is being displayed
+	uint32_t m_tag_pc = ~0u, m_tag_lo = 0, m_tag_hi = 0, m_tag = 0;
+	uint64_t m_tag_hits[16] = {};
 #endif
 
 	std::function<void(int)> on_xf0;

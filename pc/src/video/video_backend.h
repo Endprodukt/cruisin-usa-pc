@@ -40,6 +40,7 @@ struct VideoOptions
 	float aspect = 4.0f / 3.0f;     // arcade monitor aspect ratio (display area)
 	float shadow_strength = 0.55f;  // darkness of modern shadows (0..1)
 	float shadow_soft = 3.0f;       // penumbra radius in arcade (1x) pixels
+	bool frame_ahead_limit = true;  // the GPU must have finished the frame before this one before this one is swapped (OpenGL)
 };
 
 class IVideoBackend
@@ -79,13 +80,21 @@ public:
 	virtual void clear_margins(int page) { (void)page; }
 	// widescreen: show only the arcade's 4:3 picture, black bars beside it (menus and 2D screens)
 	virtual void set_pillarbox(bool on) { (void)on; }
+	virtual void flush() {}                                // hand everything issued so far to the GPU now (no present follows)
 	virtual void set_profiling(bool on) { (void)on; }      // measure GPU and swap time (--perf)
-	virtual void set_debug(int flags) { (void)flags; }     // experiments for the profiler. OpenGL: 1 = glFinish before the swap, 2 = glFlush. Vulkan: 16 = two frames in flight
+	virtual void set_debug(int flags) { (void)flags; }     // experiments for the profiler. OpenGL: 1 = glFinish before the swap, 2 = glFlush, 64 = extra GPU load (flags >> 8 full-window passes). Vulkan: 16 = two frames in flight
 	virtual double last_swap_ms() const { return -1.0; }   // duration of the last buffer swap call
 	virtual double last_gpu_ms() const { return -1.0; }
 	// ...and of that frame by render phase, where the backend measures it (OpenGL): the GPU's time for the phase's own calls
 	enum GpuPhase { GpuPolygons, GpuShadows, GpuOverlay, GpuLatch, GpuPresent, GpuUpload, kGpuPhases };
-	virtual double last_gpu_phase_ms(int phase) const { (void)phase; return -1.0; }   // GPU time of the last finished frame (-1 = not measured)
+	virtual double last_gpu_phase_ms(int phase) const { (void)phase; return -1.0; }
+	// the frame's timeline (profiling, OpenGL): the number the next present will have; when the last swap call began and
+	// returned (perf_now_ms); and, a frame or two later, when the GPU had finished everything of a frame
+	virtual uint32_t present_index() const { return 0; }
+	virtual void swap_times(double &begin_ms, double &end_ms) const { begin_ms = end_ms = 0; }
+	virtual bool pop_gpu_done(uint32_t &present_index, double &ms) { (void)present_index; (void)ms; return false; }
+	// ...and the GPU's time by phase for exactly that frame (last_gpu_phase_ms is "a recent frame")
+	virtual bool pop_gpu_phases(uint32_t &present_index, double ms[kGpuPhases]) { (void)present_index; (void)ms; return false; }   // GPU time of the last finished frame (-1 = not measured)
 	virtual bool read_display(std::vector<uint32_t> &out, int &w, int &h) = 0;
 };
 

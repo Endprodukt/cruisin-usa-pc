@@ -531,7 +531,7 @@ public:
 		// such waits in one race, docs/PERFORMANCE.md). Here the wait is the frame's pace: it ends with the display's vblank,
 		// once per frame, in the present; the GPU still renders a frame while the CPU emulates the next one.
 		// (set_debug 16 = the old behaviour, for comparison.)
-		if (!(m_debug & 16)) { CallPhase w("wait-prev"); wait_slot(m_slot ^ 1); }
+		if (!(m_debug & 16)) { CallPhase w("wait-prev"); wait_slot(m_slot ^ 1); }   // (the same limit as VideoOptions::frame_ahead_limit in OpenGL, always on here)
 
 		uint32_t idx = 0;
 		VkResult r = vkAcquireNextImageKHR(m_dev, m_sc, UINT64_MAX, m_sem_acq, VK_NULL_HANDLE, &idx);

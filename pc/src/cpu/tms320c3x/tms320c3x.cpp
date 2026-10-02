@@ -321,7 +321,7 @@ int tms320c3x_device::run(int cycles)
 			continue;
 		}
 
-		if (hook_filter[m_pc & 255])
+		if (hook_filter[m_pc & kHookMask])
 		{
 			bool hit = false;
 			for (uint32_t h : hook_pc) hit |= m_pc == h;

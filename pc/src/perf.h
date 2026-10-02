@@ -111,6 +111,10 @@ struct FrameRec
 	float present = 0;     // final blit and buffer swap (with VSync: includes waiting for the display)
 	float swap = 0;        // of which the swap call itself
 	float gpu = 0;         // GPU time of a recent frame (-1: not measured)
+	// the frame's timeline, perf_now_ms(): top of the frame loop, emulation done, present called, swap called, swap returned,
+	// GPU finished the frame (0 = not known); gl_frame: the backend's number of this present
+	double t_top = 0, t_emu = 0, t_present = 0, t_swap0 = 0, t_swap1 = 0, t_gpu_done = 0;
+	uint32_t gl_frame = 0;
 	float gpu_ph[6] = {-1, -1, -1, -1, -1, -1};   // ...by phase (IVideoBackend::GpuPhase): polygons, shadows, overlay, latch, present, uploads
 	float other = 0;       // window title, bookkeeping
 	float audio_ms = 0;    // sound queued in the output buffer
@@ -130,6 +134,24 @@ public:
 	bool on = false;
 	double spike_ms = 0;          // 0 = automatic: 1.5 x the median frame time
 	std::string spike_path, csv_path;
+
+	void gpu_done(uint32_t gl_frame, double ms)
+	{
+		for (size_t i = m_all.size(), k = 0; i-- > 0 && k < 32; k++)
+			if (m_all[i].gl_frame == gl_frame) { m_all[i].t_gpu_done = ms; return; }
+	}
+
+	void gpu_phases(uint32_t gl_frame, const double *ms)
+	{
+		for (size_t i = m_all.size(), k = 0; i-- > 0 && k < 32; k++)
+			if (m_all[i].gl_frame == gl_frame)
+			{
+				float sum = 0;
+				for (int p = 0; p < 6; p++) { m_all[i].gpu_ph[p] = float(ms[p]); sum += float(ms[p]); }
+				m_all[i].gpu = sum;
+				return;
+			}
+	}
 
 	void add(const FrameRec &r)
 	{
@@ -218,10 +240,10 @@ public:
 		if (!csv_path.empty())
 			if (FILE *f = std::fopen(csv_path.c_str(), "wb"))
 			{
-				std::fprintf(f, "frame,dt,msg,input,emu,cpu,dsp,feed,ffb,wait,present,swap,gpu,other,audio_ms,quads,draws,mode,flips,clock_q4,ran,late,refresh,phase,g_poly,g_shadow,g_overlay,g_latch,g_present,g_upload\n");
+				std::fprintf(f, "frame,dt,msg,input,emu,cpu,dsp,feed,ffb,wait,present,swap,gpu,other,audio_ms,quads,draws,mode,flips,clock_q4,ran,late,refresh,phase,g_poly,g_shadow,g_overlay,g_latch,g_present,g_upload,t_top,t_emu,t_present,t_swap0,t_swap1,t_gpu_done\n");
 				for (const FrameRec &r : m_all)
-					std::fprintf(f, "%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%u,%u,%X,%u,%u,%u,%u,%u,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", r.frame, r.dt, r.msg, r.input, r.emu, r.cpu, r.dsp,
-					             r.feed, r.ffb, r.wait, r.present, r.swap, r.gpu, r.other, r.audio_ms, r.quads, r.draws, r.mode, r.flips, r.clock_q4, r.ran, r.late, r.refresh, r.phase, r.gpu_ph[0], r.gpu_ph[1], r.gpu_ph[2], r.gpu_ph[3], r.gpu_ph[4], r.gpu_ph[5]);
+					std::fprintf(f, "%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%u,%u,%X,%u,%u,%u,%u,%u,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", r.frame, r.dt, r.msg, r.input, r.emu, r.cpu, r.dsp,
+					             r.feed, r.ffb, r.wait, r.present, r.swap, r.gpu, r.other, r.audio_ms, r.quads, r.draws, r.mode, r.flips, r.clock_q4, r.ran, r.late, r.refresh, r.phase, r.gpu_ph[0], r.gpu_ph[1], r.gpu_ph[2], r.gpu_ph[3], r.gpu_ph[4], r.gpu_ph[5], r.t_top, r.t_emu, r.t_present, r.t_swap0, r.t_swap1, r.t_gpu_done);
 				std::fclose(f);
 			}
 	}

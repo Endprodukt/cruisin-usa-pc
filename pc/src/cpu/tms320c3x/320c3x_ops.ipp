@@ -89,6 +89,12 @@ inline void tms320c3x_device::execute_one()
 	m_pc++;
 #ifdef C3X_PROFILE
 	m_hits[op >> 21]++;
+	if (m_pc - 1 < kPcHits) m_pc_hits[m_pc - 1]++; else m_pc_other++;
+	if (m_pc - 1 >= m_tag_lo && m_pc - 1 < m_tag_hi)
+	{
+		if (m_pc - 1 == m_tag_pc) m_tag = (RMEM((m_r[0].i32[0] + 0xF) & 0xffffff) >> 8) & 15;
+		m_tag_hits[m_tag]++;
+	}
 #endif
 	(this->*s_tms320c3x_ops[op >> 21])(op);
 }

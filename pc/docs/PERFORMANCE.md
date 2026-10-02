@@ -540,6 +540,8 @@ What the matrix says:
   The polygons are the part that grows (0.7 to 1.0 ms per picture at 1x, 4.7 to 5.4 ms at 6x, 6.4 to 9.2 ms at 8x, each at that
   resolution's clock); the shadows are 0.3 to 1.1 ms since the first pass; latch and present together 9 ms at 1x and 2.4 ms at 8x, falling
   as the clock rises. The draw distance moves the GPU's numbers by a few percent, as the polygon statistics predicted.
+* *(Corrected in the third pass: the late pictures are tied to periodic dips of the GPU's clock, not to its changes as
+  such, and the swap call is not the display. See there.)*
 * **What is left is pacing, and it is not the same at every resolution.** Game pictures that came a refresh late, of about
   8600 per resolution: 1x: 0, 2x: 12, 3x: 32, 4x: 11, 5x: 0, 6x: 3 (one stall, below), 8x: 3. The late pictures at 2x to
   4x come every 2 to 4 seconds or a multiple of that, in a present that takes one refresh longer, and the GPU time of the
@@ -571,3 +573,325 @@ depending on track and draw distance, the GPU a factor of 6. Where pictures are 
    times are OpenGL only so far (Vulkan reports the frame's total, which is a true GPU time there: one command buffer).
 6. **The steady cadence's default** is a decision, not a measurement: on, the machine's own slow frames are gone and the
    run differs from the machine from the first rescued frame; off, it is the machine exactly.
+
+## Third pass: the remaining late pictures, input lag, the CPU's worst case, weaker hosts (October 2026)
+
+No general optimisation round. What was left after the second pass, looked at one by one. Two statements of the second pass
+are corrected here: the late pictures at 2x to 4x are tied to the GPU's clock, but not in the way described there, and the
+"present margin" could not be judged from the swap call at all.
+
+### New in the tools
+
+* `--perf-csv` now carries the frame's timeline on the performance counter: top of the frame loop (the inputs are read
+  there), emulation done, present called, swap called, swap returned, and the moment the GPU had finished the frame (a
+  `GL_TIMESTAMP` query after the frame's last call, tied to the performance counter once when profiling starts). The GPU's
+  time by phase is attached to the frame it belongs to. `<csv>.vblank` holds the display's vblanks on the same clock
+  (`platform/vblank_clock`: a thread in `D3DKMTWaitForVerticalBlankEvent`).
+* From these: **display cadence** (the first vblank after the GPU had finished the frame that shows a game picture; the
+  driver's own swap waits for that vblank), **present margin** (how long before that vblank the GPU was finished) and
+  **latency** (from the top of the frame loop to that vblank). This is what can be seen from inside the process; the
+  moment the panel actually changes is one scan-out later and is not measured.
+* Test switches (never set by the launcher): `--gl-debug 1 / 2 / 64 / 128` (glFinish, glFlush, extra GPU load, frame-ahead
+  limit off), `--pace 1 / 2` (pace by the vblank itself, with or without presenting unchanged pictures),
+  `--fake-refresh <hz>`, `--cpu-slow <factor>`, `--warmup-kind <n>`, `--pause-at <frame>`.
+* Headless, profiling build (`cmake -DC3X_PROFILE=ON`): `PCPROF=<prefix>` writes the instructions per game picture and by
+  address, `PCDUMP=<picture>,..` the same for single pictures, `PCTAG=<pc>,<lo>,<hi>` splits the display routine's
+  instructions by the class of the object being displayed. `PROFILE=1` (normal build) samples the host.
+
+### 1. "Cruise the USA" at two thirds of the frame rate (a fault of the game)
+
+Reported as stutter at the start of US 101 when reached in the tour, not when chosen directly. Cause: the frame governor.
+`INIT_GAMELEG` sets FRAMRATE to 2 (a picture every 3 vblanks at best), and `ALL_JOINUP` sets it to 1 for the race. Every
+way into a race runs through both, except the next leg of the tour started from the map screen (`BONUS.ASM`: `CLRI R0 /
+STI R0,@DID_TIMED_OUT / CALL INIT_GAMELEG / DIE`). So every leg after the first runs at 19.3 instead of 28.9 pictures per
+second, on the machine as well (measured with the machine's timing, `--steady 0`: 200 of 200 frames at 3 vblanks from the
+second leg on).
+
+`rom_patches.cpp: cruise_leg_rate` rewrites those four words in the RAM copy to `CALL INIT_GAMELEG / LDI 1,R0 / STI
+R0,@FRAMRATE / DIE` (the two instructions it replaces are redundant: INIT_GAMELEG clears DID_TIMED_OUT itself). After: legs
+0 to 3 of the tour, 100 % and 300 %: every frame at 2 vblanks. With `steady_cadence = false` the patch is not applied: that
+setting stays the machine as it is.
+
+### 2. The late pictures at 2x to 4x: what the GPU's clock has to do with them
+
+The second pass blamed "clock changes". Sampling the clock through the driver (NVML, every 16 ms) did not confirm it: of
+9 late pictures in three races none was within 250 ms of a sampled change, and 27 sampled changes had no late picture.
+The driver's reading is too coarse and too late. The frames themselves are a better clock: the present pass (the final
+blit) of a frame that draws no polygons does the same work every time, so its GPU time is the inverse of the GPU's speed.
+
+Seen that way (Chicago, 3x, 42 s of race per run):
+
+* Every 2.0 s the GPU runs 2 to 3.9 times slower for a few frames, then returns: 19 or 20 such dips per run, 2.0 s apart
+  with a deviation of a tenth. The driver tries a lower clock, finds it too low and goes back.
+* **All late pictures are at a dip**: 5 of 5, 3 of 3, 4 of 4, 6 of 6 in four runs (of different variants below), while the dips' windows (ten frames
+  either side) cover 24 % of the race. About one dip in four costs a picture one refresh.
+* At 5x and 6x there are no dips and no late pictures. At 1x the GPU stays in its lowest state.
+* Cause or coincidence: with extra GPU load (`--gl-debug 1088`: the present pass four more times, for measuring only) the
+  clock stays up, the GPU's time per frame *falls* (3.5 ms instead of 5.1 ms in the median) and no picture is late.
+
+So the trigger is the driver's periodic step down, at loads low enough for it to try. What then makes a picture late is
+not simply that the GPU's work no longer fits (it takes 10 to 13 ms in a dip, of 16.7; the same GPU times at 6x cost
+nothing). In the runs with a one-frame queue, where it can be told apart, the lost refresh was at the frame in which the
+GPU's time halved again (3 of 3): the way back up, not the slow frames.
+
+**Can the port avoid it without a driver profile and without burning GPU time?** Tried, each measured on the display
+side:
+
+| Variant (Chicago, 3x) | pictures off the pace | present margin min / median | latency |
+|---|---|---|---|
+| as before | 5 of 1253 (4, 6 in other runs) | 6.4 / 11.8 ms | 80 ms |
+| glFinish before the swap | 1 to 6 | | |
+| the frame before finished before the swap (the limit of section 3) | 3 of 1253 | 6.3 / 12.0 ms | 47 ms |
+| pace by the vblank, present every refresh | 26 of 1250 | 0.3 / 11.9 ms | 67 ms |
+| pace by the vblank, present new pictures only | 74 and 84 of 1255 | 0.0 / 12.1 ms | 33 ms |
+| extra GPU load (not a solution) | 2 of 1256 | 6.3 / 11.6 ms | 33 ms |
+
+None of the clean ones removes the dips' cost. Presenting only new pictures looked perfect by the swap call (0 late) and
+was the worst on the display: the GPU then finishes around the vblank, sometimes before and sometimes after it. That is
+the reason the display-side numbers were built. **Answer: no.** The port can make the dips rarer only by the load it has
+anyway: from 5x on (on this card) they do not occur, and 1x is below them.
+
+### 3. Frame queue, present margin, input lag
+
+The timeline of a frame showed something the frame times had hidden: **the NVIDIA OpenGL driver ran four frames behind
+the game.** Its thread executes a frame's calls, then waits in its own swap for the vblank; the game's thread meanwhile
+hands over further frames and its `SwapBuffers` returns as soon as there is room in that queue.
+
+    as before, 6x:  GPU finished a frame 62.5 ms (median) after its swap was called: 3 or 4 vblanks later
+                    from the top of the frame loop (inputs read) to the vblank that shows the picture: 80 ms
+
+Consequences: more than 30 ms of input lag that buy nothing; swap calls that return at times unrelated to the display (the
+alternating 11 / 22 ms frame times of the second pass, harmless in themselves); and at 8x, where the GPU's work per frame
+is longest, frames whose work ended right on the vblank:
+
+    Chicago 8x, as before: pictures on the display after 1 / 2 / 3 vblanks: 14 / 1227 / 14 (2.2 % off the pace),
+    present margin: minimum 0.06 ms, 13 pictures under 2 ms. By the swap call: 1255 of 1255 on the pace.
+
+The second pass' scaling table, which judged by the swap call, did not see these.
+
+**Change (`[video] frame_ahead_limit`, default on; launcher: "Low input lag"):** before a frame is swapped, the GPU must
+have finished the frame before it (`glFenceSync` after each frame, `glClientWaitSync` on the previous one before the
+swap). The driver is then at most one frame behind. The Vulkan backend has had the same rule since the second pass.
+
+| 75 s per run, OpenGL, 300 % | pictures off the pace on the display | present margin min / 1st percentile / median | latency median |
+|---|---|---|---|
+| Chicago 8x | 0 of 1707 (before: 28 of 1255) | 6.6 / 8.7 / 13.2 ms (before: 0.06 / 1.6 / 13.6) | 48.7 ms (before 81.5) |
+| LA Freeway 8x | 1 of 1706 | 7.3 / 8.5 / 13.1 ms | 48.5 ms |
+| San Francisco 8x | 0 of 1707 | 2.5 / 3.7 / 9.5 ms | 44.7 ms |
+| Chicago 6x | 0 of 1707 | 7.7 / 9.0 / 11.6 ms | 46.3 ms (before 79.5) |
+| LA Freeway 6x | 1 of 1706 | 8.4 / 9.0 / 11.4 ms | 46.0 ms |
+| San Francisco 6x | 0 of 1707 | 5.2 / 6.3 / 7.8 ms | 43.2 ms (before 76.3) |
+| Chicago 3x | 4 of 1704 (the dips of section 2) | 6.3 / 7.6 / 11.6 ms | 47.4 ms |
+| LA Freeway 4x | 5 of 1700 | 0.8 / 7.0 / 11.6 ms | 46.9 ms |
+| San Francisco 2x | 1 of 1704 | 5.2 / 5.8 / 8.0 ms | 43.5 ms |
+
+**The margin of a normal frame** is therefore 8 to 13 ms of the 16.7 ms refresh; the first percentile is 6 to 9 ms
+(San Francisco at 8x: 3.7 ms, the tightest case measured). Of the remaining 46 ms of latency, 33 are two refreshes: the
+driver executes a frame's calls after the swap before it has returned at a vblank, and shows the result at the vblank
+after that. The rest is the emulation and the place of the swap call inside its refresh. Waiting for the GPU to finish
+*this* frame before going on would take another refresh off, at the price of the CPU standing still while the GPU works;
+not done.
+
+### 4. San Francisco at 400 %: where the emulated CPU's instructions go
+
+Profiling build, autopilot, 3280 race pictures; every executed instruction counted by address, and inside the display
+routine by the class of the object being displayed. Routines are the call targets of the disassembly; the names come from
+the game's source by matching the code (`DIRQ.ASM`, `COLLA.ASM`, the sort in the background module).
+
+| per game picture | 100 % | 400 % |
+|---|---|---|
+| instructions: median / 99th percentile / maximum | 0.72 / 1.00 / 1.09 million | 2.21 / 2.60 / 2.89 million |
+| display (transform, clip, hand polygons to the video hardware) | 52 % | 66 % |
+| ...of which objects of class 4 (the track's scenery: buildings) | 28 % | 40 % |
+| ...road pieces | 14 % | 19 % |
+| ...traffic and racers / player's car / trees and signs | 7 / 2 / 1 % | 5 / 1 / 2 % |
+| collision (cars against road pieces and objects: `_obj_coll`, the scans) | 28 % | 16 % |
+| sorting the object list by distance (ZSORT) | 7 % | 10 % |
+| waiting (delay loop, video FIFO) | 3 % | 2.5 % |
+| everything else (game logic, sound commands, text, interrupt) | 10 % | 5 % |
+
+The two halves of the display routine: transforming the vertices (`DISPLAY` / `VECTOR_TRANSFORMATION`, 33 % of all
+instructions at 400 %) and clipping and plotting the polygons (`PLOTPOLY`, 29 %).
+
+**What the longer draw distance buys is scenery**: three times the instructions, and the growth is almost entirely the
+display of buildings and road, most of it for polygons that end up as a line or a point on the screen (58 % of the
+polygons have no area, section 4 of the second pass): 0.38 million instructions per picture become 1.29 million. The
+collision code grows by half (0.20 to 0.31 million), the sort from 0.05 to 0.19 million.
+
+**A normal picture and the slowest one** (400 %):
+
+| | median picture (no. 1701) | slowest picture (no. 2393) | difference |
+|---|---|---|---|
+| instructions | 2 211 491 | 2 889 249 | +677 758 |
+| display | 78.2 % = 1.73 million | 66.3 % = 1.92 million | +187 000 |
+| ...buildings / road / traffic | 60.9 / 12.3 / 2.4 % | 48.3 / 11.0 / 3.8 % | |
+| sort | 12.0 % = 265 000 | 16.0 % = 462 000 | +197 000 |
+| collision | 5.2 % = 115 000 | 12.2 % = 352 000 | +237 000 |
+| everything else, waiting | 4.6 % | 5.5 % | +57 000 |
+
+The slowest picture is not slow because more is drawn (+11 %). Two things come together in it: the collision code runs
+(it is 5 % of the median picture and 16 % of the average one; `_obj_coll` alone is 140 000 instructions more), and the sort has more to do: ZSORT is a bubble sort over the list of active objects, cheap while the
+list stays in order and expensive in the pictures in which many objects change their order, with three times the objects
+in the list at 400 %. The second slowest picture (no. 2032) is of the other kind: 14 071 polygons, display +380 000.
+
+So the worst frame at 400 % is: the scenery's display as the base load, plus collision and sort in the same picture. With
+the clock at x3 these 2.9 million instructions are what `catch_up` has to fit before the vblank.
+
+### 5. Where the interpreter spends the host's time
+
+Sampling profile of the same run (10 386 samples), with the instruction counts of the profiling build:
+
+* TMS320C31 interpreter 79.9 % of the host's time, sound DSP (ADSP-2105) 13.8 %, everything else 6.3 %.
+* 5.64 ns per emulated instruction back to back (177 million per second). In the paced app the same work takes about
+  7.4 ns: the core does not stay at full clock between the frames.
+* **Dispatch: 36 % of the interpreter's time, 2.0 ns per instruction** (the run loop and `execute_one`): by source line,
+  the indirect call through the table of 2048 handlers 15 %, the repeat-block check 7 %, the hook filter and comparison
+  6 %, opcode fetch and cycle count 3.5 %, loop condition 2 %, trace flag 1.6 %.
+* The floating point helpers (`mpyf`, `addf`, `subf`, `int2float`, `float2int`: the DSP's own format, computed bit-exactly
+  with integers) 19.5 %.
+* The rest is the handlers themselves:
+
+| function | host time (interpreter = 100 %) | calls | ns per call |
+|---|---|---|---|
+| run (the loop) + execute_one | 36.0 % | 10.6 billion | 2.0 |
+| mpyf (helper of the multiply instructions) | 7.5 % | | |
+| addf (helper) | 5.9 % | | |
+| ldi_ind | 4.2 % | 869 million | 2.9 |
+| subf (helper) | 4.1 % | | |
+| mpyf3stf | 2.6 % | 307 million | 5.1 |
+| ldi_dir | 2.1 % | 377 million | 3.3 |
+| lsh_imm | 2.1 % | 566 million | 2.2 |
+| fixsti | 2.0 % | 323 million | 3.8 |
+| mpyaddf_0 | 1.9 % | 197 million | 5.7 |
+| subf3_indind | 1.6 % | 281 million | 3.4 |
+| brcd_imm / brc_imm | 1.1 / 0.9 % | 470 / 627 million | 1.4 / 0.8 |
+
+(the handlers' ns per call are without the helpers they call and without the dispatch.) No memory wrapper, bounds check or
+endian conversion shows up: memory is reached through a page table of host pointers, one load and one test per access;
+the only diagnostic in the loop is the trace flag.
+
+**One change, measured:** the hook filter looked at the low 8 bits of the program counter; with 14 hooks one instruction
+in 18 passed it and was compared with all hooks. It now looks at 12 bits. San Francisco 400 %, 8000 vblanks, three runs
+each: 37.36 / 37.58 / 37.90 s before, 37.01 / 37.27 / 37.31 s after: **1.1 % faster, about the size of the run-to-run
+spread**. Cycles, instructions and RAM hashes of the two builds are identical.
+
+**Would a faster dispatch be worth it?**
+
+(estimates from the shares above, not measured:)
+
+| Option | what it could remove | realistic gain (interpreter) | risk |
+|---|---|---|---|
+| computed goto / threaded handlers | part of the indirect call (15 %) | 3 to 6 % | MSVC has no computed goto: a second compiler (clang-cl) for the release, or a giant switch; debugging unchanged |
+| decode cache (handler pointer per address) | the table index, 1 to 2 % | 1 to 2 % | code is in RAM and patched at start: needs invalidation; small |
+| folding the per-instruction checks (repeat block, hooks, trace) into one test | up to 10 % | 4 to 8 % | the repeat-block end test is part of the CPU's semantics: has to stay exact; medium |
+| basic-block cache or JIT | most of the 36 % and some of the helpers | 1.3 to 2 times | interrupts are taken between instructions at exact cycle counts, delayed branches and repeat blocks carry state across instructions, hooks stop at single addresses: all of that has to be reproduced; large, and the hardest to keep bit-identical |
+| host floating point for the DSP's floats (`USE_FP` exists in the source) | most of the 19.5 % | 10 to 15 % | not bit-exact: rejected |
+
+Nothing here is needed on this machine (the worst frame takes 12 ms of 16.7). For a host half as fast the third row is
+the place to start; a JIT is not justified by these numbers.
+
+### 6. The OpenGL warm-up: the mechanism, and a warm-up that checks itself
+
+A thread is started in a chosen frame of the race ("probe"); if the swap stalls there, the warm-up before had not taken
+the driver's reaction. 6x, the frame-ahead limit on:
+
+| Before the first frame | probe stalls |
+|---|---|
+| nothing (`--no-warmup`) | 4 of 4 |
+| presents only, no thread | 6 of 6 |
+| a work item for the thread pool, then presents | 8 of 8 |
+| a thread that ends at once, then presents | 0 of 8 |
+| a thread kept alive across the presents (the version of the second pass) | 0 of 12 |
+| three threads kept alive | 0 of 8 |
+
+(From the second pass: a thread started before the video backend exists, or behind the loading picture, does not help
+either.) So it is the *creation* of a thread, seen by the driver once it presents for real: a new thread attaches to every
+DLL of the process, the driver's among them. Work handed to threads that already exist does nothing, which is also why
+the stall waited for the thread pool to *grow* at 30 s. How long the thread lives and how many there are does not matter.
+
+The driver's reaction can be seen while it happens: the present right after the thread has started takes 50 to 79 ms
+instead of at most two refreshes. That makes a warm-up possible that does not hope: after four presents (the first
+presents have a long one of their own, with or without a thread), threads are started, one per three presents, until two
+in a row have caused no long present. In 36 of 36 starts: reaction at the first thread, the next two clean, no stall at
+the probe. Cost: thirteen presents of the first picture, about a quarter of a second. Why the single thread of the second
+pass missed once in 63 runs was not found; the new version would have started another thread in that case, and says in
+`--warmup-log` what it saw.
+
+### 7. Other display rates
+
+The game is never made faster or slower than the display sync's rule allows: one emulated vblank per `k` refreshes when
+the display's rate is within 6 % of `k` times the machine's 57.93 Hz, the machine's own clock otherwise. Nothing in the
+emulator knows the display's rate; the steady cadence counts emulated vblanks.
+
+| Display | k | game speed | game pictures |
+|---|---|---|---|
+| 60 Hz (59.94) | 1 | 1.036 (1.035) | every 2 refreshes |
+| 120 Hz | 2 | 1.036 | every 4 |
+| 144 Hz | no sync (2.49 times the machine's rate) | 1.000, machine clock | every 5, now and then 4 |
+| 165 Hz | 3 | 0.950 | every 6 |
+| 180 / 240 / 360 Hz | 3 / 4 / 6 | 1.036 | every 6 / 8 / 12 |
+| 50, 75, 90, 100 Hz | no sync | 1.000 | uneven (2 or 3 refreshes per emulated vblank) |
+
+One assumption of 60 Hz was in it and is gone: the loop counted *presents* to find the refresh in which the next emulated
+frame is due. On a 60 Hz display that is every pass. On a faster display the pass that computes a game picture can take
+longer than a refresh (10 ms against 8.3 ms at 120 Hz); the present then comes a refresh later, and counting presents the
+loop never made up for it. Measured with a simulated display (`--fake-refresh`, VSync off, a wait for the next tick of a
+clock at that rate after every present; this display runs at 60 Hz only):
+
+| simulated rate | before: emulated vblanks per second, speed | now |
+|---|---|---|
+| 60 Hz | 60.00, 1.036 | 60.00, 1.036 |
+| 120 Hz | 53.13, **0.917** | 60.02, 1.036 (959 of 959 pictures after 4 refreshes) |
+| 144 Hz | 57.93, 1.000 | 57.93, 1.000 |
+| 165 Hz | 47.69, **0.823** | 54.78, 0.946 |
+| 240 Hz | 50.07, **0.864** | 60.02, 1.036 (942 of 959 pictures after 8 refreshes) |
+
+The emulated frame is now due after `k` passes as before, or earlier when `k - 0.5` refreshes of time have passed since
+the last one was started. At 60 Hz nothing changes (time alone is not enough there: the passes do not begin at even
+distances, and a rule by time only skipped frames, 29 of 1692 pictures late in a test). Not tested on a real display of those rates. Known limits: the display's rate is read once at the start
+(a window moved to another display keeps the old rule until the next start), and a variable-refresh display is treated
+as its maximum rate.
+
+### 8. A slower host
+
+`--cpu-slow <n>`: after every emulated frame the loop spins until n times the frame's emulation time has passed (main
+CPU, sound DSP and the hand-over to the driver alike). 6x, 70 s per run, on the display side:
+
+| | emulation x 1 | x 2 | x 3 |
+|---|---|---|---|
+| San Francisco 100 % | | | 0 of 1555 pictures off the pace |
+| Chicago 300 % | | 0 of 1557 | 249 of 1418 (18 %) |
+| LA Freeway 300 % | | | 173 of 1460 (12 %) |
+| San Francisco 300 % | 0 of 1557 | 6 of 1555 (0.4 %) | 685 of 1181 (58 %), the game slows down, the sound runs dry |
+| San Francisco 400 % | | 88 of 1522 (6 %) | |
+
+* **The CPU breaks the cadence first**, in the frame that computes a game picture: at half this CPU's speed everything up
+  to 300 % still holds and San Francisco at 400 % begins to fail; at a third 300 % fails on every track and 100 % holds.
+  (The paced app already runs the interpreter at about three quarters of its back-to-back speed, section 5.)
+* **The GPU**: its load at full clock is 16 % at 6x and 4 % at 1x on this card (second pass). A card half as fast changes
+  nothing. Integrated graphics of a tenth of this card's speed would be at its limit around 3x and comfortable at 1x and
+  2x; there the polygons' bounding rectangles (a quarter to a half of the fragments are thrown away) become worth
+  cutting. That is derived from the load, not measured on such a card.
+* The frame-ahead limit makes the game wait for the GPU when the GPU is slower than the display, instead of queueing
+  frames: on a weak GPU the frame rate then follows the GPU directly.
+
+So on weaker hardware the order is: (1) the interpreter's worst frame at draw distances above 100 %, (2) the GPU's
+fragment load at internal resolutions above 2x to 3x on integrated graphics. At the original draw distance and 1x to 2x a
+host a third as fast as this one keeps the cadence.
+
+### Answers, in short
+
+1. **GPU clock and the late pictures at 2x to 4x:** yes, but not through "changes" as such: the driver steps the clock
+   down every 2.0 s at these loads, and every late picture (18 of 18) lies in such a dip. With the load held up there are
+   none.
+2. **Without a driver profile:** not by pacing; four variants measured, none removes it, two make it worse. Not needed at
+   1x and from 5x on.
+3. **Present margin:** 8 to 13 ms of 16.7 ms for a normal frame, 6 to 9 ms at the first percentile (3.7 ms in the
+   tightest case). The larger finding on the way: the driver ran four frames behind; limited to one, the input lag falls
+   from 80 to 46 ms and the pictures at 8x come on time.
+4. **San Francisco 400 %:** the display of the scenery (61 % of a normal picture's instructions); the slowest picture is
+   that plus collision and sort in the same picture, not more polygons.
+5. **The interpreter:** 36 % dispatch, 20 % float helpers, the rest handlers; 5.6 ns per instruction.
+6. **The warm-up:** thread creation is the trigger; the warm-up now repeats until the driver no longer reacts: 36 of 36.
+   A proof for all cases it is not.
+7. **Weaker hardware:** the CPU first (interpreter, draw distance above 100 %), then fragments on integrated graphics.

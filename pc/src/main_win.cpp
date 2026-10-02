@@ -24,6 +24,7 @@
 #include "pause_menu.h"
 #include "calltrace.h"
 #include "platform/stall_watch.h"
+#include "platform/vblank_clock.h"
 #include "machine/midvunit.h"
 #include "machine/telemetry.h"
 #include "outputs/outputs.h"
@@ -163,6 +164,7 @@ VideoOptions make_video_options(const VideoSettings &v)
 	o.vsync = v.vsync;
 	o.filter_textures = v.texture_filter;
 	o.smooth_output = v.smooth_output;
+	o.frame_ahead_limit = v.frame_ahead_limit;
 	o.aa = v.aa;
 	o.wide_margin = wide_margin_for(v);
 	o.integer_scale = v.integer_scale;
@@ -392,6 +394,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	{
 		const std::string sm = arg_value(a, "--stall-ms");
 		if (sm != "0") stallwatch::start(call_log, sm.empty() ? 28.0 : std::atof(sm.c_str()));
+		if (!prof.csv_path.empty()) vblank_clock::start();   // the display's vblanks, written next to the csv (<csv>.vblank)
 	}
 
 	// ---- video backend
@@ -457,7 +460,11 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 
 	// Display sync: one game frame per sync_k display refreshes instead of the machine's own 57.9 Hz clock. sync_speed is the
 	// resulting game speed (1.036 at 59.94 Hz); the sound is played at the same factor.
-	double sync_speed = 1.0;
+	// (testing: --fake-refresh <hz> behaves as if the display ran at that rate: VSync off, and every present is followed by a
+	// wait for the next "vblank" of a clock at that rate. For checking the pacing logic at rates this display does not have.)
+	const double fake_hz = arg_value(a, "--fake-refresh").empty() ? 0.0 : std::atof(arg_value(a, "--fake-refresh").c_str());
+	if (fake_hz > 0) S.video.vsync = false;
+	double sync_speed = 1.0, display_hz = 60.0;
 	int sync_k = 0;   // 0 = off (the machine's own clock)
 	if (video && S.video.display_sync && !bench)
 	{
@@ -467,6 +474,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		{
 			double hz = double(dm.dmDisplayFrequency);
 			if (dm.dmDisplayFrequency % 60 == 59) hz = (hz + 1.0) * 1000.0 / 1001.0;   // 59 / 119 = the NTSC rates 59.94 / 119.88
+			if (fake_hz > 0) hz = fake_hz;
+			display_hz = hz;
 			const int k = std::max(1, int(hz / m.refresh_hz() + 0.5));
 			const double speed = hz / k / m.refresh_hz();
 			if (speed > 0.94 && speed < 1.06) { sync_k = k; sync_speed = speed; }
@@ -497,18 +506,60 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 	// The first thread that starts in the process after the OpenGL driver has begun to present makes the driver's next buffer
 	// swap wait for 50 to 100 ms, once (measured: NVIDIA; the driver's own thread sits in a wait for a GPU synchronisation
 	// object, D3DKMTWaitForSynchronizationObjectFromCpu). Left alone, that thread is one of Windows' thread pool workers about
-	// 30 s after the start, in the middle of the first race. So it is given one here, while nothing moves on the screen yet.
-	// --no-warmup leaves it out (to measure the stall).
+	// 30 s after the start, in the middle of the first race. So it is given one here, on the first picture, before anything
+	// moves. What counts is that a thread is *created* (a work item for the thread pool, whose threads exist already, does
+	// nothing: 8 of 8 runs still stalled), not how long it lives or how many there are.
+	// The warm-up checks itself: the driver's reaction shows as a present that takes much longer than two refreshes right
+	// after the thread has started. Threads are started, one per three presents, until two of them in a row have caused no
+	// such present: then a new thread no longer disturbs the driver. (The first version started one thread and hoped: the
+	// reaction came later in 1 of 63 runs.)
+	// --no-warmup leaves it out (to measure the stall). Experiments: --warmup-kind 1 a thread that ends at once / 2 a thread
+	// pool work item / 3 three threads / 9 presents only; --warmup-log <file>: the presents' times.
 	const bool driver_warmup_on = a.find("--no-warmup") == std::string::npos;
-	const int warm_n = arg_value(a, "--warmup").empty() ? 6 : std::atoi(arg_value(a, "--warmup").c_str());
+	const int warm_kind = arg_value(a, "--warmup-kind").empty() ? 0 : std::atoi(arg_value(a, "--warmup-kind").c_str());
+	const std::string warm_log = arg_value(a, "--warmup-log");
 	auto driver_warmup = [&]() {
 		if (!video || !driver_warmup_on) return;
-		HANDLE done = CreateEventA(nullptr, TRUE, FALSE, nullptr);
-		std::thread th([done] { WaitForSingleObject(done, INFINITE); });   // (it has to be there while the driver swaps)
-		for (int i = 0; i < warm_n; i++) present();
-		SetEvent(done);
-		th.join();
-		CloseHandle(done);
+		std::string log;
+		auto timed_present = [&]() {
+			const double t0 = perf_now_ms();
+			present();
+			const double ms = perf_now_ms() - t0;
+			char b[32]; std::snprintf(b, sizeof(b), " %.1f", ms); log += b;
+			return ms;
+		};
+		if (warm_kind == 0)
+		{
+			const double limit = std::max(25.0, 2600.0 / std::max(30.0, display_hz));   // "much longer than two refreshes"
+			for (int i = 0; i < 4; i++) timed_present();                                // (the first presents have a long one of their own)
+			int clean = 0;
+			for (int attempt = 0; attempt < 6 && clean < 2; attempt++)
+			{
+				HANDLE done = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+				std::thread th([done] { WaitForSingleObject(done, INFINITE); });
+				double worst = 0;
+				for (int i = 0; i < 3; i++) worst = std::max(worst, timed_present());
+				SetEvent(done);
+				th.join();
+				CloseHandle(done);
+				clean = worst < limit ? clean + 1 : 0;
+				log += worst < limit ? " | clean" : " | reaction";
+			}
+		}
+		else
+		{
+			HANDLE done = CreateEventA(nullptr, TRUE, FALSE, nullptr), started = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+			std::vector<std::thread> th;
+			if (warm_kind == 1) { std::thread([] {}).join(); }
+			else if (warm_kind == 2) { TrySubmitThreadpoolCallback([](PTP_CALLBACK_INSTANCE, void *e) { SetEvent(HANDLE(e)); }, started, nullptr); WaitForSingleObject(started, 1000); }
+			else if (warm_kind == 3) for (int k = 0; k < 3; k++) th.emplace_back([done] { WaitForSingleObject(done, INFINITE); });
+			for (int i = 0; i < 6; i++) timed_present();
+			SetEvent(done);
+			for (std::thread &t : th) t.join();
+			CloseHandle(done); CloseHandle(started);
+		}
+		if (!warm_log.empty())
+			if (FILE *f = std::fopen(warm_log.c_str(), "ab")) { std::fprintf(f, "warm-up kind %d:%s\n", warm_kind, log.c_str()); std::fclose(f); }
 	};
 
 	MSG msg;
@@ -551,8 +602,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			if (left > 0.002) Sleep(DWORD((left - 0.0015) * 1000.0)); else YieldProcessor();
 		}
 	};
-	if (sync_k) { S.video.vsync = true; vopt = make_video_options(S.video); if (video) video->set_options(vopt); }
-	int sync_phase = 0, sync_fast = 0;
+	if (sync_k && fake_hz <= 0) { S.video.vsync = true; vopt = make_video_options(S.video); if (video) video->set_options(vopt); }
+	int sync_fast = 0, sync_passes = 0;
+	double sync_emu_t = 0;     // when the last emulated frame of the display sync was started
 	double sync_last = 0, sync_done = 0;
 	bool sync_clock = false;   // display sync paced by the clock because the swap does not wait
 
@@ -674,7 +726,18 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		const double perf_t0 = perf.on ? perf_now_ms() : 0.0;
 		const double feed0 = m.perf_feed_ms, cpu0 = m.perf_cpu_ms, dcs0 = m.perf_dcs_ms; const uint64_t draws0 = m.perf_draws, quads0 = m.perf_quads;
 		// display sync: exactly one frame every sync_k presents (each present waits for the display's vblank)
-		const bool sync_due = sync_k && (sync_phase++ % sync_k) == 0;
+		// One emulated frame per sync_k refreshes, counted in time and not in presents. On a 60 Hz display (sync_k 1) that is
+		// every pass of this loop, as before. On a faster display a pass that computes a game picture can take longer than one
+		// refresh (8.3 ms at 120 Hz): counting presents then loses that refresh for good and the game runs slow (measured
+		// with a simulated display: 0.92 x at 120 Hz, 0.82 x at 165 Hz, 0.86 x at 240 Hz). Counted in time, the next frame
+		// is simply due sooner.
+		const double sync_T = sync_k ? 1.0 / (m.refresh_hz() * sync_speed * sync_k) : 0.0;   // one display refresh
+		const double sync_now = now_sec();
+		// (Every sync_k-th pass is due in any case, as before: the passes do not begin at even distances, so time alone
+		// would skip a frame now and then. Time only adds the frame that counting passes would lose.)
+		sync_passes++;
+		const bool sync_due = sync_k && (sync_emu_t <= 0 || sync_passes >= sync_k || sync_now - sync_emu_t >= (double(sync_k) - 0.5) * sync_T);
+		if (sync_due) { sync_emu_t = sync_now; sync_passes = 0; }
 		for (int guard = 0; (sync_k ? (sync_due && guard == 0) : t >= next_frame) && guard < (bench ? 1 : 3); guard++)
 		{
 			const double pi0 = prof.on ? perf_now_ms() : 0.0;
@@ -725,8 +788,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			}
 			std::fill(std::begin(g_pressed), std::end(g_pressed), false);
 			const double pe0 = prof.on ? perf_now_ms() : 0.0;
+			const double cs0 = perf_now_ms();
 			m.run_frame();
+			// (testing: --cpu-slow <factor> spends factor - 1 times the emulation's time again: a host that much slower)
+			static const double cpu_slow = arg_value(a, "--cpu-slow").empty() ? 1.0 : std::atof(arg_value(a, "--cpu-slow").c_str());
+			if (cpu_slow > 1.0) { const double until = cs0 + (perf_now_ms() - cs0) * cpu_slow; while (perf_now_ms() < until) YieldProcessor(); }
 			const double pe1 = prof.on ? perf_now_ms() : 0.0;
+			rec.t_emu = pe1;
 			Telemetry tele;
 			const bool tele_ok = m.read_telemetry(tele);
 			// no force while the attract mode runs: the game keeps its wheel servo on there, which is felt as a constant drag
@@ -740,7 +808,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		if (bench) next_frame = 0;   // --bench: run frames back to back (no pacing) to measure throughput
 
 		if (perf.on && ran) perf.emulated(perf_now_ms() - perf_t0, m.perf_feed_ms - feed0, m.perf_draws - draws0, m.perf_quads - quads0, m.perf_cpu_ms - cpu0, m.perf_dcs_ms - dcs0);
-		bool vsync = video ? S.video.vsync : false;
+		bool vsync = video ? (S.video.vsync || fake_hz > 0) : false;
 		if (!sync_k && !ran && !vsync) { wait_until(t_start + next_frame); continue; }
 		const double pw0 = prof.on ? perf_now_ms() : 0.0;
 		const double sync_period = sync_k ? 1.0 / (m.refresh_hz() * sync_speed) / sync_k : 0.0;
@@ -756,12 +824,28 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		}
 		if (prof.on) rec.wait = float(perf_now_ms() - pw0);
 		const double perf_p0 = perf.on ? perf_now_ms() : 0.0;
+		rec.t_top = pr0; rec.t_present = perf_p0;
+		if (prof.on && video) rec.gl_frame = video->present_index();
 		if (video) video->set_pillarbox(!m.world_shown());   // menus and 2D screens: the arcade's 4:3 picture, black bars beside it
-		present();
+		// (experiment --pace 1 / 2: the display's vblank itself is the pace, waited for after the present; 2: a picture that
+		// has not changed is not presented again, so that the GPU has two refreshes for a game picture instead of one)
+		static const int pace_mode = arg_value(a, "--pace").empty() ? 0 : std::atoi(arg_value(a, "--pace").c_str());
+		static bool pace_pillar = false; static int pace_skipped = 0;
+		bool pace_show = true;
+		if (pace_mode == 2 && sync_k && video)
+		{
+			const bool pillar = !m.world_shown();
+			pace_show = m.take_display_changed() || vchanged || pillar != pace_pillar || pace_skipped >= 30 || prof_n < 4;
+			pace_pillar = pillar;
+			pace_skipped = pace_show ? 0 : pace_skipped + 1;
+		}
+		if (pace_show) present(); else if (video) video->flush();   // (the frame's polygons start on the GPU now, not with the next swap)
+		if (pace_mode && sync_k && video) vblank_clock::wait_next();
+		if (fake_hz > 0) { const double n = now_sec(); wait_until(std::ceil(n * fake_hz + 1e-6) / fake_hz); }
 		if (perf.on && video) perf.gpu(video->last_gpu_ms());
 		if (perf.on) { perf.presented(perf_now_ms() - perf_p0); if (!perf.summary().empty()) SetWindowTextA(hwnd, ("Cruis'n USA (PC) - " + perf.summary()).c_str()); }
 		const double pp1 = prof.on ? perf_now_ms() : 0.0;
-		if (sync_k && !sync_clock)
+		if (sync_k && !sync_clock && !pace_mode)
 		{
 			// eight pictures in a row faster than three quarters of a refresh: nothing waits for the display
 			const double done = now_sec();
@@ -807,6 +891,14 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 			rec.frame = prof_n++;
 			rec.present = float(pp1 - perf_p0);
 			rec.swap = video ? float(video->last_swap_ms()) : -1.0f;
+			if (video)
+			{
+				video->swap_times(rec.t_swap0, rec.t_swap1);
+				uint32_t gf = 0; double gm = 0;
+				while (video->pop_gpu_done(gf, gm)) prof.gpu_done(gf, gm);
+				double ph[IVideoBackend::kGpuPhases];
+				while (video->pop_gpu_phases(gf, ph)) prof.gpu_phases(gf, ph);   // (the frame's own GPU times replace "a recent frame's")
+			}
 			rec.gpu = video ? float(video->last_gpu_ms()) : -1.0f;
 			if (video) for (int i = 0; i < 6; i++) rec.gpu_ph[i] = float(video->last_gpu_phase_ms(i));
 			rec.cpu = float(m.perf_cpu_ms - cpu0); rec.dsp = float(m.perf_dcs_ms - dcs0); rec.feed = float(m.perf_feed_ms - feed0) - rec.present;
@@ -857,6 +949,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmdline, int)
 		std::snprintf(title, sizeof(title), "%s %dx, draw distance %d%%, %s%s", video ? video->name() : "CPU", S.video.internal_scale, S.video.draw_distance,
 		              sync_k ? "display sync" : (S.video.vsync ? "vsync" : "no vsync"), bench ? ", bench" : "");
 		prof.finish(title);
+		if (!prof.csv_path.empty()) { vblank_clock::stop(); vblank_clock::write(prof.csv_path + ".vblank"); }
 		stallwatch::stop();
 		g_calltrace.close();
 	}

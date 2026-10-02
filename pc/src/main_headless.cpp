@@ -325,6 +325,67 @@ int main(int argc, char **argv)
 				pt = t;
 			}
 		}
+		if (const char *pp = getenv("PCPROF"))
+		{   // PCPROF=<prefix> (a build with C3X_PROFILE): where the emulated CPU's instructions go. <prefix>_frames.csv: one line
+			// per game picture of a race with the instructions it took; <prefix>_all.txt: instructions by address over all of
+			// them; PCDUMP=<picture>,<picture>..: <prefix>_<picture>.txt, the same for single pictures.
+			// PCTAG=<pc>,<lo>,<hi> (hex): the instructions in [lo, hi) also by the class of the object being displayed (columns c0..c15)
+			static uint64_t *tags = nullptr;
+			static FILE *pf = nullptr; static uint64_t flips = ~0ull, quads = 0; static std::vector<uint64_t> all; static std::vector<uint64_t> want; static int vbl = 0;
+			uint64_t *other = nullptr;
+			if (uint32_t *h = m.cpu_pc_hits(&other))
+			{
+				if (!pf)
+				{
+					pf = fopen((std::string(pp) + "_frames.csv").c_str(), "w");
+					if (const char *tg = getenv("PCTAG"))
+					{
+						unsigned a = 0, lo = 0, hi = 0;
+						if (sscanf(tg, "%x,%x,%x", &a, &lo, &hi) == 3) tags = m.cpu_tag_hits(a, lo, hi);
+					}
+					fprintf(pf, "picture,vblank,vblanks,mode,instructions,outside,polygons");
+					if (tags) for (int k = 0; k < 16; k++) fprintf(pf, ",c%d", k);
+					fprintf(pf, "%c", 10);
+					if (tags) std::fill(tags, tags + 16, 0ull);
+					all.assign(0x20000, 0);
+					if (const char *d = getenv("PCDUMP")) for (const char *q = d; *q;) { want.push_back(uint64_t(atoll(q))); q = strchr(q, ','); if (!q) break; q++; }
+					flips = m.page_flips;
+					std::fill(h, h + 0x20000, 0u); *other = 0;
+				}
+				vbl++;
+				quads += m.quads_last_frame;
+				if (m.page_flips != flips)
+				{
+					const uint32_t mode = m.ram_word(0xC8F5);
+					if ((mode & 0xf) == 4 && (mode & 0x200))
+					{
+						uint64_t sum = 0;
+						for (int i = 0; i < 0x20000; i++) { sum += h[i]; all[size_t(i)] += h[i]; }
+						fprintf(pf, "%llu,%d,%d,%X,%llu,%llu,%llu", (unsigned long long)m.page_flips, f, vbl, mode, (unsigned long long)sum, (unsigned long long)*other, (unsigned long long)quads);
+						if (tags) for (int k = 0; k < 16; k++) fprintf(pf, ",%llu", (unsigned long long)tags[k]);
+						fprintf(pf, "%c", 10);
+						if (std::find(want.begin(), want.end(), m.page_flips) != want.end())
+							if (FILE *df = fopen((std::string(pp) + "_" + std::to_string(m.page_flips) + ".txt").c_str(), "w"))
+							{
+								for (int i = 0; i < 0x20000; i++) if (h[i]) fprintf(df, "%05X %u%c", i, h[i], 10);
+								fclose(df);
+							}
+					}
+					flips = m.page_flips; vbl = 0; quads = 0;
+					if (tags) std::fill(tags, tags + 16, 0ull);
+					std::fill(h, h + 0x20000, 0u); *other = 0;
+				}
+				if (f == frames - 1)
+				{
+					if (FILE *af = fopen((std::string(pp) + "_all.txt").c_str(), "w"))
+					{
+						for (int i = 0; i < 0x20000; i++) if (all[size_t(i)]) fprintf(af, "%05X %llu%c", i, (unsigned long long)all[size_t(i)], 10);
+						fclose(af);
+					}
+					fclose(pf);
+				}
+			}
+		}
 		if (const char *sl = getenv("STATELOG"))
 		{   // STATELOG=<file>: the machine's state every STATEEVERY (default 250) frames, to compare runs: emulated cycles,
 			// instructions executed, vblanks, game pictures, timers, random number, the player's car, and hashes of the RAM
@@ -366,7 +427,7 @@ int main(int argc, char **argv)
 		if (const char *tl = getenv("TELEMLOG")) { Telemetry t; if (m.read_telemetry(t) && f % atoi(tl) == 0) fprintf(stderr, "T %d spd=%.2f skid=%.2f thr=%.2f brk=%.2f turn=%.3f trac=%.2f rpm=%.1f yv=%.3f xm=%.3f zm=%.3f xl=%.3f zl=%.3f d2c=%.1f road=%d onroad=%d bump=%d spin=%d air=%d/%d gear=%d yv0=%.2f dy0=%.2f poly=%d\n", f, t.speed, t.skid, t.throttle, t.brake, t.turn, t.traction, t.rpm, t.y_vel, t.x_mom, t.z_mom, t.x_lean, t.z_lean, t.dist_to_center, (int)t.road_friction, t.onroad, t.bump, t.spin, t.air_front, t.air_rear, t.gear, t.susp_yv[0], t.susp_dy[0], t.road_poly[0]); }
 		if (f % 60 == 0) fprintf(stderr, "frame %d free=%d mode=%X pc=%06X quads=%llu vis=%dx%d\n", f, m.free_objects(), m.ram_word(0xC8F5) | (m.ram_word(0xE49C) << 16), m.cpu_pc(), (unsigned long long)m.quads_last_frame, m.screen_w(), m.screen_h());
 	}
-	if (const uint64_t *h = m.cpu_hits()) { std::vector<std::pair<uint64_t, int>> v; uint64_t tot = 0; for (int i = 0; i < 2048; i++) { v.push_back({h[i], i}); tot += h[i]; } std::sort(v.rbegin(), v.rend()); fprintf(stderr, "OPS total %llu%c", (unsigned long long)tot, 10); for (int i = 0; i < 25; i++) fprintf(stderr, "OP %03X %llu (%.1f%%)%c", v[i].second, (unsigned long long)v[i].first, 100.0 * v[i].first / double(tot), 10); }
+	if (const uint64_t *h = m.cpu_hits()) { std::vector<std::pair<uint64_t, int>> v; uint64_t tot = 0; for (int i = 0; i < 2048; i++) { v.push_back({h[i], i}); tot += h[i]; } std::sort(v.rbegin(), v.rend()); fprintf(stderr, "OPS total %llu%c", (unsigned long long)tot, 10); for (int i = 0; i < 2048 && v[i].first > 0; i++) fprintf(stderr, "OP %03X %llu (%.1f%%)%c", v[i].second, (unsigned long long)v[i].first, 100.0 * v[i].first / double(tot), 10); }
 	if (m.quad_stats && m.poly_race_frames)
 	{
 		const MidVUnit::PolyFrame &p = m.poly_race;
@@ -388,7 +449,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "QUADSTAT   efficiency per picture at 6x: min %.1f %%, 5th percentile %.1f %%, median %.1f %%, max %.1f %%%c", 100.0 * e.front(), 100.0 * e[e.size() / 20], 100.0 * e[e.size() / 2], 100.0 * e.back(), 10);
 	}
 	if (m.poly_log) fclose(m.poly_log);
-	if (getenv("PROFILE")) prof.stop_and_report();
+	if (getenv("PROFILE")) prof.stop_and_report(getenv("PROFILE_TOP") ? atoi(getenv("PROFILE_TOP")) : 40);
 	if (getenv("CPUTIME")) fprintf(stderr, "CPUTIME main cpu %.1f ms, dsp %.1f ms over %d frames (%.3f ms/frame)%c", m.perf_cpu_ms, m.perf_dcs_ms, frames, m.perf_cpu_ms / frames, 10);
 	if (getenv("RAMUSE")) m.debug_ram_usage();
 	if (getenv("CPUTIME"))
