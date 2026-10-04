@@ -5,7 +5,8 @@ arcade program runs unchanged on an emulation of its board (Midway V-Unit), with
 force feedback and an options menu built around it. No MAME installation needed.
 
 **What this is, and what it is not.** The game's own code is not translated to PC code: its TMS320C31 processor and
-the DCS sound board are emulated (the CPU cores come from MAME), so this is not a source port or a recompilation.
+the DCS sound board are emulated, instruction by instruction, by interpreters (the CPU cores come from MAME). So this
+is not a source port, not a static recompilation and not a decompilation: it is emulation.
 Native are the parts around the game: the renderer that draws the board's polygons on the GPU, input, force
 feedback, sound output and the menus. Changes to the game itself (widescreen, draw distance, fixes) are small
 patches of the original program in memory.

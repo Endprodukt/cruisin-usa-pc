@@ -1,8 +1,8 @@
-# Cruis'n USA PC port - assessment & plan
+# Cruis'n USA for Windows - assessment & plan
 
 The historicalsource repo is the original TMS320C30 game *source* (assembly); there is no
 toolchain (TI C3x tools) to rebuild it, and the game needs the Midway V-Unit hardware
-(TMS320C31 + video DMA rasterizer + ADSP-2105 "DCS" audio). This port therefore hosts the
+(TMS320C31 + video DMA rasterizer + ADSP-2105 "DCS" audio). This program therefore hosts the
 original ROM code on a freestanding re-implementation of the V-Unit (hardware behaviour
 per MAME's midvunit driver, BSD-3-Clause), so that we can freely add PC features.
 

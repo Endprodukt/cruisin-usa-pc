@@ -1,12 +1,12 @@
 Cruis'n USA for Windows - licences
 ==================================
 
-PC port by Endprodukt, 2026.  https://github.com/Endprodukt/cruisin-usa-pc
+Windows version (an emulator for this one game) by Endprodukt, 2026.  https://github.com/Endprodukt/cruisin-usa-pc
 
 The game itself - Cruis'n USA, (C) 1994 TV Games, Inc. / Midway Manufacturing Company, under licence from Nintendo -
 is not part of this package: its ROMs are not included, and all rights to the game, its name and its artwork belong
 to their owners. The game's original source code is preserved at https://github.com/historicalsource/cruisin-usa .
-This port is a fan project and is not affiliated with or endorsed by the rights holders.
+This is a fan project and is not affiliated with or endorsed by the rights holders.
 
 The launcher and the loading screen show the original Cruis'n USA logo and cabinet artwork (signed Youssi),
 (C) Midway / Nintendo.

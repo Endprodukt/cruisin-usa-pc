@@ -1,7 +1,8 @@
 Cruis'n USA for Windows
 =======================
 
-PC port by Endprodukt, 2026.  https://github.com/Endprodukt/cruisin-usa-pc
+Windows version by Endprodukt, 2026. An emulator made for this one game: the original arcade
+program runs on an emulation of its board; it is not a port of the game's code.  https://github.com/Endprodukt/cruisin-usa-pc
 
 What you need
   * crusnusa.zip - the MAME ROM set of Cruis'n USA. It is NOT included. The first start asks where it is; you can also

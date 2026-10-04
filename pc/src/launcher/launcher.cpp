@@ -119,8 +119,8 @@ bool vulkan_available()
 
 void page_home(Launcher &L)
 {
-	ImGui::TextWrapped("Cruis'n USA for Windows - the original game code running on a native V-Unit, TMS320C31 and DCS sound "
-	                   "implementation. Everything configured here is written to cruisn.ini next to the program.");
+	ImGui::TextWrapped("Cruis'n USA for Windows - the original game code running on an emulation of its board (V-Unit, TMS320C31, DCS sound). "
+	                   "Everything configured here is written to cruisn.ini next to the program.");
 	ImGui::Spacing();
 	ImGui::SeparatorText("Game");
 	char rom[512];
@@ -949,16 +949,16 @@ void page_about(Launcher &)
 		ImGui::Unindent();
 	};
 	ImGui::TextWrapped("Cruis'n USA for Windows");
-	ImGui::TextDisabled("PC port by Endprodukt, 2026   -   github.com/Endprodukt/cruisin-usa-pc");
+	ImGui::TextDisabled("Windows version by Endprodukt, 2026   -   github.com/Endprodukt/cruisin-usa-pc");
 	ImGui::Spacing();
-	ImGui::TextWrapped("The original game program runs unchanged on a native implementation of the arcade board (Midway V-Unit: TMS320C31 "
+	ImGui::TextWrapped("The original game program runs unchanged on an emulation of the arcade board (Midway V-Unit: TMS320C31 "
 	                   "CPU, DCS sound board), with a GPU renderer, widescreen, force feedback and this launcher around it. The game's ROMs "
 	                   "are not included: you need your own crusnusa.zip.");
 
 	head("The game");
 	line("Cruis'n USA (1994)", "Created by Eugene Jarvis and the team at TV Games, Inc., built and published by Midway Manufacturing Company "
 	                           "under licence from Nintendo. All rights to the game, its name, artwork and ROMs belong to their owners. "
-	                           "This port is a fan project and is not affiliated with or endorsed by them.");
+	                           "This is a fan project and is not affiliated with or endorsed by them.");
 	line("Game source code", "\"COPYRIGHT (C) 1994 BY TV GAMES, INC.\" - the original TMS320C31 assembly source, preserved at "
 	                         "github.com/historicalsource/cruisin-usa. It was the reference for every fix, the widescreen and draw "
 	                         "distance changes and the force feedback; this repository is a fork of it.");
@@ -966,8 +966,8 @@ void page_about(Launcher &)
 
 	head("Made possible by");
 	line("MAME - mamedev.org", "The V-Unit driver (midvunit), the TMS3203x and ADSP-21xx CPU cores and the DCS audio emulation by Aaron Giles "
-	                           "and the MAME contributors are the foundation of the hardware side of this port. Without two decades of "
-	                           "their documentation of this board there would be no port. Licence: BSD-3-Clause.");
+	                           "and the MAME contributors are the foundation of the emulation. Without two decades of "
+	                           "their documentation of this board none of this would exist. Licence: BSD-3-Clause.");
 	line("historicalsource", "For preserving and publishing the game's source code.");
 
 	head("Libraries and licences");
