@@ -1,8 +1,14 @@
 # Cruis'n USA for Windows
 
-A native Windows port of Midway's 1994 arcade racer. The original game program runs unchanged on a freestanding
-implementation of its arcade board (Midway V-Unit), with a GPU renderer, real widescreen, force feedback and an
-options menu around it. No MAME installation needed.
+Midway's 1994 arcade racer as a standalone Windows program. It is an emulator made for this one game: the original
+arcade program runs unchanged on an emulation of its board (Midway V-Unit), with a GPU renderer, real widescreen,
+force feedback and an options menu built around it. No MAME installation needed.
+
+**What this is, and what it is not.** The game's own code is not translated to PC code: its TMS320C31 processor and
+the DCS sound board are emulated (the CPU cores come from MAME), so this is not a source port or a recompilation.
+Native are the parts around the game: the renderer that draws the board's polygons on the GPU, input, force
+feedback, sound output and the menus. Changes to the game itself (widescreen, draw distance, fixes) are small
+patches of the original program in memory.
 
 > **Work in progress.** This is the first public build. It is playable from coin to credits, but expect rough edges -
 > and please [report them](#help-wanted).
@@ -33,7 +39,7 @@ Needs Windows 10 / 11 (64 bit) and a graphics card with OpenGL 4.5. Wheels, peda
 - Texture export and texture packs: unfinished, switched off in the menu
 - Higher frame rates: a race is drawn at the arcade's rate of about 29 pictures per second; there is no 60 fps mode
 
-## What the port adds
+## What this version adds
 
 **Picture**
 
@@ -74,14 +80,15 @@ Needs Windows 10 / 11 (64 bit) and a graphics card with OpenGL 4.5. Wheels, peda
 
 **Under the hood**
 
-- TMS320C31 interpreter, V-Unit video and DCS sound (ADSP-2105) as freestanding code, WASAPI audio
+- Emulation of the board: TMS320C31 interpreter and DCS sound (ADSP-2105) taken from MAME's cores, V-Unit video after
+  MAME's driver, all built into the one program; WASAPI audio
 - Changes to the game are small patches in the RAM copy of the program, located by instruction pattern with the
   original source as the reference; the ROM files stay untouched
 - Built-in profiling; the measurements behind the timing decisions are in [pc/docs/PERFORMANCE.md](pc/docs/PERFORMANCE.md)
 
 ## Help wanted
 
-This port has been tested on very few machines, so every other setup is news. Please open an
+This program has been tested on very few machines, so every other setup is news. Please open an
 [issue](https://github.com/Endprodukt/cruisin-usa-pc/issues) for
 
 - crashes, hangs, graphics or sound faults (track, place and a screenshot help a lot)
@@ -100,7 +107,7 @@ cmake -S pc -B pc/build
 cmake --build pc/build --config Release
 ```
 
-The port lives in [`pc/`](pc). Everything else in this repository is the game's original 1994 source code, unchanged.
+The Windows program lives in [`pc/`](pc). Everything else in this repository is the game's original 1994 source code, unchanged.
 
 ## Credits
 
@@ -111,15 +118,15 @@ The port lives in [`pc/`](pc). Everything else in this repository is the game's 
   widescreen, the draw distance and the force feedback.
 - **[MAME](https://www.mamedev.org)** - **Aaron Giles** and the MAME contributors. Their V-Unit driver, TMS3203x and
   ADSP-21xx CPU cores and DCS audio emulation are the foundation of the hardware side. Without their decades of
-  documenting this board there would be no port.
+  documenting this board none of this would exist.
 - **[Dear ImGui](https://github.com/ocornut/imgui)** by Omar Cornut (menus),
   **[miniz](https://github.com/richgel999/miniz)** by Rich Geldreich (zip, PNG),
   **[volk](https://github.com/zeux/volk)** by Arseny Kapoulkine and the Khronos **Vulkan headers**.
-- Port by **Endprodukt**, 2026, written with [Claude Code](https://claude.com/claude-code).
+- Windows version by **Endprodukt**, 2026, written with [Claude Code](https://claude.com/claude-code).
 
 ## Licence
 
-- The port's code in `pc/` is under the **BSD 3-Clause** licence, like the MAME code it builds on: see [LICENSE](LICENSE).
+- The code in `pc/` is under the **BSD 3-Clause** licence, like the MAME code it builds on: see [LICENSE](LICENSE).
 - Third-party libraries keep their own licences: [pc/docs/release/LICENSES.txt](pc/docs/release/LICENSES.txt).
 - The game is **not** covered by any of this. Its source code in this repository is © 1994 TV Games, Inc.; its ROMs,
   name and artwork belong to their owners, and no ROM is distributed here.
